@@ -7,7 +7,7 @@
 - **语言**: Python 3.11+（系统全局 Python，禁止 venv）
 - **依赖**: `tushare>=1.4.0`, `pandas>=2.0.0`, `requests>=2.31`, `pymupdf>=1.24`（见 `requirements.txt`）
 - **存储**: SQLite（每家公司一个 `data.db`，路径 `companies/{公司名}_{代码}/data.db`）
-- **数据源**: TuShare Pro API，经中转站 `fastapic.stockai888.top` 代理；巨潮资讯网 cninfo 用于年报 PDF 下载
+- **数据源**: TuShare Pro API，经中转站 `fastapic.stockai888.top` 代理；巨潮资讯网 cninfo 用于年报 PDF + Markdown 下载
 
 ## 项目结构
 
@@ -15,7 +15,7 @@
 MKA/
 ├── data_fetcher.py           # 阶段①：TuShare拉取+标准化+入库（~1250行）
 ├── clean.py                  # 阶段②：EAV→宽表+配平校验+CSV输出（~820行）
-├── report_downloader.py      # 巨潮资讯网年报 PDF 批量下载
+├── report_downloader.py      # 巨潮资讯网年报 PDF + Markdown 批量下载
 ├── ARCHITECTURE.md           # 系统架构文档（每次开发完必须更新）
 ├── requirements.txt          # Python依赖
 ├── .env                      # TUSHARE_TOKEN / HTTP_URL / 限速间隔
@@ -24,7 +24,7 @@ MKA/
 │       ├── data.db           # SQLite（raw_tushare/meta/clean_annual/clean_quarterly）
 │       ├── clean_annual_{code}.csv
 │       ├── clean_quarterly_{code}.csv
-│       └── annuals/          # 年度报告 PDF
+│       └── annuals/          # 年度报告 PDF + Markdown
 ├── vendor/
 │   └── use_cninfo/           # vendored rollysys/use_cninfo（MIT）
 └── .refs/                    # TuShare官方文档缓存
@@ -47,7 +47,7 @@ companies/{公司名}_{代码}/clean_{code}.csv
   （宽表：行=年份，列=全部TuShare字段，严格配平）
 ```
 
-## 年报 PDF 下载 report_downloader.py
+## 年报 PDF + Markdown 下载 report_downloader.py
 
 直接复用 `vendor/use_cninfo/src/cninfo` 中的 cninfo API 封装，只在项目根目录维护一个业务薄脚本。
 
@@ -56,16 +56,20 @@ companies/{公司名}_{代码}/clean_{code}.csv
 ```bash
 python report_downloader.py --ticker 000333.SZ
 python report_downloader.py --ticker 000333.SZ --list-only
+python report_downloader.py --ticker 000333.SZ --force-markdown
+python report_downloader.py --ticker 000333.SZ --no-markdown
 ```
 
 ### 输出与规则
 
 - 输出目录：`companies/{公司名}_{代码}/annuals/`
 - 文件名：`{年份}_年度报告.pdf`；修订版为 `{年份}_年度报告_修订版.pdf`
+- Markdown 文件与 PDF 同名：`{年份}_年度报告.md`；修订版为 `{年份}_年度报告_修订版.md`
+- Markdown 默认生成，内容包含 YAML frontmatter + PyMuPDF 提取全文
 - 只保留 `YYYY年年度报告` 和 `YYYY年年度报告（修订版）`
 - 排除 `年度报告摘要`、英文版、英文全文、摘要更新/取消等非中文年报本体
 - 按年份从新到旧排序，同年份修订版优先
-- 已存在文件跳过，不重复下载
+- 已存在 PDF/Markdown 分别跳过，不重复下载或抽取
 - 默认 cninfo 请求/PDF 下载间隔 1-2 秒
 
 ### 已验证样例
@@ -74,7 +78,7 @@ python report_downloader.py --ticker 000333.SZ --list-only
 python report_downloader.py --ticker 000333.SZ
 ```
 
-美的集团（000333.SZ）实测下载 2013-2025 共 13 份中文年度报告 PDF，其中 2016-2025 全部成功；二次运行 `downloaded=0, skipped=13`。
+美的集团（000333.SZ）实测下载 2013-2025 共 13 份中文年度报告 PDF，并生成 13 份同名 Markdown，其中 2016-2025 全部成功；二次运行 `pdf_downloaded=0, pdf_skipped=13, md_written=0, md_skipped=13`。
 
 ## 阶段① 核心模块 data_fetcher.py
 
@@ -226,7 +230,7 @@ py data_fetcher.py --ticker 300866.SZ --force --verbose
 # 3. 阶段②：清洗+配平校验
 py clean.py --ticker 300866.SZ --verbose
 
-# 4. 年报 PDF 下载列表检查
+# 4. 年报 PDF + Markdown 下载列表检查
 py report_downloader.py --ticker 000333.SZ --list-only
 
 # 5. 检查字段覆盖数

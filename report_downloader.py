@@ -1,12 +1,13 @@
-"""Download all cninfo annual report PDFs for one A-share company.
+"""Download cninfo annual report PDFs and Markdown text for one A-share company.
 
 Usage:
     python report_downloader.py --ticker 000333.SZ
 
 This script vendors and reuses rollysys/use_cninfo under vendor/use_cninfo.
 It intentionally stays thin: cninfo query details, title cleanup, and PDF
-fetching come from the vendored cninfo package; this file handles ticker
-parsing, annual-report filtering, naming, and project-local output layout.
+fetching/text extraction come from the vendored cninfo package; this file
+handles ticker parsing, annual-report filtering, naming, and project-local
+output layout.
 """
 
 from __future__ import annotations
@@ -384,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"company: {company.name} {company.ticker} orgId={company.org_id}")
     print(f"target : {target_dir}")
-    print(f"matched: {len(reports)} annual report PDF(s)")
+    print(f"matched: {len(reports)} annual report(s)")
     for report in reports:
         flag = "修订版" if report.is_revision else "原始版"
         print(f"  {report.year} {flag} {report.ann_date} {report.ann_id} {report.title}")

@@ -17,8 +17,8 @@ TuShare Pro API
    SQLite clean_annual / clean_quarterly + debug CSV
 ```
 
-同时提供一个独立的公告 PDF 下载入口：通过巨潮资讯网 cninfo `hisAnnouncement/query`
-接口查询上市公司年度报告公告，并批量下载中文年度报告 PDF 到公司目录。
+同时提供一个独立的公告下载入口：通过巨潮资讯网 cninfo `hisAnnouncement/query`
+接口查询上市公司年度报告公告，并批量下载中文年度报告 PDF，同时用 PyMuPDF 提取全文 Markdown。
 
 **核心目标**：从 TuShare 拉取原始三表数据，经严格配平校验后写入可信赖的年度/季度清洗表。任何一条硬校验不通过即停止，年度/季度残差均必须 < 1 百万元。
 
@@ -98,12 +98,12 @@ TuShare Pro API
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
-│  年报 PDF 下载  report_downloader.py                         │
+│  年报 PDF + Markdown 下载  report_downloader.py              │
 │                                                             │
 │  ticker → cninfo topSearch 获取 orgId → hisAnnouncement/query │
 │  查询 category_ndbg_szsh → 标题过滤 → 下载 static PDF        │
 │                                                             │
-│  输出: companies/{公司名}_{代码}/annuals/{年份}_年度报告.pdf  │
+│  输出: companies/{公司名}_{代码}/annuals/{年份}_年度报告.pdf/md│
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -159,7 +159,7 @@ clean("path/to/data.db", "300866.SZ") -> pd.DataFrame
 
 **CLI**：`python clean.py --ticker 300866.SZ [--db path] [--verbose]`
 
-### 3.3 report_downloader.py（年报 PDF 下载）
+### 3.3 report_downloader.py（年报 PDF + Markdown 下载）
 
 | 组件 | 职责 |
 |------|------|
@@ -168,7 +168,8 @@ clean("path/to/data.db", "300866.SZ") -> pd.DataFrame
 | `iter_company_annual_category()` | 复用 vendored `cninfo.api.query_page()` 翻页查询年度报告类公告 |
 | `parse_annual_report()` | 标题过滤，仅保留中文年报本体与修订版 |
 | `collect_annual_reports()` | 按年份从新到旧排序，同年份修订版优先 |
-| `download_reports()` | 下载 PDF；目标文件已存在则跳过 |
+| `render_markdown()` | 复用 vendored `cninfo.parser` 的 PyMuPDF 能力，从 PDF 提取全文 Markdown |
+| `download_reports()` | 下载 PDF 并生成 Markdown；目标文件已存在则跳过 |
 
 **CLI**：
 ```bash
@@ -180,14 +181,19 @@ python report_downloader.py --ticker 000333.SZ --list-only
 ```
 companies/{公司名}_{代码}/annuals/
 ├── 2025_年度报告.pdf
+├── 2025_年度报告.md
 ├── 2024_年度报告.pdf
-└── 2024_年度报告_修订版.pdf
+├── 2024_年度报告.md
+├── 2024_年度报告_修订版.pdf
+└── 2024_年度报告_修订版.md
 ```
 
 **过滤规则**：
 - 保留：`YYYY年年度报告`
 - 保留：`YYYY年年度报告（修订版）`
 - 排除：`年度报告摘要`、`年度报告（英文版）`、`年度报告全文（英文）`、摘要更新/取消等非中文年报本体
+
+**Markdown**：默认生成同名 `.md` 文件，包含 YAML frontmatter（公告 ID、ticker、年份、来源、页数、抽取字符数等）和 PyMuPDF 提取的全文。已有 PDF 但缺 Markdown 时会补齐；已有 Markdown 默认跳过，可用 `--force-markdown` 重生成，也可用 `--no-markdown` 仅下载 PDF。
 
 **限速**：默认每次 cninfo 查询或 PDF 下载之间随机等待 1–2 秒，可用
 `--min-interval` / `--max-interval` 调整。
@@ -202,7 +208,7 @@ companies/{公司名}_{代码}/annuals/
 | `cninfo.api` | `hisAnnouncement/query` 调用、标题清洗、PDF URL 拼接、PDF 下载 |
 | `cninfo.orgid` | `topSearch/query` 地址与 orgId 获取逻辑参考 |
 | `cninfo.cache` | 复用 `orgid_map.json` 写入逻辑 |
-| `cninfo.parser` | 保留上游 PyMuPDF 提取 Markdown 能力，当前 `report_downloader.py` 不调用 |
+| `cninfo.parser` | PyMuPDF 提取全文 Markdown，供 `report_downloader.py` 生成同名 `.md` |
 
 ---
 
@@ -456,8 +462,8 @@ requests>=2.31
 pymupdf>=1.24
 ```
 
-`requests` 用于 cninfo 接口与 PDF 下载；`pymupdf` 是 vendored `use_cninfo`
-完整功能的依赖，当前 `report_downloader.py` 仅下载 PDF，不解析全文。
+`requests` 用于 cninfo 接口与 PDF 下载；`pymupdf` 用于 `report_downloader.py`
+复用 vendored `use_cninfo` 的 PyMuPDF 全文抽取能力，生成 Markdown。
 
 ### 7.3 官方文档字段数基准
 
@@ -476,7 +482,7 @@ pymupdf>=1.24
 MKA/
 ├── data_fetcher.py              # 阶段①：TuShare 拉取 + 标准化 + 入库
 ├── clean.py                     # 阶段②：EAV→宽表 + 配平校验 + clean 表写入
-├── report_downloader.py         # 巨潮资讯网年报 PDF 批量下载
+├── report_downloader.py         # 巨潮资讯网年报 PDF + Markdown 批量下载
 ├── ARCHITECTURE.md              # 本文档：系统架构
 ├── CLAUDE.md                    # 项目约定与关键规则
 ├── requirements.txt             # Python 依赖
@@ -487,8 +493,9 @@ MKA/
 │       ├── data.db              # SQLite（raw_tushare/meta/clean_annual/clean_quarterly）
 │       ├── clean_annual_{code}.csv      # 年度 debug 导出
 │       ├── clean_quarterly_{code}.csv   # 季度 debug 导出
-│       └── annuals/             # 巨潮资讯网年度报告 PDF
-│           └── {年份}_年度报告.pdf
+│       └── annuals/             # 巨潮资讯网年度报告 PDF + Markdown
+│           ├── {年份}_年度报告.pdf
+│           └── {年份}_年度报告.md
 ├── vendor/
 │   └── use_cninfo/              # vendored rollysys/use_cninfo（MIT）
 └── .refs/                       # TuShare 官方文档缓存
@@ -601,23 +608,26 @@ companies/伊利股份_600887/
 | 安克创新 (300866) | 37 期 | 31 期 | 33 期 | 37 期 |
 | 新乳业 (002946) | 50 期 | 35 期 | 45 期 | 39 期 |
 
-### 9.7 美的集团年报 PDF（000333.SZ）
+### 9.7 美的集团年报 PDF + Markdown（000333.SZ）
 
 ```
 companies/美的集团_000333/
 └── annuals/
     ├── 2013_年度报告.pdf
+    ├── 2013_年度报告.md
     ├── ...
-    └── 2025_年度报告.pdf
+    ├── 2025_年度报告.pdf
+    └── 2025_年度报告.md
 ```
 
 | 维度 | 数据 |
 |------|------|
 | cninfo orgId | `9900005965` |
 | 查询类目 | `category_ndbg_szsh` |
-| 下载结果 | 13 份中文年度报告 PDF（2013–2025） |
-| 本次验收重点 | 2016–2025 年度报告全部下载成功 |
-| 跳过验证 | 二次运行 `downloaded=0, skipped=13`，已存在文件不重复下载 |
+| 下载结果 | 13 份中文年度报告 PDF + 13 份 Markdown（2013–2025） |
+| 本次验收重点 | 2016–2025 年度报告 PDF 与 Markdown 全部生成成功 |
+| Markdown 抽取 | 2025 年报 276 页全部抽取，`text_chars=281227` |
+| 跳过验证 | 二次运行 `pdf_downloaded=0, pdf_skipped=13, md_written=0, md_skipped=13`，已存在文件不重复生成 |
 
 ---
 
@@ -633,7 +643,7 @@ companies/美的集团_000333/
 | 中转站 | fastapic.stockai888.top | 绕过 TuShare 官方限速，约 100 次/分钟 |
 | 跨端点消歧 | `endpoint.field` 前缀 | credit_impa_loss 在 income/cashflow 中值不同 |
 | cninfo 接入 | vendored `rollysys/use_cninfo` | 直接复用成熟的 `hisAnnouncement/query`、orgId、PDF 下载封装，避免重复维护接口细节 |
-| 年报文件命名 | `{年份}_年度报告.pdf` / `{年份}_年度报告_修订版.pdf` | 同年份原始版与修订版可并存，文件已存在时跳过 |
+| 年报文件命名 | `{年份}_年度报告.pdf/.md` / `{年份}_年度报告_修订版.pdf/.md` | 同年份原始版与修订版可并存，文件已存在时跳过 |
 
 ---
 
@@ -653,3 +663,4 @@ companies/美的集团_000333/
 | 2026-06-10 | **BS 明细校验重构为全量分类方案**：对 balancesheet 全部 150 个 float 字段建立穷尽分类表 `BS_FIELD_CATEGORIES`（current_asset/noncurrent_asset/current_liab/noncurrent_liab/equity/subtotal/combo/derived），替换原先手动维护的 5 个 ITEMS 列表；新增 `COMBO_RESOLVE` 映射和 `bs_bucket_sum()` 自动推导 bucket 总和；删除 `BS_CUR_ASSET_ITEMS`/`BS_NCA_ITEMS`/`BS_CUR_LIAB_ITEMS`/`BS_NCL_ITEMS`/`BS_EQUITY_ITEMS`/`RESOLVE_SPECS`/`sum_with_resolve`；三家公司重跑全部通过 |
 | 2026-06-10 | **IS + CF 字段穷尽分类**：对 income 86 个 float 字段建立 `IS_FIELD_CATEGORIES`（revenue_item/cost_item/operating_adjustment/below_line/tax/attribution/comprehensive/subtotal/sub_item/derived），对 cashflow 89 个 float 字段建立 `CF_FIELD_CATEGORIES`（cfo_inflow/cfo_outflow/cfi_inflow/cfi_outflow/cff_inflow/cff_outflow/subtotal/supplementary/balance/sub_item/derived）；重构 `check_is()` 使用 `is_bucket_sum()` 自动收集字段（保留 total_opcost 与 operate_profit 降级路径）；`check_cf()` 保持原有 5.1–5.5 校验不变；删除 `IS_COGS_STANDARD`/`IS_COGS_EXTRA`/`IS_OPER_PROFIT_EXTRAS`/`EXCLUDED_FROM_CHECKS`/`SUB_ITEMS`；三家公司重跑全部通过 |
 | 2026-06-10 | 新增巨潮资讯网年报 PDF 下载能力：完整 vendored `rollysys/use_cninfo` 到 `vendor/use_cninfo/`；新增 `report_downloader.py` 复用其 cninfo API/orgId/PDF 下载封装；支持 `python report_downloader.py --ticker 000333.SZ`，按年份从新到旧下载中文年度报告 PDF 到 `companies/{公司名}_{代码}/annuals/`，已存在文件跳过；美的集团（000333.SZ）实测下载 2013–2025 共 13 份，其中 2016–2025 全部成功 |
+| 2026-06-10 | 升级 `report_downloader.py`：默认在 PDF 旁生成同名 Markdown，复用 vendored `cninfo.parser` / PyMuPDF 提取全文，并写入 YAML frontmatter；新增 `--no-markdown` 和 `--force-markdown`；美的集团（000333.SZ）已补齐 2013–2025 共 13 份 `.md`，二次运行 PDF/MD 均跳过 |
