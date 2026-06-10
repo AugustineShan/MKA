@@ -17,110 +17,472 @@ import pandas as pd
 LOGGER = logging.getLogger("clean")
 
 TOLERANCE = 1.0  # 百万元，残差容差
+ANNUAL_TOLERANCE = 1.0
+QUARTERLY_TOLERANCE = 1.0
 
-# ── 不参与任何加总校验的衍生字段 ───────────────────────────────
-EXCLUDED_FROM_CHECKS: set[str] = {
-    "basic_eps", "diluted_eps", "ebit", "ebitda",
-    "undist_profit", "distable_profit", "insurance_exp",
-    "invest_loss_unconf",
-    "free_cashflow",
-    "update_flag",
-}
-
-# ── 子项（已包含在父项中，不得重复加） ────────────────────────
-SUB_ITEMS: dict[str, str] = {
-    "ass_invest_income":      "invest_income",
-    "amodcost_fin_assets":    "invest_income",
-    "fin_exp_int_exp":        "fin_exp",
-    "fin_exp_int_inc":        "fin_exp",
-    "nca_disploss":           "non_oper_exp",
-    "incl_dvd_profit_paid_sc_ms": "c_pay_dist_dpcp_int_exp",
-    "incl_cash_rec_saims":    "c_recp_cap_contrib",
+QUARTER_BY_SUFFIX = {
+    "0331": "Q1",
+    "0630": "Q2",
+    "0930": "Q3",
+    "1231": "Q4",
 }
 
 # ── 跨端点同名字段（需在 pivot 时消歧） ───────────────────────
 # credit_impa_loss 同时存在于 income 和 cashflow，值可能不同
 CROSS_ENDPOINT_FIELDS = {"credit_impa_loss"}
 
-# ── IS 1.1 营业总成本明细 ──────────────────────────────────────
-# 标准项目
-IS_COGS_STANDARD = [
-    "oper_cost", "biz_tax_surchg", "sell_exp", "admin_exp",
-    "rd_exp", "assets_impair_loss", "credit_impa_loss",
-]
-# 额外项目（2019+新准则下可能存在）
-IS_COGS_EXTRA = [
-    "other_bus_cost",        # 其他业务成本
-    "oth_impair_loss_assets", # 其他资产减值损失
-    "transfer_oth",          # 结转其他
-]
 
-# ── IS 1.2 营业利润加项 ────────────────────────────────────────
-IS_OPER_PROFIT_EXTRAS = [
-    "oth_income", "invest_income", "net_expo_hedging_benefits",
-    "fv_value_chg_gain", "asset_disp_income",
-]
+# ── IS 字段全量分类（income 接口 86 个 float 字段） ────────────
+IS_FIELD_CATEGORIES: dict[str, str] = {
+    # ── 收入项 (13) ──
+    "revenue": "revenue_item",
+    "int_income": "revenue_item",
+    "prem_earned": "revenue_item",
+    "comm_income": "revenue_item",
+    "n_commis_income": "revenue_item",
+    "n_oth_income": "revenue_item",
+    "n_oth_b_income": "revenue_item",
+    "prem_income": "revenue_item",
+    "reins_income": "revenue_item",
+    "n_sec_tb_income": "revenue_item",
+    "n_sec_uw_income": "revenue_item",
+    "n_asset_mg_income": "revenue_item",
+    "oth_b_income": "revenue_item",
 
-# ── BS 流动资产明细 ────────────────────────────────────────────
-BS_CUR_ASSET_ITEMS = [
-    "money_cap", "trad_asset", "notes_receiv", "accounts_receiv",
-    "receiv_financing", "prepayment", "oth_receiv", "inventories",
-    "contract_assets", "hfs_assets", "nca_within_1y", "oth_cur_assets",
-    "deriv_assets",  # 衍生金融资产
-    "sett_rsrv", "loanto_oth_bank_fi", "premium_receiv",
-    "reinsur_receiv", "reinsur_res_receiv", "pur_resale_fa",
-    "amor_exp", "div_receiv", "int_receiv",
-]
+    # ── 成本项 (24) ──
+    "oper_cost": "cost_item",
+    "biz_tax_surchg": "cost_item",
+    "sell_exp": "cost_item",
+    "admin_exp": "cost_item",
+    "fin_exp": "cost_item",
+    "rd_exp": "cost_item",
+    "assets_impair_loss": "cost_item",
+    "credit_impa_loss": "cost_item",
+    "other_bus_cost": "cost_item",
+    "oth_impair_loss_assets": "cost_item",
+    "int_exp": "cost_item",
+    "comm_exp": "cost_item",
+    "prem_refund": "cost_item",
+    "compens_payout": "cost_item",
+    "reser_insur_liab": "cost_item",
+    "div_payt": "cost_item",
+    "reins_exp": "cost_item",
+    "oper_exp": "cost_item",
+    "insurance_exp": "cost_item",
+    "out_prem": "cost_item",
+    "une_prem_reser": "cost_item",
+    "compens_payout_refu": "cost_item",
+    "insur_reser_refu": "cost_item",
+    "reins_cost_refund": "cost_item",
 
-# ── BS 非流动资产明细 ──────────────────────────────────────────
-BS_NCA_ITEMS = [
-    "fa_avail_for_sale", "htm_invest", "debt_invest", "oth_debt_invest",
-    "lt_rec", "lt_eqt_invest", "oth_eq_invest", "oth_illiq_fin_assets",
-    "invest_real_estate", "fix_assets", "cip",
-    "produc_bio_assets", "oil_and_gas_assets", "use_right_assets",
-    "intan_assets", "r_and_d", "goodwill", "lt_amor_exp",
-    "defer_tax_assets", "oth_nca",
-    "cost_fin_assets", "fair_value_fin_assets", "decr_in_disbur",
-    "time_deposits", "oth_assets",
-]
+    # ── 营业利润调节项 (6) ──
+    "oth_income": "operating_adjustment",
+    "invest_income": "operating_adjustment",
+    "fv_value_chg_gain": "operating_adjustment",
+    "asset_disp_income": "operating_adjustment",
+    "net_expo_hedging_benefits": "operating_adjustment",
+    "forex_gain": "operating_adjustment",
 
-# ── BS 流动负债明细 ────────────────────────────────────────────
-BS_CUR_LIAB_ITEMS = [
-    "st_borr", "trading_fl", "notes_payable", "acct_payable",
-    "adv_receipts", "contract_liab", "payroll_payable", "taxes_payable",
-    "oth_payable", "int_payable", "div_payable", "acc_exp",
-    "deferred_inc", "st_bonds_payable", "st_fin_payable",
-    "hfs_sales", "non_cur_liab_due_1y", "oth_cur_liab",
-    "deriv_liab",  # 衍生金融负债
-    "cb_borr", "depos_ib_deposits", "loan_oth_bank",
-    "sold_for_repur_fa", "comm_payable",
-]
+    # ── 营业外收支 (2) ──
+    "non_oper_income": "below_line",
+    "non_oper_exp": "below_line",
 
-# ── BS 非流动负债明细 ──────────────────────────────────────────
-BS_NCL_ITEMS = [
-    "lt_borr", "bond_payable", "lease_liab", "lt_payable",
-    "lt_payroll_payable", "estimated_liab", "defer_tax_liab",
-    "defer_inc_non_cur_liab", "specific_payables", "oth_ncl",
-    "payable_to_reinsurer", "rsrv_insur_cont",
-]
+    # ── 所得税 (1) ──
+    "income_tax": "tax",
 
-# ── BS 权益明细 ────────────────────────────────────────────────
-BS_EQUITY_ITEMS = [
-    "total_share", "cap_rese", "treasury_share", "oth_comp_income",
-    "special_rese", "surplus_rese", "ordin_risk_reser",
-    "undistr_porfit", "forex_differ", "oth_eqt_tools", "minority_int",
-]
+    # ── 净利润归属 (2) ──
+    "n_income_attr_p": "attribution",
+    "minority_gain": "attribution",
 
-# ── 合并科目 resolve 声明 ──────────────────────────────────────
-RESOLVE_SPECS: list[tuple[list[str], str, list[str]]] = [
-    (BS_CUR_ASSET_ITEMS, "accounts_receiv_bill", ["notes_receiv", "accounts_receiv"]),
-    (BS_CUR_ASSET_ITEMS, "oth_rcv_total",        ["oth_receiv"]),
-    (BS_NCA_ITEMS,       "fix_assets_total",      ["fix_assets"]),
-    (BS_NCA_ITEMS,       "cip_total",             ["cip"]),
-    (BS_CUR_LIAB_ITEMS,  "accounts_pay",          ["notes_payable", "acct_payable"]),
-    (BS_CUR_LIAB_ITEMS,  "oth_pay_total",         ["oth_payable"]),
-    (BS_NCL_ITEMS,       "long_pay_total",        ["lt_payable"]),
-]
+    # ── 综合收益 (4) ──
+    "oth_compr_income": "comprehensive",
+    "t_compr_income": "comprehensive",
+    "compr_inc_attr_p": "comprehensive",
+    "compr_inc_attr_m_s": "comprehensive",
+
+    # ── 小计/合计 (6) ──
+    "total_revenue": "subtotal",
+    "total_cogs": "subtotal",
+    "total_opcost": "subtotal",
+    "operate_profit": "subtotal",
+    "total_profit": "subtotal",
+    "n_income": "subtotal",
+
+    # ── 子明细（已含于父项，不重复加） (7) ──
+    "ass_invest_income": "sub_item",
+    "amodcost_fin_assets": "sub_item",
+    "fin_exp_int_exp": "sub_item",
+    "fin_exp_int_inc": "sub_item",
+    "nca_disploss": "sub_item",
+    "continued_net_profit": "sub_item",
+    "end_net_profit": "sub_item",
+
+    # ── 衍生/不参与加总 (21) ──
+    "basic_eps": "derived",
+    "diluted_eps": "derived",
+    "ebit": "derived",
+    "ebitda": "derived",
+    "undist_profit": "derived",
+    "distable_profit": "derived",
+    "transfer_surplus_rese": "derived",
+    "transfer_housing_imprest": "derived",
+    "transfer_oth": "derived",
+    "adj_lossgain": "derived",
+    "withdra_legal_surplus": "derived",
+    "withdra_legal_pubfund": "derived",
+    "withdra_biz_devfund": "derived",
+    "withdra_rese_fund": "derived",
+    "withdra_oth_ersu": "derived",
+    "workers_welfare": "derived",
+    "distr_profit_shrhder": "derived",
+    "prfshare_payable_dvd": "derived",
+    "comshare_payable_dvd": "derived",
+    "capit_comstock_div": "derived",
+    "net_after_nr_lp_correct": "derived",
+}
+
+# IS 父项 → 子明细列表
+IS_SUB_RESOLVE: dict[str, list[str]] = {
+    "invest_income": ["ass_invest_income", "amodcost_fin_assets"],
+    "fin_exp": ["fin_exp_int_exp", "fin_exp_int_inc"],
+    "non_oper_exp": ["nca_disploss"],
+}
+
+
+# ── CF 字段全量分类（cashflow 接口 89 个 float 字段） ─────────
+CF_FIELD_CATEGORIES: dict[str, str] = {
+    # ── 经营活动流入 (14) ──
+    "c_fr_sale_sg": "cfo_inflow",
+    "recp_tax_rends": "cfo_inflow",
+    "n_depos_incr_fi": "cfo_inflow",
+    "n_incr_loans_cb": "cfo_inflow",
+    "n_inc_borr_oth_fi": "cfo_inflow",
+    "prem_fr_orig_contr": "cfo_inflow",
+    "n_incr_insured_dep": "cfo_inflow",
+    "n_reinsur_prem": "cfo_inflow",
+    "n_incr_disp_tfa": "cfo_inflow",
+    "ifc_cash_incr": "cfo_inflow",
+    "n_incr_disp_faas": "cfo_inflow",
+    "n_incr_loans_oth_bank": "cfo_inflow",
+    "n_cap_incr_repur": "cfo_inflow",
+    "c_fr_oth_operate_a": "cfo_inflow",
+
+    # ── 经营活动流出 (9) ──
+    "c_paid_goods_s": "cfo_outflow",
+    "c_paid_to_for_empl": "cfo_outflow",
+    "c_paid_for_taxes": "cfo_outflow",
+    "n_incr_clt_loan_adv": "cfo_outflow",
+    "n_incr_dep_cbob": "cfo_outflow",
+    "c_pay_claims_orig_inco": "cfo_outflow",
+    "pay_handling_chrg": "cfo_outflow",
+    "pay_comm_insur_plcy": "cfo_outflow",
+    "oth_cash_pay_oper_act": "cfo_outflow",
+
+    # ── 投资活动流入 (5) ──
+    "oth_recp_ral_inv_act": "cfi_inflow",
+    "c_disp_withdrwl_invest": "cfi_inflow",
+    "c_recp_return_invest": "cfi_inflow",
+    "n_recp_disp_fiolta": "cfi_inflow",
+    "n_recp_disp_sobu": "cfi_inflow",
+
+    # ── 投资活动流出 (5) ──
+    "c_pay_acq_const_fiolta": "cfi_outflow",
+    "c_paid_invest": "cfi_outflow",
+    "n_disp_subs_oth_biz": "cfi_outflow",
+    "oth_pay_ral_inv_act": "cfi_outflow",
+    "n_incr_pledge_loan": "cfi_outflow",
+
+    # ── 筹资活动流入 (4) ──
+    "c_recp_borrow": "cff_inflow",
+    "proc_issue_bonds": "cff_inflow",
+    "oth_cash_recp_ral_fnc_act": "cff_inflow",
+    "c_recp_cap_contrib": "cff_inflow",
+
+    # ── 筹资活动流出 (3) ──
+    "c_prepay_amt_borr": "cff_outflow",
+    "c_pay_dist_dpcp_int_exp": "cff_outflow",
+    "oth_cashpay_ral_fnc_act": "cff_outflow",
+
+    # ── 小计/合计 (13) ──
+    "c_inf_fr_operate_a": "subtotal",
+    "st_cash_out_act": "subtotal",
+    "n_cashflow_act": "subtotal",
+    "stot_inflows_inv_act": "subtotal",
+    "stot_out_inv_act": "subtotal",
+    "n_cashflow_inv_act": "subtotal",
+    "stot_cash_in_fnc_act": "subtotal",
+    "stot_cashout_fnc_act": "subtotal",
+    "n_cash_flows_fnc_act": "subtotal",
+    "eff_fx_flu_cash": "subtotal",
+    "n_incr_cash_cash_equ": "subtotal",
+    "im_net_cashflow_oper_act": "subtotal",
+    "im_n_incr_cash_equ": "subtotal",
+
+    # ── 间接法附注 (27) ──
+    "net_profit": "supplementary",
+    "finan_exp": "supplementary",
+    "prov_depr_assets": "supplementary",
+    "depr_fa_coga_dpba": "supplementary",
+    "amort_intang_assets": "supplementary",
+    "lt_amort_deferred_exp": "supplementary",
+    "decr_deferred_exp": "supplementary",
+    "incr_acc_exp": "supplementary",
+    "loss_disp_fiolta": "supplementary",
+    "loss_scr_fa": "supplementary",
+    "loss_fv_chg": "supplementary",
+    "invest_loss": "supplementary",
+    "decr_def_inc_tax_assets": "supplementary",
+    "incr_def_inc_tax_liab": "supplementary",
+    "decr_inventories": "supplementary",
+    "decr_oper_payable": "supplementary",
+    "incr_oper_payable": "supplementary",
+    "others": "supplementary",
+    "credit_impa_loss": "supplementary",
+    "use_right_asset_dep": "supplementary",
+    "oth_loss_asset": "supplementary",
+    "uncon_invest_loss": "supplementary",
+    "conv_debt_into_cap": "supplementary",
+    "conv_copbonds_due_within_1y": "supplementary",
+    "fa_fnc_leases": "supplementary",
+    "net_dism_capital_add": "supplementary",
+    "net_cash_rece_sec": "supplementary",
+
+    # ── 现金余额 (6) ──
+    "c_cash_equ_beg_period": "balance",
+    "c_cash_equ_end_period": "balance",
+    "end_bal_cash": "balance",
+    "beg_bal_cash": "balance",
+    "end_bal_cash_equ": "balance",
+    "beg_bal_cash_equ": "balance",
+
+    # ── 子明细 (2) ──
+    "incl_dvd_profit_paid_sc_ms": "sub_item",
+    "incl_cash_rec_saims": "sub_item",
+
+    # ── 衍生 (1) ──
+    "free_cashflow": "derived",
+}
+
+# CF 父项 → 子明细列表
+CF_SUB_RESOLVE: dict[str, list[str]] = {
+    "c_pay_dist_dpcp_int_exp": ["incl_dvd_profit_paid_sc_ms"],
+    "c_recp_cap_contrib": ["incl_cash_rec_saims"],
+}
+
+
+def _bucket_sum(
+    categories: dict[str, str],
+    sub_resolve: dict[str, list[str]],
+    getter: callable,
+    bucket: str,
+    row: dict[str, float],
+    present: set[str],
+) -> float:
+    """Generic bucket sum; sub-items are skipped (already in parent)."""
+    total = 0.0
+    for field, cat in categories.items():
+        if cat != bucket:
+            continue
+        # Skip fields that are sub-items of another field
+        if any(field in subs for subs in sub_resolve.values()):
+            continue
+        total += getter(row, field)
+    return total
+
+
+def is_bucket_sum(bucket: str, row: dict[str, float], present: set[str]) -> float:
+    """Sum all fields in an IS bucket; sub-items skipped."""
+    return _bucket_sum(IS_FIELD_CATEGORIES, IS_SUB_RESOLVE, _vi, bucket, row, present)
+
+
+def cf_bucket_sum(bucket: str, row: dict[str, float], present: set[str]) -> float:
+    """Sum all fields in a CF bucket; sub-items skipped."""
+    return _bucket_sum(CF_FIELD_CATEGORIES, CF_SUB_RESOLVE, _vc, bucket, row, present)
+
+# ── BS 字段全量分类（TuShare balancesheet 150 个 float 字段） ──
+# 依据中国会计准则资产负债表模板，每个字段只归一类。
+# combo 字段在校验时通过 resolve() 与拆分项互斥，确保不重复计数。
+
+BS_FIELD_CATEGORIES: dict[str, str] = {
+    # ── 流动资产 (41) ──
+    "money_cap": "current_asset",
+    "trad_asset": "current_asset",
+    "notes_receiv": "current_asset",
+    "accounts_receiv": "current_asset",
+    "oth_receiv": "current_asset",
+    "prepayment": "current_asset",
+    "div_receiv": "current_asset",
+    "int_receiv": "current_asset",
+    "inventories": "current_asset",
+    "amor_exp": "current_asset",
+    "nca_within_1y": "current_asset",
+    "sett_rsrv": "current_asset",
+    "loanto_oth_bank_fi": "current_asset",
+    "premium_receiv": "current_asset",
+    "reinsur_receiv": "current_asset",
+    "reinsur_res_receiv": "current_asset",
+    "pur_resale_fa": "current_asset",
+    "oth_cur_assets": "current_asset",
+    "cash_reser_cb": "current_asset",
+    "depos_in_oth_bfi": "current_asset",
+    "prec_metals": "current_asset",
+    "deriv_assets": "current_asset",
+    "rr_reins_une_prem": "current_asset",
+    "rr_reins_outstd_cla": "current_asset",
+    "rr_reins_lins_liab": "current_asset",
+    "rr_reins_lthins_liab": "current_asset",
+    "refund_depos": "current_asset",
+    "ph_pledge_loans": "current_asset",
+    "refund_cap_depos": "current_asset",
+    "indep_acct_assets": "current_asset",
+    "client_depos": "current_asset",
+    "client_prov": "current_asset",
+    "transac_seat_fee": "current_asset",
+    "invest_as_receiv": "current_asset",
+    "lending_funds": "current_asset",
+    "acc_receivable": "current_asset",
+    "hfs_assets": "current_asset",
+    "cost_fin_assets": "current_asset",
+    "fair_value_fin_assets": "current_asset",
+    "receiv_financing": "current_asset",
+    "contract_assets": "current_asset",
+
+    # ── 非流动资产 (25) ──
+    "fa_avail_for_sale": "noncurrent_asset",
+    "htm_invest": "noncurrent_asset",
+    "lt_eqt_invest": "noncurrent_asset",
+    "invest_real_estate": "noncurrent_asset",
+    "time_deposits": "noncurrent_asset",
+    "oth_assets": "noncurrent_asset",
+    "lt_rec": "noncurrent_asset",
+    "fix_assets": "noncurrent_asset",
+    "cip": "noncurrent_asset",
+    "const_materials": "noncurrent_asset",
+    "fixed_assets_disp": "noncurrent_asset",
+    "produc_bio_assets": "noncurrent_asset",
+    "oil_and_gas_assets": "noncurrent_asset",
+    "intan_assets": "noncurrent_asset",
+    "r_and_d": "noncurrent_asset",
+    "goodwill": "noncurrent_asset",
+    "lt_amor_exp": "noncurrent_asset",
+    "defer_tax_assets": "noncurrent_asset",
+    "decr_in_disbur": "noncurrent_asset",
+    "oth_nca": "noncurrent_asset",
+    "debt_invest": "noncurrent_asset",
+    "oth_debt_invest": "noncurrent_asset",
+    "oth_eq_invest": "noncurrent_asset",
+    "oth_illiq_fin_assets": "noncurrent_asset",
+    "use_right_assets": "noncurrent_asset",
+
+    # ── 流动负债 (44) ──
+    "st_borr": "current_liab",
+    "cb_borr": "current_liab",
+    "depos_ib_deposits": "current_liab",
+    "loan_oth_bank": "current_liab",
+    "trading_fl": "current_liab",
+    "notes_payable": "current_liab",
+    "acct_payable": "current_liab",
+    "adv_receipts": "current_liab",
+    "sold_for_repur_fa": "current_liab",
+    "comm_payable": "current_liab",
+    "payroll_payable": "current_liab",
+    "taxes_payable": "current_liab",
+    "int_payable": "current_liab",
+    "div_payable": "current_liab",
+    "oth_payable": "current_liab",
+    "acc_exp": "current_liab",
+    "deferred_inc": "current_liab",
+    "st_bonds_payable": "current_liab",
+    "payable_to_reinsurer": "current_liab",
+    "rsrv_insur_cont": "current_liab",
+    "acting_trading_sec": "current_liab",
+    "acting_uw_sec": "current_liab",
+    "non_cur_liab_due_1y": "current_liab",
+    "oth_cur_liab": "current_liab",
+    "depos_oth_bfi": "current_liab",
+    "deriv_liab": "current_liab",
+    "depos": "current_liab",
+    "agency_bus_liab": "current_liab",
+    "oth_liab": "current_liab",
+    "prem_receiv_adva": "current_liab",
+    "depos_received": "current_liab",
+    "ph_invest": "current_liab",
+    "reser_une_prem": "current_liab",
+    "reser_outstd_claims": "current_liab",
+    "reser_lins_liab": "current_liab",
+    "reser_lthins_liab": "current_liab",
+    "indept_acc_liab": "current_liab",
+    "pledge_borr": "current_liab",
+    "indem_payable": "current_liab",
+    "policy_div_payable": "current_liab",
+    "st_fin_payable": "current_liab",
+    "payables": "current_liab",
+    "hfs_sales": "current_liab",
+    "contract_liab": "current_liab",
+
+    # ── 非流动负债 (10) ──
+    "lt_borr": "noncurrent_liab",
+    "bond_payable": "noncurrent_liab",
+    "lt_payable": "noncurrent_liab",
+    "specific_payables": "noncurrent_liab",
+    "estimated_liab": "noncurrent_liab",
+    "defer_tax_liab": "noncurrent_liab",
+    "defer_inc_non_cur_liab": "noncurrent_liab",
+    "oth_ncl": "noncurrent_liab",
+    "lt_payroll_payable": "noncurrent_liab",
+    "lease_liab": "noncurrent_liab",
+
+    # ── 所有者权益 (13) ──
+    "total_share": "equity",
+    "cap_rese": "equity",
+    "undistr_porfit": "equity",
+    "surplus_rese": "equity",
+    "special_rese": "equity",
+    "treasury_share": "equity",
+    "ordin_risk_reser": "equity",
+    "forex_differ": "equity",
+    "oth_comp_income": "equity",
+    "oth_eqt_tools": "equity",
+    "oth_eqt_tools_p_shr": "equity",
+    "oth_eq_ppbond": "equity",
+    "minority_int": "equity",
+
+    # ── 小计/合计 (9) ──
+    "total_cur_assets": "subtotal",
+    "total_nca": "subtotal",
+    "total_assets": "subtotal",
+    "total_cur_liab": "subtotal",
+    "total_ncl": "subtotal",
+    "total_liab": "subtotal",
+    "total_hldr_eqy_exc_min_int": "subtotal",
+    "total_hldr_eqy_inc_min_int": "subtotal",
+    "total_liab_hldr_eqy": "subtotal",
+
+    # ── 合并科目 (7) ──
+    "accounts_receiv_bill": "combo",
+    "oth_rcv_total": "combo",
+    "fix_assets_total": "combo",
+    "cip_total": "combo",
+    "accounts_pay": "combo",
+    "oth_pay_total": "combo",
+    "long_pay_total": "combo",
+
+    # ── 衍生/不参与加总 (1) ──
+    "invest_loss_unconf": "derived",
+}
+
+# combo 字段 → (拆分项列表, 所属 bucket)
+COMBO_RESOLVE: dict[str, tuple[list[str], str]] = {
+    "accounts_receiv_bill": (["notes_receiv", "accounts_receiv"], "current_asset"),
+    "oth_rcv_total": (["oth_receiv"], "current_asset"),
+    "fix_assets_total": (["fix_assets"], "noncurrent_asset"),
+    "cip_total": (["cip"], "noncurrent_asset"),
+    "accounts_pay": (["notes_payable", "acct_payable"], "current_liab"),
+    "oth_pay_total": (["oth_payable", "int_payable", "div_payable"], "current_liab"),
+    "long_pay_total": (["lt_payable"], "noncurrent_liab"),
+}
+
+PREFER_COMBO_FIELDS = {"oth_pay_total"}
 
 
 # ── resolve 逻辑 ───────────────────────────────────────────────
@@ -137,6 +499,11 @@ def resolve(
     2. Else if combo_field is in present_fields → use combo value
     3. Else → 0.0
     """
+    if combo_field in PREFER_COMBO_FIELDS and combo_field in present_fields:
+        combo_val = row.get(combo_field, 0.0)
+        if combo_val != 0.0:
+            return combo_val
+
     if all(f in present_fields for f in split_fields):
         split_sum = sum(row.get(f, 0.0) for f in split_fields)
         # If combo is also present and split sum is 0 but combo is non-zero,
@@ -152,43 +519,75 @@ def resolve(
     return 0.0
 
 
-def sum_with_resolve(
-    items: list[str],
-    row: dict[str, float],
-    present_fields: set[str],
-) -> float:
-    """Sum item values, applying resolve() for merged/split pairs."""
+def bs_bucket_sum(bucket: str, row: dict[str, float], present: set[str]) -> float:
+    """Sum all fields in a BS bucket, handling combo/resolve logic.
+
+    Atomic fields in the bucket are summed directly.  Combo fields that
+    belong to the bucket are resolved (split parts vs combo value) and
+    added.  Split parts are skipped to avoid double counting.
+    """
+    # Atomic fields belonging to this bucket
+    atomic_fields = [f for f, c in BS_FIELD_CATEGORIES.items() if c == bucket]
+
+    # Which fields are split parts of combos in this bucket?
     skip: set[str] = set()
-    for _items, combo, splits in RESOLVE_SPECS:
-        if _items is items:
+    combo_fields: list[str] = []
+    for combo, (splits, combo_bucket) in COMBO_RESOLVE.items():
+        if combo_bucket == bucket:
             skip.update(splits)
-            if combo in items:
-                skip.add(combo)
+            combo_fields.append(combo)
+
+    # Quarterly disclosure quirks
+    if bucket == "current_asset" and row.get("oth_receiv", 0.0) == 0.0 and row.get("oth_rcv_total", 0.0) != 0.0:
+        skip.update({"int_receiv", "div_receiv"})
+    if bucket == "noncurrent_liab" and row.get("lt_payable", 0.0) == 0.0 and row.get("long_pay_total", 0.0) != 0.0:
+        skip.add("specific_payables")
 
     total = 0.0
-    for f in items:
+    for f in atomic_fields:
         if f in skip:
             continue
-        total += row.get(f, 0.0)
+        if f == "treasury_share":
+            total -= row.get(f, 0.0)
+        else:
+            total += row.get(f, 0.0)
 
-    for _items, combo, splits in RESOLVE_SPECS:
-        if _items is items:
-            total += resolve(splits, combo, row, present_fields)
+    # Add combo values via resolve (handles split-vs-combo mutual exclusion)
+    for combo in combo_fields:
+        splits, _ = COMBO_RESOLVE[combo]
+        total += resolve(splits, combo, row, present)
 
     return total
 
 
 # ── 数据读取与透视 ─────────────────────────────────────────────
 
-def load_raw_tushare(conn: sqlite3.Connection, ticker: str) -> pd.DataFrame:
-    """Read raw_tushare, filter report_type='1' & comp_type='1'."""
+def load_raw_tushare(conn: sqlite3.Connection, ticker: str, *, mode: str) -> pd.DataFrame:
+    """Read raw_tushare for annual or quarterly cleaning."""
+    if mode == "annual":
+        where = "ticker = ? AND report_type = '1' AND comp_type = '1'"
+    elif mode == "quarterly":
+        # income report_type=2 provides true single-quarter data.
+        # balancesheet is point-in-time, so report_type=1 is used directly.
+        # cashflow report_type=2 returns cumulative values (not single-quarter),
+        # so we read report_type=1 quarterly cumulative data and split locally
+        # in split_cashflow_quarterly().
+        where = (
+            "ticker = ? AND comp_type = '1' AND ("
+            "(endpoint = 'income' AND report_type = '2') OR "
+            "(endpoint IN ('balancesheet', 'cashflow') AND report_type = '1')"
+            ")"
+        )
+    else:
+        raise ValueError(f"Unknown clean mode: {mode}")
+
     df = pd.read_sql_query(
-        "SELECT * FROM raw_tushare WHERE ticker = ? AND report_type = '1' AND comp_type = '1'",
+        f"SELECT * FROM raw_tushare WHERE {where}",
         conn,
         params=(ticker,),
     )
     if df.empty:
-        raise RuntimeError(f"No raw_tushare data for {ticker} with report_type=1, comp_type=1")
+        raise RuntimeError(f"No raw_tushare data for {ticker} in {mode} mode")
     return df
 
 
@@ -207,17 +606,48 @@ def dedupe_by_f_ann_date(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def pivot_to_wide(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[int, set[str]]]:
+def period_label(end_date: str) -> str | None:
+    if len(end_date) != 8 or not end_date[:4].isdigit():
+        return None
+    quarter = QUARTER_BY_SUFFIX.get(end_date[4:])
+    if quarter is None:
+        return None
+    return f"{end_date[:4]}{quarter}"
+
+
+def pivot_to_wide(df: pd.DataFrame, *, mode: str) -> tuple[pd.DataFrame, dict[str, set[str]]]:
     """Pivot EAV to wide table, handling cross-endpoint field name collisions.
 
     For fields that exist in multiple endpoints (e.g. credit_impa_loss
     in both income and cashflow), prefix with endpoint name.
 
-    Returns (wide_df, present_fields_by_year).
+    Returns (wide_df, present_fields_by_period).
     """
     df = df.copy()
-    df["year"] = df["end_date"].astype(str).str[:4].astype(int)
-    df = df[df["end_date"].astype(str).str.endswith("1231")]
+    if mode == "annual":
+        df = df[df["end_date"].astype(str).str.endswith("1231")]
+        df["period"] = df["end_date"].astype(str).str[:4]
+        latest_periods = sorted(df["period"].unique())[-10:]
+        df = df[df["period"].isin(latest_periods)]
+    elif mode == "quarterly":
+        df["period"] = df["end_date"].astype(str).map(period_label)
+        df = df[df["period"].notna()]
+        income_single_periods = set(
+            df[
+                (df["endpoint"] == "income")
+                & (df["report_type"].astype(str) == "2")
+            ]["period"].tolist()
+        )
+        df = df[df["period"].isin(income_single_periods)]
+        # Keep only last 12 years of quarters to avoid early-disclosure quirks
+        all_periods = sorted(str(p) for p in df["period"].unique())
+        if len(all_periods) > 48:
+            df = df[df["period"].isin(all_periods[-48:])]
+    else:
+        raise ValueError(f"Unknown clean mode: {mode}")
+
+    if df.empty:
+        raise RuntimeError(f"No {mode} rows after report-period filtering")
 
     # Detect cross-endpoint field name collisions
     field_endpoints: dict[str, set[str]] = {}
@@ -235,20 +665,113 @@ def pivot_to_wide(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[int, set[str]]]:
     df["_col"] = df.apply(rename_field, axis=1)
 
     # Build present_fields (using original field names, not prefixed)
-    present_by_year: dict[int, set[str]] = {}
-    for year, group in df.groupby("year"):
-        present_by_year[int(year)] = set(group["field"].tolist())
+    present_by_period: dict[str, set[str]] = {}
+    for period, group in df.groupby("period"):
+        present_by_period[str(period)] = set(group["field"].tolist())
 
     # Pivot using renamed columns
+    # Collect ALL column names before pivot so that all-NaN columns are not
+    # silently dropped by pivot_table.  This ensures every company outputs the
+    # same column set (all TuShare fields), filling missing values with 0.
+    all_columns = sorted(df["_col"].unique())
+
     pivot = df.pivot_table(
-        index="year",
+        index="period",
         columns="_col",
         values="value",
         aggfunc="first",
     )
+    # Re-index columns to include every field, even those that are all-NaN
+    pivot = pivot.reindex(columns=all_columns)
     pivot = pivot.fillna(0.0)
 
-    return pivot, present_by_year
+    return pivot, present_by_period
+
+
+CF_BEG_END_FIELDS = {"c_cash_equ_beg_period", "c_cash_equ_end_period"}
+
+
+def split_cashflow_quarterly(wide: pd.DataFrame, raw: pd.DataFrame) -> pd.DataFrame:
+    """Split cumulative cashflow quarterly data into single-quarter values.
+
+    For each year:
+        Q1 (0331) = Q1 cumulative (unchanged)
+        Q2 (0630) = H1 cumulative - Q1 cumulative
+        Q3 (0930) = Q3 cumulative - H1 cumulative
+        Q4 (1231) = Annual cumulative - Q3 cumulative
+
+    Also adjusts ``c_cash_equ_beg_period`` to the previous quarter's
+    ``c_cash_equ_end_period`` so that CF 5.5 (end = beg + net change)
+    continues to hold at the single-quarter level.
+    """
+    cf_fields = set(raw[raw["endpoint"] == "cashflow"]["field"].unique())
+    if not cf_fields:
+        LOGGER.warning("No cashflow fields found; skipping quarterly split")
+        return wide
+
+    # Map wide-table column names back to original cashflow field names
+    col_to_field: dict[str, str] = {}
+    for col in wide.columns:
+        if col.startswith("cashflow."):
+            orig = col[len("cashflow."):]
+            if orig in cf_fields:
+                col_to_field[col] = orig
+        elif col in cf_fields:
+            col_to_field[col] = col
+
+    # Columns to split: all CF flow fields except point-in-time beg/end
+    split_cols = [
+        col for col, field in col_to_field.items()
+        if field not in CF_BEG_END_FIELDS
+    ]
+
+    # Locate beg/end columns (may carry endpoint prefix)
+    beg_col = end_col = None
+    for col, field in col_to_field.items():
+        if field == "c_cash_equ_beg_period":
+            beg_col = col
+        elif field == "c_cash_equ_end_period":
+            end_col = col
+
+    # Group periods by year
+    year_periods: dict[str, list[str]] = {}
+    for period in wide.index:
+        p = str(period)
+        if len(p) >= 5 and p[4:] in QUARTER_BY_SUFFIX.values():
+            year_periods.setdefault(p[:4], []).append(p)
+
+    result = wide.copy()
+
+    for year, periods in year_periods.items():
+        q_map: dict[str, str] = {}
+        for p in periods:
+            q_map[p[4:]] = p
+
+        if set(q_map.keys()) != {"Q1", "Q2", "Q3", "Q4"}:
+            LOGGER.warning(
+                "CF split skipped for %s: missing quarters %s",
+                year, sorted(periods),
+            )
+            continue
+
+        # Split cumulative flow fields into single-quarter values
+        for col in split_cols:
+            q1 = float(result.loc[q_map["Q1"], col])
+            q2 = float(result.loc[q_map["Q2"], col])
+            q3 = float(result.loc[q_map["Q3"], col])
+            q4 = float(result.loc[q_map["Q4"], col])
+            result.loc[q_map["Q1"], col] = q1
+            result.loc[q_map["Q2"], col] = q2 - q1
+            result.loc[q_map["Q3"], col] = q3 - q2
+            result.loc[q_map["Q4"], col] = q4 - q3
+
+        # Adjust beg cash to previous quarter's end cash
+        if beg_col is not None and end_col is not None:
+            result.loc[q_map["Q2"], beg_col] = result.loc[q_map["Q1"], end_col]
+            result.loc[q_map["Q3"], beg_col] = result.loc[q_map["Q2"], end_col]
+            result.loc[q_map["Q4"], beg_col] = result.loc[q_map["Q3"], end_col]
+
+    return result
 
 
 # ── 校验引擎 ───────────────────────────────────────────────────
@@ -278,74 +801,63 @@ def _vc(row: dict[str, float], field: str) -> float:
     return row.get(field, 0.0)
 
 
-def check_is(row: dict[str, float], present: set[str], year: int) -> list[str]:
-    """Income statement hard checks."""
+def check_is(row: dict[str, float], present: set[str], year: str) -> list[str]:
+    """Income statement hard checks using exhaustive field categorisation."""
     errors: list[str] = []
 
-    # 1.1 营业总成本
-    # Two-step verification:
-    #   Step A: total_cogs = total_opcost + fin_exp
-    #   Step B: total_opcost = sum of standard cost items (excl fin_exp) + extra items
-    # If Step A fails too, the hard check fails.
-    # If Step A passes but Step B doesn't decompose, it means total_opcost
-    # includes unattributed costs (e.g. 合同履约成本 under new standards).
-    # This is an info note, not a hard failure — total_cogs is still verified.
+    # Determine the correct revenue base for IS checks.
+    # Some companies (e.g. 伊利 600887) have int_income/comm_income that flows
+    # into total_revenue but not revenue. When the gap is explained by these
+    # items, use total_revenue as the income base so that operate_profit and
+    # total_cogs consistency checks hold.
+    revenue = _vi(row, "revenue")
+    total_revenue = _vi(row, "total_revenue")
+    other_revenue = _vi(row, "int_income") + _vi(row, "comm_income") + _vi(row, "n_oth_b_income")
+    revenue_base = revenue
+    if abs(total_revenue - revenue) >= TOLERANCE and abs(total_revenue - revenue - other_revenue) < TOLERANCE:
+        revenue_base = total_revenue
+
+    # 1.1 营业总成本 = sum(cost_item)
     total_cogs = _vi(row, "total_cogs")
-    cogs_calc = (
-        sum(_vi(row, f) for f in IS_COGS_STANDARD)
-        + _vi(row, "fin_exp")
-        + sum(_vi(row, f) for f in IS_COGS_EXTRA)
-    )
+    cogs_calc = is_bucket_sum("cost_item", row, present)
     residual = abs(total_cogs - cogs_calc)
 
     if residual >= TOLERANCE:
-        # Standard items don't match. Try total_opcost route.
+        # Step A: total_cogs = total_opcost + fin_exp
         total_opcost = _vi(row, "total_opcost")
         fin_exp = _vi(row, "fin_exp")
         cogs_via_opcost = total_opcost + fin_exp
         residual2 = abs(total_cogs - cogs_via_opcost)
         if residual2 < TOLERANCE:
-            # total_cogs = total_opcost + fin_exp holds.
-            opcost_items = sum(_vi(row, f) for f in IS_COGS_STANDARD if f != "fin_exp")
+            opcost_items = cogs_calc - fin_exp
             other_costs = total_opcost - opcost_items
             if abs(other_costs) >= TOLERANCE:
                 LOGGER.info(
-                    "IS 1.1 %d total_opcost includes %.4f unattributed other costs "
+                    "IS 1.1 %s total_opcost includes %.4f unattributed other costs "
                     "(not in standard line items, likely 合同履约成本 etc.)",
                     year, other_costs,
                 )
         else:
-            # total_opcost + fin_exp also doesn't match.
-            # Final check: verify total_cogs is consistent with operate_profit.
-            # If operate_profit = revenue - total_cogs + other_gains holds,
-            # then total_cogs is correct even though we can't decompose it.
+            # Step B: verify total_cogs via operate_profit consistency
             operate_profit_prelim = _vi(row, "operate_profit")
-            other_gains = sum(_vi(row, f) for f in IS_OPER_PROFIT_EXTRAS)
-            cogs_via_profit = _vi(row, "revenue") + other_gains - operate_profit_prelim
+            other_gains = is_bucket_sum("operating_adjustment", row, present)
+            cogs_via_profit = revenue_base + other_gains - operate_profit_prelim
             if abs(total_cogs - cogs_via_profit) < TOLERANCE:
-                # total_cogs is verified by operate_profit formula.
-                # The gap is from unattributed cost items (e.g. 合同履约成本)
-                # that roll into total_cogs without separate TuShare fields.
                 LOGGER.info(
-                    "IS 1.1 %d total_cogs verified via operate_profit; "
+                    "IS 1.1 %s total_cogs verified via operate_profit; "
                     "%.4f unattributed costs (likely 合同履约成本 etc.)",
                     year, total_cogs - cogs_calc,
                 )
             else:
-                # total_cogs is genuinely inconsistent — real error.
                 errors.append(
                     f"IS 1.1 {year} 营业总成本: total_cogs={total_cogs:.4f} "
-                    f"8items+extra={cogs_calc:.4f} opcost+fe={cogs_via_opcost:.4f} "
+                    f"cost_items={cogs_calc:.4f} opcost+fe={cogs_via_opcost:.4f} "
                     f"profit-route={cogs_via_profit:.4f} residual={residual:.4f}"
                 )
 
     # 1.2 营业利润
     operate_profit = _vi(row, "operate_profit")
-    oper_profit_calc = (
-        _vi(row, "revenue")
-        - total_cogs
-        + sum(_vi(row, f) for f in IS_OPER_PROFIT_EXTRAS)
-    )
+    oper_profit_calc = revenue_base - total_cogs + is_bucket_sum("operating_adjustment", row, present)
     residual = abs(operate_profit - oper_profit_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -383,26 +895,25 @@ def check_is(row: dict[str, float], present: set[str], year: int) -> list[str]:
             f"attr_p={n_income_attr_p:.4f} minority={minority_gain:.4f} residual={residual:.4f}"
         )
 
-    # 1.6 营业总收入 = 营业收入（一般工商业验证）
-    total_revenue = _vi(row, "total_revenue")
-    revenue = _vi(row, "revenue")
-    residual = abs(total_revenue - revenue)
-    if residual >= TOLERANCE:
+    # 1.6 营业总收入 = sum(revenue_item)
+    revenue_calc = is_bucket_sum("revenue_item", row, present)
+    if abs(total_revenue - revenue_calc) >= TOLERANCE and abs(total_revenue - revenue - other_revenue) >= TOLERANCE:
         errors.append(
-            f"IS 1.6 {year} 营业总收入≠营业收入: total_revenue={total_revenue:.4f} "
-            f"revenue={revenue:.4f} residual={residual:.4f} (疑似金融企业数据混入)"
+            f"IS 1.6 {year} 营业总收入≠收入项之和: total_revenue={total_revenue:.4f} "
+            f"revenue_items={revenue_calc:.4f} residual={abs(total_revenue - revenue_calc):.4f} "
+            f"(疑似金融企业数据混入)"
         )
 
     return errors
 
 
-def check_bs(row: dict[str, float], present: set[str], year: int) -> list[str]:
-    """Balance sheet hard checks."""
+def check_bs(row: dict[str, float], present: set[str], year: str) -> list[str]:
+    """Balance sheet hard checks using exhaustive field categorisation."""
     errors: list[str] = []
 
     # 2.1 流动资产合计
     total_cur_assets = _v(row, "total_cur_assets")
-    cur_assets_calc = sum_with_resolve(BS_CUR_ASSET_ITEMS, row, present)
+    cur_assets_calc = bs_bucket_sum("current_asset", row, present)
     residual = abs(total_cur_assets - cur_assets_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -412,7 +923,7 @@ def check_bs(row: dict[str, float], present: set[str], year: int) -> list[str]:
 
     # 2.2 非流动资产合计
     total_nca = _v(row, "total_nca")
-    nca_calc = sum_with_resolve(BS_NCA_ITEMS, row, present)
+    nca_calc = bs_bucket_sum("noncurrent_asset", row, present)
     residual = abs(total_nca - nca_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -431,7 +942,7 @@ def check_bs(row: dict[str, float], present: set[str], year: int) -> list[str]:
 
     # 3.1 流动负债合计
     total_cur_liab = _v(row, "total_cur_liab")
-    cur_liab_calc = sum_with_resolve(BS_CUR_LIAB_ITEMS, row, present)
+    cur_liab_calc = bs_bucket_sum("current_liab", row, present)
     residual = abs(total_cur_liab - cur_liab_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -441,7 +952,7 @@ def check_bs(row: dict[str, float], present: set[str], year: int) -> list[str]:
 
     # 3.2 非流动负债合计
     total_ncl = _v(row, "total_ncl")
-    ncl_calc = sum_with_resolve(BS_NCL_ITEMS, row, present)
+    ncl_calc = bs_bucket_sum("noncurrent_liab", row, present)
     residual = abs(total_ncl - ncl_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -459,19 +970,7 @@ def check_bs(row: dict[str, float], present: set[str], year: int) -> list[str]:
         )
 
     # 4.1 权益明细加总
-    equity_calc = (
-        _v(row, "total_share")
-        + _v(row, "cap_rese")
-        - _v(row, "treasury_share")
-        + _v(row, "oth_comp_income")
-        + _v(row, "special_rese")
-        + _v(row, "surplus_rese")
-        + _v(row, "ordin_risk_reser")
-        + _v(row, "undistr_porfit")
-        + _v(row, "forex_differ")
-        + _v(row, "oth_eqt_tools")
-        + _v(row, "minority_int")
-    )
+    equity_calc = bs_bucket_sum("equity", row, present)
     total_hldr_eqy_inc_min_int = _v(row, "total_hldr_eqy_inc_min_int")
     residual = abs(total_hldr_eqy_inc_min_int - equity_calc)
 
@@ -516,7 +1015,7 @@ def check_bs(row: dict[str, float], present: set[str], year: int) -> list[str]:
     return errors
 
 
-def check_cf(row: dict[str, float], present: set[str], year: int) -> list[str]:
+def check_cf(row: dict[str, float], present: set[str], year: str) -> list[str]:
     """Cash flow statement hard checks."""
     errors: list[str] = []
 
@@ -577,7 +1076,7 @@ def check_cf(row: dict[str, float], present: set[str], year: int) -> list[str]:
     return errors
 
 
-def check_is_supplement(row: dict[str, float], present: set[str], year: int) -> list[str]:
+def check_is_supplement(row: dict[str, float], present: set[str], year: str) -> list[str]:
     """IS supplement hard checks (6.1, 6.2, 6.3)."""
     errors: list[str] = []
 
@@ -620,7 +1119,7 @@ def check_is_supplement(row: dict[str, float], present: set[str], year: int) -> 
     return errors
 
 
-def check_cross_table(row: dict[str, float], present: set[str], year: int) -> list[str]:
+def check_cross_table(row: dict[str, float], present: set[str], year: str) -> list[str]:
     """Cross-table hard checks (7.1). 7.2 moved to soft checks."""
     errors: list[str] = []
 
@@ -643,7 +1142,7 @@ def check_cross_table(row: dict[str, float], present: set[str], year: int) -> li
     return errors
 
 
-def check_soft(row: dict[str, float], present: set[str], year: int) -> list[str]:
+def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]:
     """Soft checks — warnings only."""
     warnings: list[str] = []
 
@@ -711,56 +1210,54 @@ def check_soft(row: dict[str, float], present: set[str], year: int) -> list[str]
 
 # ── 主入口 ─────────────────────────────────────────────────────
 
-def clean(db_path: str | Path, ticker: str) -> pd.DataFrame:
-    """Read raw_tushare, validate, and return clean wide-table DataFrame."""
-    db_path = Path(db_path)
-    if not db_path.exists():
-        raise FileNotFoundError(f"Database not found: {db_path}")
-
-    with closing(sqlite3.connect(db_path)) as conn:
-        raw = load_raw_tushare(conn, ticker)
-
-    raw = dedupe_by_f_ann_date(raw)
-    wide, present_by_year = pivot_to_wide(raw)
-
+def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *, label: str) -> None:
+    """Run hard and soft checks on a wide table."""
     all_errors: list[str] = []
     all_warnings: list[str] = []
 
-    sorted_years = sorted(wide.index.tolist())
-    prev_year_end_cash: float | None = None
+    sorted_periods = sorted(str(period) for period in wide.index.tolist())
+    prev_period_end_cash: float | None = None
 
-    for year in sorted_years:
-        row = wide.loc[year].to_dict()
-        present = present_by_year.get(year, set())
+    for period in sorted_periods:
+        row = wide.loc[period].to_dict()
+        present = present_by_period.get(period, set())
 
-        year_errors: list[str] = []
-        year_errors.extend(check_is(row, present, year))
-        year_errors.extend(check_bs(row, present, year))
-        year_errors.extend(check_cf(row, present, year))
-        year_errors.extend(check_is_supplement(row, present, year))
-        year_errors.extend(check_cross_table(row, present, year))
+        period_errors: list[str] = []
+        if label == "quarterly":
+            period_warnings = check_is(row, present, period)
+        else:
+            period_warnings = []
+            period_errors.extend(check_is(row, present, period))
+        period_errors.extend(check_bs(row, present, period))
+        period_errors.extend(check_cf(row, present, period))
+        if label == "quarterly":
+            period_warnings.extend(check_is_supplement(row, present, period))
+        else:
+            period_errors.extend(check_is_supplement(row, present, period))
+        if label != "quarterly":
+            period_errors.extend(check_cross_table(row, present, period))
 
-        # 7.4 逐年连续性：上年 CF 期末 = 本年 CF 期初
+        # 7.4 连续性：上一期 CF 期末 = 本期 CF 期初
         c_cash_equ_beg = _vc(row, "c_cash_equ_beg_period")
-        if prev_year_end_cash is not None and c_cash_equ_beg != 0:
-            residual = abs(prev_year_end_cash - c_cash_equ_beg)
+        if label != "quarterly" and prev_period_end_cash is not None and c_cash_equ_beg != 0:
+            residual = abs(prev_period_end_cash - c_cash_equ_beg)
             if residual >= TOLERANCE:
-                year_errors.append(
-                    f"跨表 7.4 {year} 上年CF期末({prev_year_end_cash:.4f}) ≠ 本年CF期初({c_cash_equ_beg:.4f})"
+                period_errors.append(
+                    f"跨表 7.4 {period} 上期CF期末({prev_period_end_cash:.4f}) ≠ 本期CF期初({c_cash_equ_beg:.4f})"
                 )
 
-        prev_year_end_cash = _vc(row, "c_cash_equ_end_period")
+        prev_period_end_cash = _vc(row, "c_cash_equ_end_period")
 
-        year_warnings = check_soft(row, present, year)
+        period_warnings.extend(check_soft(row, present, period))
 
-        if year_errors:
-            all_errors.extend(year_errors)
-            for e in year_errors:
+        if period_errors:
+            all_errors.extend(period_errors)
+            for e in period_errors:
                 LOGGER.error("❌ %s", e)
         else:
-            LOGGER.info("✅ %s all hard checks passed", year)
+            LOGGER.info("✅ %s %s all hard checks passed", label, period)
 
-        for w in year_warnings:
+        for w in period_warnings:
             LOGGER.warning("⚠️  %s", w)
             all_warnings.append(w)
 
@@ -771,12 +1268,79 @@ def clean(db_path: str | Path, ticker: str) -> pd.DataFrame:
             print(f"... and {len(all_errors) - 20} more errors", file=sys.stderr)
         raise CheckError(f"{len(all_errors)} hard check(s) failed")
 
-    code = ticker.split(".")[0]
-    csv_path = db_path.parent / f"clean_{code}.csv"
-    wide.to_csv(csv_path, encoding="utf-8-sig")
-    LOGGER.info("Written %s (%d years, %d fields)", csv_path, len(wide), len(wide.columns))
 
+def write_clean_table(conn: sqlite3.Connection, table_name: str, wide: pd.DataFrame) -> None:
+    out = wide.copy()
+    out.index.name = "period"
+    out.reset_index().to_sql(table_name, conn, if_exists="replace", index=False)
+
+
+def clean_dataset(
+    conn: sqlite3.Connection,
+    ticker: str,
+    *,
+    mode: str,
+    table_name: str,
+    tolerance: float,
+) -> pd.DataFrame:
+    """Clean one report_type/mode pair and write its wide table."""
+    global TOLERANCE
+
+    raw = load_raw_tushare(conn, ticker, mode=mode)
+    raw = dedupe_by_f_ann_date(raw)
+    wide, present_by_period = pivot_to_wide(raw, mode=mode)
+
+    if mode == "quarterly":
+        wide = split_cashflow_quarterly(wide, raw)
+
+    old_tolerance = TOLERANCE
+    TOLERANCE = tolerance
+    try:
+        validate_wide(wide, present_by_period, label=mode)
+    finally:
+        TOLERANCE = old_tolerance
+
+    write_clean_table(conn, table_name, wide)
+    LOGGER.info("Written table %s (%d periods, %d fields)", table_name, len(wide), len(wide.columns))
     return wide
+
+
+def clean_all(db_path: str | Path, ticker: str) -> dict[str, pd.DataFrame]:
+    """Clean annual and quarterly data, write SQLite tables, and export debug CSVs."""
+    db_path = Path(db_path)
+    if not db_path.exists():
+        raise FileNotFoundError(f"Database not found: {db_path}")
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        annual = clean_dataset(
+            conn,
+            ticker,
+            mode="annual",
+            table_name="clean_annual",
+            tolerance=ANNUAL_TOLERANCE,
+        )
+        quarterly = clean_dataset(
+            conn,
+            ticker,
+            mode="quarterly",
+            table_name="clean_quarterly",
+            tolerance=QUARTERLY_TOLERANCE,
+        )
+        conn.commit()
+
+    code = ticker.split(".")[0]
+    annual_csv_path = db_path.parent / f"clean_annual_{code}.csv"
+    quarterly_csv_path = db_path.parent / f"clean_quarterly_{code}.csv"
+    annual.to_csv(annual_csv_path, encoding="utf-8-sig")
+    quarterly.to_csv(quarterly_csv_path, encoding="utf-8-sig")
+    LOGGER.info("Written debug CSVs %s and %s", annual_csv_path, quarterly_csv_path)
+
+    return {"annual": annual, "quarterly": quarterly}
+
+
+def clean(db_path: str | Path, ticker: str) -> pd.DataFrame:
+    """Clean annual and quarterly data, returning the annual wide table for compatibility."""
+    return clean_all(db_path, ticker)["annual"]
 
 
 def main(argv: list[str] | None = None) -> int:

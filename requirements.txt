@@ -1,2 +1,4 @@
 tushare>=1.4.0
 pandas>=2.0.0
+requests>=2.31
+pymupdf>=1.24

@@ -5,26 +5,28 @@
 ## 技术栈
 
 - **语言**: Python 3.11+（系统全局 Python，禁止 venv）
-- **依赖**: `tushare>=1.4.0`, `pandas>=2.0.0`（见 `requirements.txt`）
+- **依赖**: `tushare>=1.4.0`, `pandas>=2.0.0`, `requests>=2.31`, `pymupdf>=1.24`（见 `requirements.txt`）
 - **存储**: SQLite（每家公司一个 `data.db`，路径 `companies/{公司名}_{代码}/data.db`）
-- **数据源**: TuShare Pro API，经中转站 `fastapic.stockai888.top` 代理
+- **数据源**: TuShare Pro API，经中转站 `fastapic.stockai888.top` 代理；巨潮资讯网 cninfo 用于年报 PDF 下载
 
 ## 项目结构
 
 ```
 MKA/
 ├── data_fetcher.py           # 阶段①：TuShare拉取+标准化+入库（~1250行）
-├── data_fetcher_spec.md      # 阶段①需求规格书（权威参考）
 ├── clean.py                  # 阶段②：EAV→宽表+配平校验+CSV输出（~820行）
-├── clean_spec_v3.md          # 阶段②校验规格书（配平公式权威参考）
-├── field_terms.csv           # 字段术语表（TuShare官方字段名→中文→单位→来源）
-├── statement_field_coverage.csv  # 三表完整性覆盖表
+├── report_downloader.py      # 巨潮资讯网年报 PDF 批量下载
+├── ARCHITECTURE.md           # 系统架构文档（每次开发完必须更新）
 ├── requirements.txt          # Python依赖
 ├── .env                      # TUSHARE_TOKEN / HTTP_URL / 限速间隔
 ├── companies/                # 输出目录，每公司一个子目录
 │   └── {公司名}_{代码}/
-│       ├── data.db           # SQLite（raw_tushare/raw_annual/raw_quarterly/meta）
-│       └── clean_{code}.csv  # 配平后宽表CSV
+│       ├── data.db           # SQLite（raw_tushare/meta/clean_annual/clean_quarterly）
+│       ├── clean_annual_{code}.csv
+│       ├── clean_quarterly_{code}.csv
+│       └── annuals/          # 年度报告 PDF
+├── vendor/
+│   └── use_cninfo/           # vendored rollysys/use_cninfo（MIT）
 └── .refs/                    # TuShare官方文档缓存
     ├── tushare-docs/         # 32.md(daily_basic), 33.md(income), 36.md(balancesheet), 44.md(cashflow), 79.md(fina_indicator)
     └── tushare-data/         # TuShare SDK技能参考
@@ -44,6 +46,35 @@ companies/{公司名}_{代码}/data.db
 companies/{公司名}_{代码}/clean_{code}.csv
   （宽表：行=年份，列=全部TuShare字段，严格配平）
 ```
+
+## 年报 PDF 下载 report_downloader.py
+
+直接复用 `vendor/use_cninfo/src/cninfo` 中的 cninfo API 封装，只在项目根目录维护一个业务薄脚本。
+
+### CLI
+
+```bash
+python report_downloader.py --ticker 000333.SZ
+python report_downloader.py --ticker 000333.SZ --list-only
+```
+
+### 输出与规则
+
+- 输出目录：`companies/{公司名}_{代码}/annuals/`
+- 文件名：`{年份}_年度报告.pdf`；修订版为 `{年份}_年度报告_修订版.pdf`
+- 只保留 `YYYY年年度报告` 和 `YYYY年年度报告（修订版）`
+- 排除 `年度报告摘要`、英文版、英文全文、摘要更新/取消等非中文年报本体
+- 按年份从新到旧排序，同年份修订版优先
+- 已存在文件跳过，不重复下载
+- 默认 cninfo 请求/PDF 下载间隔 1-2 秒
+
+### 已验证样例
+
+```bash
+python report_downloader.py --ticker 000333.SZ
+```
+
+美的集团（000333.SZ）实测下载 2013-2025 共 13 份中文年度报告 PDF，其中 2016-2025 全部成功；二次运行 `downloaded=0, skipped=13`。
 
 ## 阶段① 核心模块 data_fetcher.py
 
@@ -96,7 +127,7 @@ python clean.py --ticker 002946.SZ --verbose              # 调试日志
 |------|------|
 | `load_raw_tushare()` | 读取 EAV，过滤 report_type=1, comp_type=1 |
 | `dedupe_by_f_ann_date()` | 同 (endpoint, end_date, field) 取 f_ann_date 最晚 |
-| `pivot_to_wide()` | EAV→宽表，处理跨端点同名字段（如 credit_impa_loss 加前缀消歧） |
+| `pivot_to_wide()` | EAV→宽表，处理跨端点同名字段（如 credit_impa_loss 加前缀消歧），**补全全 NaN 列确保所有公司输出相同列集** |
 | `resolve()` | 合并科目处理（公司只报合并项时自动适配，如 accounts_receiv_bill） |
 | `check_is()` | 利润表硬校验（营业总成本/营业利润/利润总额/净利润/归属/综合收益） |
 | `check_bs()` | 资产负债表硬校验（流动/非流动资产/负债、权益明细、终极配平） |
@@ -187,6 +218,7 @@ python clean.py --ticker 002946.SZ --verbose              # 调试日志
 # 1. 语法检查
 py -m py_compile data_fetcher.py
 py -m py_compile clean.py
+py -m py_compile report_downloader.py
 
 # 2. 阶段①：拉取
 py data_fetcher.py --ticker 300866.SZ --force --verbose
@@ -194,10 +226,13 @@ py data_fetcher.py --ticker 300866.SZ --force --verbose
 # 3. 阶段②：清洗+配平校验
 py clean.py --ticker 300866.SZ --verbose
 
-# 4. 检查字段覆盖数
+# 4. 年报 PDF 下载列表检查
+py report_downloader.py --ticker 000333.SZ --list-only
+
+# 5. 检查字段覆盖数
 # income=86×报告期数, balancesheet=150×报告期数, cashflow=89×报告期数
 
-# 5. 抽查单位：revenue为百万元, total_mv为百万元, total_share为百万股, roe为小数
+# 6. 抽查单位：revenue为百万元, total_mv为百万元, total_share为百万股, roe为小数
 ```
 
 ## 项目边界（不做什么）
@@ -208,6 +243,10 @@ py clean.py --ticker 300866.SZ --verbose
 - 不做可视化，只负责取数、标准化、校验和入库
 - clean.py 不适用于金融企业（银行/保险/证券），comp_type≠1 的数据会被过滤
 - clean.py 只处理年报（end_date 以 1231 结尾），不做季度宽表
+
+## 开发流程
+
+- **每次开发完成后必须更新 `ARCHITECTURE.md`**：包括新增/修改的模块、数据模型变更、校验规则变更、设计决策等。在「变更日志」中追加日期和变更摘要。
 
 ## 运行注意
 

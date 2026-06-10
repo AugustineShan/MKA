@@ -17,4 +17,12 @@ __pycache__/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# 运行时日志
+*.log
+
+# 临时文档草稿
+defaults_gen_spec_v3*.md
+
+# 技能参考缓存
 .refs/tushare-data/
