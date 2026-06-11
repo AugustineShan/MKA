@@ -1,13 +1,14 @@
-"""Download cninfo annual report PDFs and Markdown text for one A-share company.
+"""Download cninfo annual/quarterly report PDFs and Markdown text for one A-share company.
 
 Usage:
     python report_downloader.py --ticker 000333.SZ
+    python report_downloader.py --ticker 000333.SZ --quarterly
+    python report_downloader.py --ticker 000333.SZ --all-reports
 
 This script vendors and reuses rollysys/use_cninfo under vendor/use_cninfo.
 It intentionally stays thin: cninfo query details, title cleanup, and PDF
 fetching/text extraction come from the vendored cninfo package; this file
-handles ticker parsing, annual-report filtering, naming, and project-local
-output layout.
+handles ticker parsing, report filtering, naming, and project-local output layout.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import random
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -31,7 +33,12 @@ if str(VENDORED_CNINFO_SRC) not in sys.path:
     sys.path.insert(0, str(VENDORED_CNINFO_SRC))
 
 from cninfo.api import (  # noqa: E402
+    CATEGORY_BNDBG,
     CATEGORY_NDBG,
+    CATEGORY_SJDBG,
+    CATEGORY_YJDBG,
+    KIND_TO_CATEGORY,
+    KIND_TO_TITLE_TAIL,
     adjunct_to_url,
     clean_title,
     epoch_ms_to_ann_date,
@@ -44,10 +51,7 @@ from cninfo.orgid import TOPSEARCH_URL  # noqa: E402
 
 
 TICKER_RE = re.compile(r"^(?P<code>\d{6})\.(?P<suffix>SH|SZ|BJ)$", re.IGNORECASE)
-ANNUAL_TITLE_RE = re.compile(
-    r"(?P<year>\d{4})年年度报告(?P<revision>（修订版）|\(修订版\))?$"
-)
-SAFE_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+SAFE_FILENAME_CHARS_RE = re.compile(r'[<>"/\\|?*\x00-\x1f]')
 
 PLATE_BY_SUFFIX = {"SZ": "sz", "SH": "sh", "BJ": "bj"}
 COLUMN_BY_PLATE = {"sz": "szse", "bj": "szse", "sh": "sse"}
@@ -58,6 +62,18 @@ PDF_REQUEST_HEADERS = {
         "Chrome/125.0 Safari/537.36"
     )
 }
+
+KIND_TO_FILENAME_CN: dict[str, str] = {
+    "annual": "年度报告",
+    "q1": "第一季度报告",
+    "h1": "半年度报告",
+    "q3": "第三季度报告",
+}
+
+# Categories to query for each report kind set
+ANNUAL_CATEGORIES = [CATEGORY_NDBG]
+QUARTERLY_CATEGORIES = [CATEGORY_YJDBG, CATEGORY_BNDBG, CATEGORY_SJDBG]
+ALL_CATEGORIES = [CATEGORY_NDBG, CATEGORY_YJDBG, CATEGORY_BNDBG, CATEGORY_SJDBG]
 
 
 @dataclass(frozen=True)
@@ -70,8 +86,9 @@ class CompanyInfo:
 
 
 @dataclass(frozen=True)
-class AnnualReport:
+class Report:
     year: int
+    kind: str
     is_revision: bool
     ann_date: str
     ann_id: str
@@ -81,13 +98,21 @@ class AnnualReport:
 
     @property
     def filename(self) -> str:
+        kind_cn = KIND_TO_FILENAME_CN[self.kind]
         if self.is_revision:
-            return f"{self.year}_年度报告_修订版.pdf"
-        return f"{self.year}_年度报告.pdf"
+            return f"{self.year}_{kind_cn}_修订版.pdf"
+        return f"{self.year}_{kind_cn}.pdf"
 
     @property
     def markdown_filename(self) -> str:
         return Path(self.filename).with_suffix(".md").name
+
+    @property
+    def year_subdir(self) -> str | None:
+        """Return year subdirectory for non-annual reports."""
+        if self.kind == "annual":
+            return None
+        return str(self.year)
 
 
 def parse_ticker(ticker: str) -> tuple[str, str]:
@@ -144,8 +169,9 @@ def fetch_company_info(
     raise RuntimeError(f"cninfo topSearch did not return an orgId for {code}")
 
 
-def iter_company_annual_category(
+def iter_company_category(
     company: CompanyInfo,
+    category: str,
     *,
     session: requests.Session,
     timeout: float,
@@ -157,7 +183,7 @@ def iter_company_annual_category(
     while page <= max_pages:
         data = query_page(
             plate=company.plate,
-            category=CATEGORY_NDBG,
+            category=category,
             stock=f"{company.code},{company.org_id}",
             page_num=page,
             column=COLUMN_BY_PLATE[company.plate],
@@ -173,63 +199,131 @@ def iter_company_annual_category(
     raise RuntimeError(f"too many cninfo pages for {company.ticker}; stopped at {max_pages}")
 
 
-def parse_annual_report(item: dict) -> AnnualReport | None:
+def parse_report(item: dict, allowed_kinds: set[str]) -> Report | None:
     raw_title = clean_title(item.get("announcementTitle"))
     if "摘要" in raw_title:
         return None
 
-    match = ANNUAL_TITLE_RE.search(raw_title)
-    if not match:
-        return None
+    for kind in allowed_kinds:
+        tail = KIND_TO_TITLE_TAIL.get(kind)
+        if not tail:
+            continue
+        # Exclude audit/internal-control related attachments that happen to match tail
+        excluded_keywords = ("审计报告", "内部控制", "提示性公告", "鉴证报告", "披露")
+        if any(kw in raw_title for kw in excluded_keywords):
+            return None
 
-    adjunct_url = item.get("adjunctUrl") or ""
-    ann_id = str(item.get("announcementId") or "")
-    if not adjunct_url or not ann_id:
-        return None
+        pattern = rf"(?P<year>\d{{4}}){re.escape(tail)}(?P<revision>（修订版）|\(修订版\))?$"
+        match = re.search(pattern, raw_title)
+        if match:
+            adjunct_url = item.get("adjunctUrl") or ""
+            ann_id = str(item.get("announcementId") or "")
+            if not adjunct_url or not ann_id:
+                return None
 
-    ann_time = int(item.get("announcementTime") or 0)
-    return AnnualReport(
-        year=int(match.group("year")),
-        is_revision=bool(match.group("revision")),
-        ann_date=epoch_ms_to_ann_date(ann_time) if ann_time else "",
-        ann_id=ann_id,
-        title=raw_title,
-        pdf_url=adjunct_to_url(adjunct_url),
-        adjunct_size_kb=item.get("adjunctSize"),
+            ann_time = int(item.get("announcementTime") or 0)
+            return Report(
+                year=int(match.group("year")),
+                kind=kind,
+                is_revision=bool(match.group("revision")),
+                ann_date=epoch_ms_to_ann_date(ann_time) if ann_time else "",
+                ann_id=ann_id,
+                title=raw_title,
+                pdf_url=adjunct_to_url(adjunct_url),
+                adjunct_size_kb=item.get("adjunctSize"),
+            )
+
+    return None
+
+
+def _fetch_category_items(
+    category: str,
+    company: CompanyInfo,
+    timeout: float,
+    min_interval: float,
+    max_interval: float,
+) -> list[dict]:
+    """Query one cninfo category; each caller gets its own session for thread safety."""
+    worker_session = requests.Session()
+    return list(
+        iter_company_category(
+            company,
+            category=category,
+            session=worker_session,
+            timeout=timeout,
+            min_interval=min_interval,
+            max_interval=max_interval,
+        )
     )
 
 
-def collect_annual_reports(
+def collect_reports(
     company: CompanyInfo,
+    allowed_kinds: set[str],
+    categories: list[str],
     *,
     session: requests.Session,
     timeout: float,
     min_interval: float,
     max_interval: float,
-) -> list[AnnualReport]:
-    reports: list[AnnualReport] = []
-    seen: set[tuple[int, bool, str]] = set()
+    max_query_workers: int = 3,
+) -> list[Report]:
+    """Collect reports across multiple cninfo categories (concurrent query)."""
+    reports: list[Report] = []
+    seen: set[tuple[int, str, bool, str]] = set()
 
-    for item in iter_company_annual_category(
-        company,
-        session=session,
-        timeout=timeout,
-        min_interval=min_interval,
-        max_interval=max_interval,
-    ):
+    # Concurrent query across categories to save time
+    all_items: list[dict] = []
+    if len(categories) <= 1:
+        all_items = _fetch_category_items(
+            categories[0], company, timeout, min_interval, max_interval
+        ) if categories else []
+    else:
+        with ThreadPoolExecutor(max_workers=max_query_workers) as executor:
+            futures = {
+                executor.submit(
+                    _fetch_category_items,
+                    cat,
+                    company,
+                    timeout,
+                    min_interval,
+                    max_interval,
+                ): cat
+                for cat in categories
+            }
+            for future in as_completed(futures):
+                cat = futures[future]
+                try:
+                    items = future.result()
+                    all_items.extend(items)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"warn  category query failed {cat}: {exc}", file=sys.stderr)
+
+    for item in all_items:
         if item.get("secCode") != company.code:
             continue
-        report = parse_annual_report(item)
+        report = parse_report(item, allowed_kinds)
         if report is None:
             continue
 
-        key = (report.year, report.is_revision, report.ann_id)
+        key = (report.year, report.kind, report.is_revision, report.ann_id)
         if key in seen:
             continue
         seen.add(key)
         reports.append(report)
 
-    return sorted(reports, key=lambda r: (r.year, r.is_revision, r.ann_date, r.ann_id), reverse=True)
+    # Sort: newest year first, then kind order (annual > q3 > h1 > q1), revision last
+    kind_order = {"annual": 0, "q3": 1, "h1": 2, "q1": 3}
+    return sorted(
+        reports,
+        key=lambda r: (
+            -r.year,
+            kind_order.get(r.kind, 99),
+            r.is_revision,
+            r.ann_date,
+            r.ann_id,
+        ),
+    )
 
 
 def safe_path_component(value: str) -> str:
@@ -237,9 +331,11 @@ def safe_path_component(value: str) -> str:
     return cleaned or "unknown"
 
 
-def target_dir_for(company: CompanyInfo) -> Path:
+def target_dir_for(company: CompanyInfo, kind: str) -> Path:
     company_dir = f"{safe_path_component(company.name)}_{company.code}"
-    return BASE_DIR / "companies" / company_dir / "annuals"
+    if kind == "annual":
+        return BASE_DIR / "companies" / company_dir / "annuals"
+    return BASE_DIR / "companies" / company_dir / "quarterlyreports"
 
 
 def markdown_frontmatter(data: dict) -> str:
@@ -256,13 +352,13 @@ def markdown_frontmatter(data: dict) -> str:
 def render_markdown(
     *,
     company: CompanyInfo,
-    report: AnnualReport,
+    report: Report,
     pdf_path: Path,
     md_path: Path,
     force: bool,
 ) -> bool:
     if md_path.exists() and not force:
-        print(f"skip  md {report.year} -> {md_path}")
+        print(f"skip  md {report.year} {report.kind} -> {md_path}")
         return False
 
     try:
@@ -283,6 +379,7 @@ def render_markdown(
             "sec_code": company.code,
             "sec_name": company.name,
             "year": report.year,
+            "kind": report.kind,
             "ann_date": report.ann_date,
             "title": report.title,
             "revision": report.is_revision,
@@ -302,9 +399,67 @@ def render_markdown(
     return True
 
 
+def _download_single_report(
+    report: Report,
+    company: CompanyInfo,
+    target_dir: Path,
+    *,
+    timeout: float,
+    generate_markdown: bool,
+    force_markdown: bool,
+) -> tuple[int, int, int, int]:
+    """Download one report (PDF + optional Markdown) in a worker thread."""
+    # Each worker gets its own session for thread safety
+    worker_session = requests.Session()
+
+    if report.year_subdir:
+        report_dir = target_dir / report.year_subdir
+        report_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        report_dir = target_dir
+
+    pdf_path = report_dir / report.filename
+    md_path = report_dir / report.markdown_filename
+    kind_label = {
+        "annual": "年报",
+        "q1": "一季报",
+        "h1": "半年报",
+        "q3": "三季报",
+    }.get(report.kind, report.kind)
+
+    downloaded = 0
+    skipped_pdf = 0
+    written_md = 0
+    skipped_md = 0
+
+    if pdf_path.exists():
+        print(f"skip  pdf {report.year} {kind_label} {'修订版' if report.is_revision else '原始版'} -> {pdf_path}")
+        skipped_pdf += 1
+    else:
+        print(f"down  pdf {report.year} {kind_label} {'修订版' if report.is_revision else '原始版'} {report.title}")
+        data = fetch_pdf_bytes(report.pdf_url, timeout=timeout, session=worker_session)
+        pdf_path.write_bytes(data)
+        downloaded += 1
+        print(f"save  pdf {pdf_path}")
+
+    if generate_markdown:
+        if render_markdown(
+            company=company,
+            report=report,
+            pdf_path=pdf_path,
+            md_path=md_path,
+            force=force_markdown,
+        ):
+            written_md += 1
+        else:
+            skipped_md += 1
+
+    return downloaded, skipped_pdf, written_md, skipped_md
+
+
 def download_reports(
     company: CompanyInfo,
-    reports: list[AnnualReport],
+    reports: list[Report],
     target_dir: Path,
     *,
     session: requests.Session,
@@ -313,42 +468,55 @@ def download_reports(
     max_interval: float,
     generate_markdown: bool,
     force_markdown: bool,
+    max_workers: int = 4,
 ) -> tuple[int, int, int, int]:
+    """Download reports concurrently with controlled parallelism."""
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    downloaded = 0
-    skipped_pdf = 0
-    written_md = 0
-    skipped_md = 0
-    for index, report in enumerate(reports, start=1):
-        pdf_path = target_dir / report.filename
-        md_path = target_dir / report.markdown_filename
-        if pdf_path.exists():
-            print(f"skip  pdf {report.year} {'修订版' if report.is_revision else '原始版'} -> {pdf_path}")
-            skipped_pdf += 1
-        else:
-            print(f"down  pdf {report.year} {'修订版' if report.is_revision else '原始版'} {report.title}")
-            data = fetch_pdf_bytes(report.pdf_url, timeout=timeout, session=session)
-            pdf_path.write_bytes(data)
-            downloaded += 1
-            print(f"save  pdf {pdf_path}")
+    if not reports:
+        return 0, 0, 0, 0
 
-        if generate_markdown:
-            if render_markdown(
-                company=company,
-                report=report,
-                pdf_path=pdf_path,
-                md_path=md_path,
-                force=force_markdown,
-            ):
-                written_md += 1
-            else:
-                skipped_md += 1
+    total_downloaded = 0
+    total_skipped_pdf = 0
+    total_written_md = 0
+    total_skipped_md = 0
 
-        if index < len(reports):
-            sleep_between_requests(min_interval, max_interval)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _download_single_report,
+                report,
+                company,
+                target_dir,
+                timeout=timeout,
+                generate_markdown=generate_markdown,
+                force_markdown=force_markdown,
+            ): report
+            for report in reports
+        }
 
-    return downloaded, skipped_pdf, written_md, skipped_md
+        for future in as_completed(futures):
+            report = futures[future]
+            try:
+                d, s, w, m = future.result()
+                total_downloaded += d
+                total_skipped_pdf += s
+                total_written_md += w
+                total_skipped_md += m
+            except Exception as exc:  # noqa: BLE001
+                kind_label = {
+                    "annual": "年报",
+                    "q1": "一季报",
+                    "h1": "半年报",
+                    "q3": "三季报",
+                }.get(report.kind, report.kind)
+                print(
+                    f"err   {report.year} {kind_label} download failed: {exc}",
+                    file=sys.stderr,
+                )
+                total_skipped_pdf += 1
+
+    return total_downloaded, total_skipped_pdf, total_written_md, total_skipped_md
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -357,10 +525,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-interval", type=float, default=1.0, help="minimum seconds between requests")
     parser.add_argument("--max-interval", type=float, default=2.0, help="maximum seconds between requests")
     parser.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout seconds")
-    parser.add_argument("--list-only", action="store_true", help="only list matched annual reports")
+    parser.add_argument("--list-only", action="store_true", help="only list matched reports")
     parser.add_argument("--no-markdown", action="store_true", help="download PDFs only, without Markdown extraction")
     parser.add_argument("--force-markdown", action="store_true", help="regenerate Markdown even when .md exists")
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=4,
+        help="max concurrent download workers (default: 4)",
+    )
+
+    report_group = parser.add_mutually_exclusive_group()
+    report_group.add_argument(
+        "--quarterly",
+        action="store_true",
+        help="download quarterly reports (Q1/H1/Q3) instead of annuals",
+    )
+    report_group.add_argument(
+        "--all-reports",
+        action="store_true",
+        help="download both annual and quarterly reports",
+    )
     return parser
+
+
+def resolve_kinds_and_categories(args: argparse.Namespace) -> tuple[set[str], list[str]]:
+    if args.all_reports:
+        return set(KIND_TO_CATEGORY.keys()), ALL_CATEGORIES
+    if args.quarterly:
+        return {"q1", "h1", "q3"}, QUARTERLY_CATEGORIES
+    return {"annual"}, ANNUAL_CATEGORIES
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -374,41 +568,117 @@ def main(argv: list[str] | None = None) -> int:
     company = fetch_company_info(code, plate, session=session, timeout=args.timeout)
     sleep_between_requests(args.min_interval, args.max_interval)
 
-    reports = collect_annual_reports(
+    allowed_kinds, categories = resolve_kinds_and_categories(args)
+    reports = collect_reports(
         company,
+        allowed_kinds=allowed_kinds,
+        categories=categories,
         session=session,
         timeout=args.timeout,
         min_interval=args.min_interval,
         max_interval=args.max_interval,
     )
-    target_dir = target_dir_for(company)
+
+    # Determine target dir based on primary kind
+    if args.quarterly:
+        target_dir = target_dir_for(company, kind="quarterly")
+    elif args.all_reports:
+        # Annuals go to annuals/, quarterlies go to quarterlyreports/
+        # We'll handle this inside the download loop by filtering reports
+        target_dir = target_dir_for(company, kind="annual")
+    else:
+        target_dir = target_dir_for(company, kind="annual")
 
     print(f"company: {company.name} {company.ticker} orgId={company.org_id}")
-    print(f"target : {target_dir}")
-    print(f"matched: {len(reports)} annual report(s)")
+    print(f"target : {target_dir.parent} (annuals + quarterlyreports)")
+    print(f"matched: {len(reports)} report(s)")
     for report in reports:
+        kind_label = {
+            "annual": "年报",
+            "q1": "一季报",
+            "h1": "半年报",
+            "q3": "三季报",
+        }.get(report.kind, report.kind)
         flag = "修订版" if report.is_revision else "原始版"
-        print(f"  {report.year} {flag} {report.ann_date} {report.ann_id} {report.title}")
+        print(f"  {report.year} {kind_label} {flag} {report.ann_date} {report.ann_id} {report.title}")
 
     if args.list_only:
         return 0
 
-    downloaded, skipped_pdf, written_md, skipped_md = download_reports(
-        company,
-        reports,
-        target_dir,
-        session=session,
-        timeout=args.timeout,
-        min_interval=args.min_interval,
-        max_interval=args.max_interval,
-        generate_markdown=not args.no_markdown,
-        force_markdown=args.force_markdown,
-    )
-    print(
-        "done: "
-        f"pdf_downloaded={downloaded}, pdf_skipped={skipped_pdf}, "
-        f"md_written={written_md}, md_skipped={skipped_md}, total={len(reports)}"
-    )
+    if args.all_reports:
+        # Download annuals and quarterlies to their respective directories
+        annual_reports = [r for r in reports if r.kind == "annual"]
+        quarterly_reports = [r for r in reports if r.kind != "annual"]
+
+        annual_dir = target_dir_for(company, kind="annual")
+        quarterly_dir = target_dir_for(company, kind="quarterly")
+
+        total_downloaded = 0
+        total_skipped_pdf = 0
+        total_written_md = 0
+        total_skipped_md = 0
+
+        if annual_reports:
+            d, s, w, m = download_reports(
+                company,
+                annual_reports,
+                annual_dir,
+                session=session,
+                timeout=args.timeout,
+                min_interval=args.min_interval,
+                max_interval=args.max_interval,
+                generate_markdown=not args.no_markdown,
+                force_markdown=args.force_markdown,
+                max_workers=args.max_workers,
+            )
+            total_downloaded += d
+            total_skipped_pdf += s
+            total_written_md += w
+            total_skipped_md += m
+
+        if quarterly_reports:
+            d, s, w, m = download_reports(
+                company,
+                quarterly_reports,
+                quarterly_dir,
+                session=session,
+                timeout=args.timeout,
+                min_interval=args.min_interval,
+                max_interval=args.max_interval,
+                generate_markdown=not args.no_markdown,
+                force_markdown=args.force_markdown,
+                max_workers=args.max_workers,
+            )
+            total_downloaded += d
+            total_skipped_pdf += s
+            total_written_md += w
+            total_skipped_md += m
+
+        print(
+            "done: "
+            f"pdf_downloaded={total_downloaded}, pdf_skipped={total_skipped_pdf}, "
+            f"md_written={total_written_md}, md_skipped={total_skipped_md}, total={len(reports)}"
+        )
+    else:
+        target_dir = target_dir_for(company, kind="quarterly" if args.quarterly else "annual")
+        downloaded, skipped_pdf, written_md, skipped_md = download_reports(
+            company,
+            reports,
+            target_dir,
+            session=session,
+            timeout=args.timeout,
+            min_interval=args.min_interval,
+            max_interval=args.max_interval,
+            generate_markdown=not args.no_markdown,
+            force_markdown=args.force_markdown,
+            max_workers=args.max_workers,
+        )
+        print(
+            "done: "
+            f"pdf_downloaded={downloaded}, pdf_skipped={skipped_pdf}, "
+            f"md_written={written_md}, md_skipped={skipped_md}, total={len(reports)}"
+        )
+
     return 0
 
 

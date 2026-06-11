@@ -148,29 +148,59 @@ def stage_fetch(ticker: str, *, force: bool) -> tuple[Path, str]:
     return new_path, "已更新" + ("（force 全量重拉）" if force else "（UPSERT 增量）")
 
 
-def stage_reports(ticker: str, db_path: Path, *, no_markdown: bool, force_markdown: bool) -> str:
-    """阶段年报下载（必须在 clean 之前）。report_downloader 自身幂等，已有文件跳过。
+def _count_reports(dir_path: Path) -> tuple[int, int]:
+    """Count PDF and Markdown files recursively under dir_path."""
+    if not dir_path.exists():
+        return 0, 0
+    pdfs = len(list(dir_path.rglob("*.pdf")))
+    mds = len(list(dir_path.rglob("*.md")))
+    return pdfs, mds
 
+
+def stage_reports(
+    ticker: str,
+    db_path: Path,
+    *,
+    no_markdown: bool,
+    force_markdown: bool,
+    no_quarterly: bool,
+) -> str:
+    """阶段年报/季报下载（必须在 clean 之前）。report_downloader 自身幂等，已有文件跳过。
+
+    默认下载年报+季报；加 --no-quarterly 时仅下载年报。
     失败不致命：仅当后续 clean 需要年报补全时才会暴露为真问题。
     """
     annuals_dir = db_path.parent / "annuals"
-    pdf_before = len(list(annuals_dir.glob("*.pdf"))) if annuals_dir.exists() else 0
-    md_before = len(list(annuals_dir.glob("*.md"))) if annuals_dir.exists() else 0
+    quarterly_dir = db_path.parent / "quarterlyreports"
+
+    pdf_before, md_before = _count_reports(annuals_dir)
+    if not no_quarterly:
+        q_pdf_before, q_md_before = _count_reports(quarterly_dir)
+        pdf_before += q_pdf_before
+        md_before += q_md_before
 
     cmd = [sys.executable, str(BASE_DIR / "report_downloader.py"), "--ticker", ticker]
+    if not no_quarterly:
+        cmd.append("--all-reports")
     if no_markdown:
         cmd.append("--no-markdown")
     if force_markdown:
         cmd.append("--force-markdown")
 
-    LOGGER.info("[2/3] 年报 PDF/Markdown 下载 %s ...", ticker)
+    LOGGER.info("[2/3] 年报/季报 PDF/Markdown 下载 %s ...", ticker)
     result = subprocess.run(cmd, cwd=BASE_DIR)
-    pdf_after = len(list(annuals_dir.glob("*.pdf"))) if annuals_dir.exists() else 0
-    md_after = len(list(annuals_dir.glob("*.md"))) if annuals_dir.exists() else 0
+
+    pdf_after, md_after = _count_reports(annuals_dir)
+    if not no_quarterly:
+        q_pdf_after, q_md_after = _count_reports(quarterly_dir)
+        pdf_after += q_pdf_after
+        md_after += q_md_after
 
     if result.returncode != 0:
-        LOGGER.warning("年报下载非零退出（returncode=%s）；继续 clean，若需年报补全将暴露为真问题",
-                       result.returncode)
+        LOGGER.warning(
+            "报告下载非零退出（returncode=%s）；继续 clean，若需年报补全将暴露为真问题",
+            result.returncode,
+        )
         status = f"⚠️ 下载未完整完成（PDF={pdf_after}, MD={md_after}）"
     else:
         status = (
@@ -298,8 +328,16 @@ def build_report(ticker: str, db_path: Path, fetch_status: str, report_status: s
 # 单公司编排
 # ---------------------------------------------------------------------------
 
-def run_one(raw_input: str, *, force: bool, no_markdown: bool, force_markdown: bool,
-            mode: str, verbose: bool) -> int:
+def run_one(
+    raw_input: str,
+    *,
+    force: bool,
+    no_markdown: bool,
+    force_markdown: bool,
+    no_quarterly: bool,
+    mode: str,
+    verbose: bool,
+) -> int:
     try:
         ticker = resolve_ticker(raw_input)
     except TickerResolutionError as exc:
@@ -317,7 +355,11 @@ def run_one(raw_input: str, *, force: bool, no_markdown: bool, force_markdown: b
 
     db_path, fetch_status = stage_fetch(ticker, force=force)
     report_status = stage_reports(
-        ticker, db_path, no_markdown=no_markdown, force_markdown=force_markdown
+        ticker,
+        db_path,
+        no_markdown=no_markdown,
+        force_markdown=force_markdown,
+        no_quarterly=no_quarterly,
     )
     ok, clean_status = stage_clean(ticker, db_path, mode=mode, verbose=verbose)
 
@@ -335,6 +377,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="全量重拉（清空旧 raw_tushare 后重拉）")
     parser.add_argument("--no-markdown", action="store_true", help="年报仅下载 PDF，不抽 Markdown")
     parser.add_argument("--force-markdown", action="store_true", help="即使已存在也重抽 Markdown")
+    parser.add_argument("--no-quarterly", action="store_true",
+                        help="跳过季报下载，仅下载年报（默认下载年报+季报）")
     parser.add_argument("--mode", choices=["annual", "quarterly", "all"], default="all",
                         help="clean 生成哪些表，默认 all")
     parser.add_argument("--verbose", action="store_true", help="调试日志")
@@ -360,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
                 force=args.force,
                 no_markdown=args.no_markdown,
                 force_markdown=args.force_markdown,
+                no_quarterly=args.no_quarterly,
                 mode=args.mode,
                 verbose=args.verbose,
             )

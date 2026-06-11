@@ -15,14 +15,18 @@ TuShare Pro API
    SQLite (raw_tushare + clean tables)
       ↓  阶段②：透视 + 校验 + 输出
    SQLite clean_annual / clean_quarterly + debug CSV
+      ↓  YAML2 defaults_gen.py
+   defaults.yaml（无预测默认参数集）
+      ↓  calc.py
+   forecast 三表 + DCF summary
 ```
 
 同时提供一个独立的公告下载入口：通过巨潮资讯网 cninfo `hisAnnouncement/query`
 接口查询上市公司年度报告公告，并批量下载中文年度报告 PDF，同时用 PyMuPDF 提取全文 Markdown。
 
-**核心目标**：从 TuShare 拉取原始三表数据，经严格配平校验后写入可信赖的年度/季度清洗表。任何一条硬校验不通过即停止，年度/季度残差均必须 < 1 百万元。
+**核心目标**：从 TuShare 拉取原始三表数据，经严格配平校验后写入可信赖的年度/季度清洗表；在 clean 数据之上生成无主观预测的 YAML2 默认参数，并用 `calc.py` 跑出会计配平的默认 DCF 预测三表。任何一条历史 hard check 不通过即停止，年度/季度残差均必须 < 1 百万元；预测阶段 BS/CF 会计恒等式不配平也必须失败。
 
-**边界**：仅处理 A 股一般工商业（comp_type=1）财报数据，不覆盖金融企业、港股美股、行情 K 线或预测数据。
+**边界**：仅处理 A 股一般工商业（comp_type=1）财报数据，不覆盖金融企业、港股美股或行情 K 线。YAML2/calc 默认模型不做分析师判断：收入增速默认为 0，参数来自最新 clean 年报，经济不合理项进入 `review_flags` 交分析师调整。
 
 ---
 
@@ -185,7 +189,7 @@ fetch_companies(["600519.SH", "300866.SZ"]) -> dict       # 批量拉取
 |------|------|
 | `load_raw_tushare()` | 读取 EAV；年度取 report_type=1，季度取 income report_type=2 + BS/CF report_type=1 |
 | `dedupe_by_f_ann_date()` | 同 (endpoint, end_date, field) 取 f_ann_date 最晚 |
-| `pivot_to_wide()` | EAV→331字段宽表（325官方字段+6 QA plug），跨端点同名字段加前缀消歧 |
+| `pivot_to_wide()` | EAV→内存宽表（325官方字段+6 QA plug），跨端点同名字段加前缀消歧 |
 | `split_cashflow_quarterly()` | 季度模式：CF 流量字段从累计值拆为单季（Q2=H1−Q1, Q3=Q3−H1, Q4=Annual−Q3），并修正 beg_period |
 | `resolve()` | 合并科目处理（拆分项全在→求和；否则用合并项；否则 0） |
 | `is_bucket_sum()` / `bs_bucket_sum()` | 按字段分类自动 bucket 求和（含 combo/derived/sub_item 处理） |
@@ -195,7 +199,7 @@ fetch_companies(["600519.SH", "300866.SZ"]) -> dict       # 批量拉取
 | `check_is_supplement()` | IS 补充校验 6.1–6.3（年度硬校验，季度 warning） |
 | `check_cross_table()` | 跨表硬校验 7.1 |
 | `check_soft()` | 软校验 7.2–7.3 + 10.1–10.4 |
-| `clean_all()` | 同时生成并写入 `clean_annual` / `clean_quarterly` |
+| `clean_all()` | 同时生成并写入 SQLite `clean_annual` / `clean_quarterly`，并导出 debug CSV |
 
 **公开 API**：
 ```python
@@ -204,46 +208,109 @@ clean("path/to/data.db", "300866.SZ") -> pd.DataFrame
 
 **CLI**：`python clean.py --ticker 300866.SZ [--db path] [--verbose]`
 
-### 3.3 report_downloader.py（年报 PDF + Markdown 下载）
+### 3.3 report_downloader.py（年报/季报 PDF + Markdown 下载）
 
 | 组件 | 职责 |
 |------|------|
 | `parse_ticker()` | 校验并解析 `000333.SZ` / `600519.SH` / `430047.BJ` |
 | `fetch_company_info()` | 调用 cninfo `topSearch/query` 获取公司简称与 `orgId` |
-| `iter_company_annual_category()` | 复用 vendored `cninfo.api.query_page()` 翻页查询年度报告类公告 |
-| `parse_annual_report()` | 标题过滤，仅保留中文年报本体与修订版 |
-| `collect_annual_reports()` | 按年份从新到旧排序，同年份修订版优先 |
+| `iter_company_category()` | 复用 vendored `cninfo.api.query_page()` 翻页查询指定 category 的公告 |
+| `parse_report()` | 标题过滤，匹配年报/一季报/半年报/三季报本体与修订版 |
+| `collect_reports()` | 对多个 cninfo category 分别查询，合并去重，按年份从新到旧排序 |
 | `render_markdown()` | 复用 vendored `cninfo.parser` 的 PyMuPDF 能力，从 PDF 提取全文 Markdown |
-| `download_reports()` | 下载 PDF 并生成 Markdown；目标文件已存在则跳过 |
+| `download_reports()` | 下载 PDF 并生成 Markdown；年报放 `annuals/`，季报放 `quarterlyreports/{year}/`；目标文件已存在则跳过 |
 
 **CLI**：
 ```bash
-python report_downloader.py --ticker 000333.SZ
-python report_downloader.py --ticker 000333.SZ --list-only
+python report_downloader.py --ticker 000333.SZ                    # 只下载年报（默认）
+python report_downloader.py --ticker 000333.SZ --quarterly        # 只下载季报
+python report_downloader.py --ticker 000333.SZ --all-reports      # 年报 + 季报
+python report_downloader.py --ticker 000333.SZ --list-only        # 只列出匹配报告
 ```
 
 **输出目录**：
 ```
-companies/{公司名}_{代码}/annuals/
-├── 2025_年度报告.pdf
-├── 2025_年度报告.md
-├── 2024_年度报告.pdf
-├── 2024_年度报告.md
-├── 2024_年度报告_修订版.pdf
-└── 2024_年度报告_修订版.md
+companies/{公司名}_{代码}/
+├── annuals/                          # 年报（扁平目录）
+│   ├── 2025_年度报告.pdf
+│   ├── 2025_年度报告.md
+│   ├── 2024_年度报告.pdf
+│   ├── 2024_年度报告.md
+│   ├── 2024_年度报告_修订版.pdf
+│   └── 2024_年度报告_修订版.md
+└── quarterlyreports/                 # 季报（按年分子目录）
+    ├── 2025/
+    │   ├── 2025_第一季度报告.pdf
+    │   ├── 2025_第一季度报告.md
+    │   ├── 2025_半年度报告.pdf
+    │   ├── 2025_半年度报告.md
+    │   ├── 2025_第三季度报告.pdf
+    │   └── 2025_第三季度报告.md
+    ├── 2024/
+    │   └── ...
 ```
 
 **过滤规则**：
-- 保留：`YYYY年年度报告`
-- 保留：`YYYY年年度报告（修订版）`
-- 排除：`年度报告摘要`、`年度报告（英文版）`、`年度报告全文（英文）`、摘要更新/取消等非中文年报本体
+- **年报**：保留 `YYYY年年度报告`、`YYYY年年度报告（修订版）`
+- **一季报**：保留 `YYYY年第一季度报告` 及修订版
+- **半年报**：保留 `YYYY年半年度报告` 及修订版
+- **三季报**：保留 `YYYY年第三季度报告` 及修订版
+- **统一排除**：`摘要`、`审计报告`、`内部控制`、`提示性公告`、`鉴证报告`、英文版、摘要更新/取消等非中文定期报告本体
 
-**Markdown**：默认生成同名 `.md` 文件，包含 YAML frontmatter（公告 ID、ticker、年份、来源、页数、抽取字符数等）和 PyMuPDF 提取的全文。已有 PDF 但缺 Markdown 时会补齐；已有 Markdown 默认跳过，可用 `--force-markdown` 重生成，也可用 `--no-markdown` 仅下载 PDF。
+**cninfo category 映射**（复用 vendored `cninfo.api` 常量）：
+| 报告类型 | category |
+|----------|----------|
+| 年报 | `category_ndbg_szsh` |
+| 一季报 | `category_yjdbg_szsh` |
+| 半年报 | `category_bndbg_szsh` |
+| 三季报 | `category_sjdbg_szsh` |
 
-**限速**：默认每次 cninfo 查询或 PDF 下载之间随机等待 1–2 秒，可用
-`--min-interval` / `--max-interval` 调整。
+**Markdown**：默认生成同名 `.md` 文件，包含 YAML frontmatter（公告 ID、ticker、年份、`kind`、来源、页数、抽取字符数等）和 PyMuPDF 提取的全文。已有 PDF 但缺 Markdown 时会补齐；已有 Markdown 默认跳过，可用 `--force-markdown` 重生成，也可用 `--no-markdown` 仅下载 PDF。
 
-### 3.4 vendor/use_cninfo（vendored cninfo 工具库）
+**限速**：默认每次 cninfo 查询或 PDF 下载之间随机等待 1–2 秒，可用 `--min-interval` / `--max-interval` 调整。季报数量约为年报的 3 倍（10 年历史约 30 份季报），下载时间相应增加。
+
+### 3.4 YAML2 defaults_gen.py / calc.py（默认 DCF 预测层）
+
+YAML2 是 `calc.py` 的完整默认参数集。第一版只从最新 `clean_annual` 年报行生成，不做 TTM；它反映“如果没有分析师判断，最新经营状态平推”的会计默认模型。
+
+| 组件 | 职责 |
+|------|------|
+| `yaml2_schema.py` | YAML2 读写、必填路径校验、默认模型参数、review flag 常量 |
+| `defaults_gen.py` | 从 `data.db` 的 `clean_annual` + `meta` 抽取 `defaults.yaml`；每个参数保留 `value/source` 便于审计 |
+| `calc.py` | 读取 `defaults.yaml`，按 IS→BS→CF→DCF 顺序生成默认预测，并输出 forecast 文件 |
+
+**CLI**：
+```bash
+python defaults_gen.py --ticker 300866.SZ
+python defaults_gen.py --db companies/安克创新_300866/data.db --output companies/安克创新_300866/defaults.yaml
+python calc.py --ticker 300866.SZ
+python calc.py --defaults companies/安克创新_300866/defaults.yaml
+```
+
+**输出目录**：
+```
+companies/{公司名}_{代码}/
+├── defaults.yaml
+└── forecast/
+    ├── forecast_is.csv
+    ├── forecast_bs.csv
+    ├── forecast_cf.csv
+    ├── dcf_detail.csv
+    ├── dcf_summary.csv
+    └── dcf_summary.json
+```
+
+**会计顺序**：
+1. 利润表：收入默认 0% 增长；毛利率、费用率、below-OP 绝对值、税率、少数股东比例来自最新 clean 年报。财务费用不按历史绝对值硬平推，而是拆为 `利息支出 - 利息收入 + 其他财务费用`；默认利息支出率、现金收益率、其他财务费用由最新年报机械抽取。
+2. 资产负债表：应收/存货/应付等用周转或收入占比驱动；固定资产按 CAPEX 与折旧滚动；其他 BS 科目 carry forward；权益按归母净利、分红率、少数股东损益滚动。
+3. 循环求解：每个预测年按 IS→BS plug→平均有息负债/平均现金→财务费用→IS 的链路迭代，直到财务费用和 plug 输出收敛；参数可以简单，但引擎必须处理这个会计循环。
+4. Plug 配平：默认 `plug=cash`，用 `money_cap` 倒挤 BS。若倒挤出负现金，数学上仍然配平，`calc.py` 不失败，而是在 `review_flags` 写入 `negative_cash_from_plug`，提示“plug产生负现金，建议切换为st_borr模式或检查参数”。
+5. 现金流量表：由 IS + BS 变动反推 CFO/CFI/CFF，硬校验 `期初现金 + 现金净增加额 = 期末现金`。
+6. DCF：用 `FCFF = NOPAT + D&A - CAPEX - ΔNWC`，折现显式期 FCFF + 终值，得到 EV、股权价值和每股价值。
+
+**验证样本**：当前 5 家公司（安克创新、新乳业、伊利股份、美的集团、比亚迪）均已生成 YAML2 并跑通 calc，BS/CF 残差为浮点误差级；比亚迪触发负现金 review flag，未阻断配平计算。
+
+### 3.5 vendor/use_cninfo（vendored cninfo 工具库）
 
 `vendor/use_cninfo/` 完整 vendored `rollysys/use_cninfo`（MIT License），保留其源码、文档、测试和 skill。
 当前项目通过 `vendor/use_cninfo/src` 直接复用其 cninfo API 封装：
@@ -284,12 +351,12 @@ meta (
 )
 
 clean_annual (
-    period TEXT PRIMARY KEY,        -- YYYY
+    period TEXT,                    -- YYYY（由 pandas index_label 写入）
     ...                            -- 325 个 TuShare 官方三表字段 + 6 个 QA plug 字段
 )
 
 clean_quarterly (
-    period TEXT PRIMARY KEY,        -- YYYYQn
+    period TEXT,                    -- YYYYQn（由 pandas index_label 写入）
     ...                            -- 325 个 TuShare 官方三表字段 + 6 个 QA plug 字段
 )
 
@@ -405,7 +472,7 @@ clean_warnings (
 
 report_type=1（合并报表）和 report_type=2（单季合并）均保留到 `raw_tushare.report_type`。当前中转站实测只有 `income` 返回真正的 report_type=2；`balancesheet` report_type=2 返回空，`cashflow` report_type=2 请求返回 report_type=1`，因此季度清洗以 income report_type=2 作为季度锚点，并读取同报告期的 BS/CF report_type=1`。
 
-`0331/0630/0930/1231` 等报告期原样保存在 `raw_tushare.end_date`。阶段② `clean.py` 从 `raw_tushare` 读取年度和季度数据并透视为统一 331 字段宽表：325 个官方 TuShare 三表字段 + 6 个 QA plug 字段。
+`0331/0630/0930/1231` 等报告期原样保存在 `raw_tushare.end_date`。阶段② `clean.py` 从 `raw_tushare` 读取年度和季度数据并透视为完整 clean 宽表：325 个官方 TuShare 三表字段 + 6 个 QA plug 字段。写入 SQLite 的 `clean_annual` / `clean_quarterly` 与 CSV debug 导出保持同一字段契约，均以 `period` 作为期间列并保留 QA plug。
 
 **CF 季度拆算**：`cashflow` 的 report_type=1 季度数据是累计值（Q1cum, H1cum, Q3cum, Annual），需在透视后拆为单季：
 - Q1 = Q1cum（不变）
@@ -459,11 +526,11 @@ def resolve(split_fields, combo_field, row, present_fields):
 
 ### 5.5 宽表列完整性
 
-TuShare 三个接口（income/balancesheet/cashflow）的字段集是固定的，所有公司的 `clean_annual` / `clean_quarterly` **必须输出相同的列集**（331 个数据字段 = 325 个官方字段 + 6 个 QA plug 字段，其中 `credit_impa_loss` 因跨端点消歧拆为 2 列）。CSV 仅作为 debug 导出。
+TuShare 三个接口（income/balancesheet/cashflow）的字段集是固定的，所有公司的 SQLite `clean_annual` / `clean_quarterly` **必须输出相同的列集**（`period` + 325 个官方字段 + 6 个 QA plug 字段，其中 `credit_impa_loss` 因跨端点消歧拆为 `income.credit_impa_loss` / `cashflow.credit_impa_loss`）。CSV 仅作为 debug 导出，字段契约与 SQLite clean 表保持一致。
 
 某公司某字段无值时填 0，保留该列。这确保下游模型（如 forecast 引擎）可以对所有公司使用统一的特征集，即使某字段历史上全为 0（如安克创新无商誉），未来也可能出现非零值。
 
-实现方式：`pivot_to_wide()` 在 `pivot_table` 之前收集全部列名，pivot 后用 `reindex(columns=all_columns)` 补回被 pandas 静默丢弃的全 NaN 列，再 `fillna(0.0)`，最后补齐 `qa_bs_current_asset_plug`、`qa_bs_noncurrent_asset_plug`、`qa_bs_current_liab_plug`、`qa_bs_noncurrent_liab_plug`、`qa_bs_equity_plug`、`qa_cf_cash_reconcile_plug` 六个 QA 字段。
+实现方式：`pivot_to_wide()` 在 `pivot_table` 之前收集全部列名，pivot 后用 `reindex(columns=all_columns)` 补回被 pandas 静默丢弃的全 NaN 列，再 `fillna(0.0)`，最后补齐 `qa_bs_current_asset_plug`、`qa_bs_noncurrent_asset_plug`、`qa_bs_current_liab_plug`、`qa_bs_noncurrent_liab_plug`、`qa_bs_equity_plug`、`qa_cf_cash_reconcile_plug` 六个 QA 字段。`write_clean_table()` 写 SQLite 时保留完整 clean 宽表，并用 `DataFrame.to_sql(..., index=True, index_label="period")` 生成供 defaults_gen 等下游读取的 clean 表。
 
 ---
 
@@ -565,7 +632,7 @@ LLM 输出字段包括 `suspected_tushare_issue`、`confidence`、`missing_or_su
 - `qa_bs_equity_plug`
 - `qa_cf_cash_reconcile_plug`
 
-这些字段不是 TuShare 官方字段，只是 clean 阶段的审计字段。BS plug 仅参与 BS 2.1、2.2、3.1、3.2、4.1 的 bucket 小计校验；`qa_cf_cash_reconcile_plug` 仅参与 CF 5.5 的期初期末现金桥接校验，不参与 CF 5.1–5.4 的流量明细加总。不修改 `raw_tushare`，也不替代年度 LLM override。年度表保留同样列集，但正常情况下这些 QA plug 为 0。
+这些字段不是 TuShare 官方字段，而是 clean 阶段的显式审计/防呆字段。BS plug 仅参与 BS 2.1、2.2、3.1、3.2、4.1 的 bucket 小计校验；`qa_cf_cash_reconcile_plug` 仅参与 CF 5.5 的期初期末现金桥接校验，不参与 CF 5.1–5.4 的流量明细加总。不修改 `raw_tushare`，也不替代年度 LLM override。QA plug 保留在 SQLite `clean_annual` / `clean_quarterly`、debug CSV 和 `clean_warnings` 审计中，确保下游读取主库时不会丢失配平桥。
 
 触发时，`apply_quarterly_bs_plugs()` 会计算 `目标合计 - 明细和 = 残差`，把残差写入对应 plug 字段；`apply_quarterly_cf_cash_plugs()` 会计算 `期末现金 - (期初现金 + 净增加额) = 残差`，把残差写入 `qa_cf_cash_reconcile_plug`。两者都会在 `clean_warnings` 写入完整说明：失败编号、目标字段、目标值、plug 前计算值、plug 字段、残差，以及建议检查路径。这样季度数据可以先得到配平的 clean CSV，同时保留“哪里合不上、为什么收纳、后续怎么查”的可追溯 warning。
 
@@ -614,10 +681,12 @@ tushare>=1.4.0
 pandas>=2.0.0
 requests>=2.31
 pymupdf>=1.24
+pyyaml>=6.0
 ```
 
 `requests` 用于 cninfo 接口与 PDF 下载；`pymupdf` 用于 `report_downloader.py`
-复用 vendored `use_cninfo` 的 PyMuPDF 全文抽取能力，生成 Markdown。
+复用 vendored `use_cninfo` 的 PyMuPDF 全文抽取能力，生成 Markdown；`pyyaml`
+用于 `defaults_gen.py` / `calc.py` 读写 YAML2 默认参数集。
 
 ### 7.3 官方文档字段数基准
 
@@ -638,6 +707,9 @@ MKA/
 ├── clean.py                     # 阶段②：EAV→宽表 + 配平校验 + clean 表写入
 ├── report_downloader.py         # 巨潮资讯网年报 PDF + Markdown 批量下载
 ├── annual_report_reconciler.py  # clean.py 硬校验失败后的年报 Markdown 智能核对器
+├── yaml2_schema.py              # YAML2 读写、必填参数和 review flag 公共定义
+├── defaults_gen.py              # clean_annual/meta → defaults.yaml 默认参数集
+├── calc.py                      # defaults.yaml → 默认预测三表 + DCF summary
 ├── ARCHITECTURE.md              # 本文档：系统架构
 ├── CLAUDE.md                    # 项目约定与关键规则
 ├── requirements.txt             # Python 依赖
@@ -648,9 +720,21 @@ MKA/
 │       ├── data.db              # SQLite（raw_tushare/meta/clean_annual/clean_quarterly）
 │       ├── clean_annual_{code}.csv      # 年度 debug 导出
 │       ├── clean_quarterly_{code}.csv   # 季度 debug 导出
-│       ├── annuals/             # 巨潮资讯网年度报告 PDF + Markdown
+│       ├── defaults.yaml                # YAML2 默认参数集（生成产物）
+│       ├── forecast/                    # calc.py 默认预测输出
+│       │   ├── forecast_is.csv
+│       │   ├── forecast_bs.csv
+│       │   ├── forecast_cf.csv
+│       │   ├── dcf_detail.csv
+│       │   └── dcf_summary.json
+│       ├── annuals/             # 巨潮资讯网年度报告 PDF + Markdown（扁平目录）
 │       │   ├── {年份}_年度报告.pdf
 │       │   └── {年份}_年度报告.md
+│       ├── quarterlyreports/    # 巨潮资讯网季度报告 PDF + Markdown（按年分子目录）
+│       │   └── {年份}/
+│       │       ├── {年份}_第一季度报告.pdf
+│       │       ├── {年份}_半年度报告.pdf
+│       │       └── {年份}_第三季度报告.pdf
 │       └── recon/               # 年报核对 evidence JSON（运行 annual_report_reconciler.py 生成）
 ├── vendor/
 │   └── use_cninfo/              # vendored rollysys/use_cninfo（MIT）
@@ -683,7 +767,7 @@ companies/安克创新_300866/
 | raw_tushare | 14,091 行（income rt1: 37期×86字段, income rt2: 31期×86字段, balancesheet rt1: 33期×150字段, cashflow rt1: 37期×89字段） |
 | SQLite 表 | `raw_tushare` + `meta` + `clean_annual` + `clean_quarterly` |
 | meta | 14 条（ticker, name, total_share=536.28百万股, total_mv=57531.73百万元, close=107.28, pe_ttm=22.82, pb=5.61, ...） |
-| clean 表 | `clean_annual`: 10期×330字段；`clean_quarterly`: 31期×330字段 |
+| clean 表 | `clean_annual`: 10期×332列（period+325官方字段+6 QA plug）；`clean_quarterly`: 30期×332列（period+325官方字段+6 QA plug） |
 
 ### 9.2 新乳业（002946.SZ）
 
@@ -699,7 +783,7 @@ companies/新乳业_002946/
 | raw_tushare | 17,531 行（income rt1: 50期×86字段, income rt2: 35期×86字段, balancesheet rt1: 45期×150字段, cashflow rt1: 39期×89字段） |
 | SQLite 表 | `raw_tushare` + `meta` + `clean_annual` + `clean_quarterly` |
 | meta | 14 条（ticker, name, total_share=860.68百万股, total_mv=14270.03百万元, close=16.58, pe_ttm=18.19, pb=3.73, ...） |
-| clean 表 | `clean_annual`: 10期×330字段；`clean_quarterly`: 35期×330字段 |
+| clean 表 | `clean_annual`: 10期×332列（period+325官方字段+6 QA plug）；`clean_quarterly`: 34期×332列（period+325官方字段+6 QA plug） |
 
 ### 9.3 伊利股份（600887.SH）
 
@@ -715,7 +799,7 @@ companies/伊利股份_600887/
 | raw_tushare | 35,256 行（income rt1: 109期×86字段, income rt2: 94期×86字段, balancesheet rt1: 70期×150字段, cashflow rt1: 82期×89字段） |
 | SQLite 表 | `raw_tushare` + `meta` + `clean_annual` + `clean_quarterly` |
 | meta | 14 条（ticker, name, total_share=6078.13百万股, total_mv=21483.63百万元, close=3.54, pe_ttm=17.05, pb=2.67, ...） |
-| clean 表 | `clean_annual`: 10期×330字段；`clean_quarterly`: 48期×330字段（最近12年） |
+| clean 表 | `clean_annual`: 10期×332列（period+325官方字段+6 QA plug）；`clean_quarterly`: 48期×332列（period+325官方字段+6 QA plug，最近12年） |
 
 伊利股份暴露并修复了三个系统性的科目口径问题：
 1. `int_income` 计入 `total_revenue` 导致 IS 1.2/1.6 校验需要自适应适配（已修复：IS 1.6 改为 `total_revenue = Σrevenue_item` 检测）
@@ -728,11 +812,11 @@ companies/伊利股份_600887/
 |--------|-------------------|-----------------|-------------------|
 | raw_tushare 报告期数 | income rt1:37 / rt2:31, bs rt1:33, cf rt1:37 | income rt1:50 / rt2:35, bs rt1:45, cf rt1:39 | income rt1:109 / rt2:94, bs rt1:70, cf rt1:82 |
 | raw_tushare 字段覆盖 | income:86, bs:150, cf:89 ✓ | income:86, bs:150, cf:89 ✓ | income:86, bs:150, cf:89 ✓ |
-| clean 表字段数 | annual/quarterly 均为 330 | annual/quarterly 均为 330 | annual/quarterly 均为 330 |
+| clean 表字段数 | annual/quarterly 均为 332 | annual/quarterly 均为 332 | annual/quarterly 均为 332 |
 | 跨端点消歧字段 | `income.credit_impa_loss` + `cashflow.credit_impa_loss` | 同 | 同 |
 | 最新市值 | 575.3 亿元 | 142.7 亿元 | 214.8 亿元 |
 
-**clean 表列数一致性**：各公司的 clean 年度/季度表字段数完全一致（331 个数据字段 = 325 个官方字段 + 6 个 QA plug 字段）。不同公司在某些字段上值全为 0（如安克创新无商誉，goodwill 全为 0），但列始终保留，确保下游模型可使用统一特征集。
+**clean 表列数一致性**：各公司的 SQLite clean 年度/季度表字段数完全一致（332 列 = `period` + 325 个官方字段 + 6 个 QA plug 字段）。不同公司在某些字段上值全为 0（如安克创新无商誉，goodwill 全为 0），但列始终保留，确保下游模型可使用统一特征集；QA plug 也始终保留，确保下游模型能显式识别季度收纳残差。
 
 ### 9.5 meta 字段清单
 
@@ -792,7 +876,7 @@ companies/美的集团_000333/
 | 决策 | 选择 | 原因 |
 |------|------|------|
 | 存储 | SQLite（每公司一个 db） | 单机离线、零运维、事务保护、EAV→宽表转换方便 |
-| 数据模型 | raw_tushare/meta + clean_annual/clean_quarterly | raw_tushare 保留 TuShare 三表官方完整字段；clean 表提供校验后的统一 331 字段宽表 |
+| 数据模型 | raw_tushare/meta + clean_annual/clean_quarterly | raw_tushare 保留 TuShare 三表官方完整字段；SQLite clean 表和 debug CSV 都提供统一的 `period`+325 官方字段+6 QA plug 字段 |
 | 字段命名 | 只用 TuShare 官方名 | 消除别名歧义，与上游对齐 |
 | 金额单位 | 百万元 | A 股报表精度到元，百万元级适合分析和校验 |
 | 校验容差 | 年度/季度 1 百万元、入库前 0.01 百万元 | 年度与季度均保持严格口径 |
@@ -829,3 +913,6 @@ companies/美的集团_000333/
 | 2026-06-11 | 新增一键编排入口 `init.py` + `.claude/skills/init/SKILL.md`：输入公司名/裸代码/完整 ticker，自动按序编排 data_fetcher→report_downloader→clean，含年报补全两段式重跑；幂等（当日已拉取跳过取数、已有年报跳过下载、补数只在重跑应用）；退出码 0/2/3/1 语义化交给 Agent；输出数据拉取报告（纯 TuShare 通过 vs 年报确认补全科目，全程可追溯）；美的集团（000333.SZ）端到端实测退出码 0 |
 | 2026-06-11 | 比亚迪（002594.SZ）暴露并修复 BS 4.1 重复计数 bug：`oth_eqt_tools_p_shr`（优先股）/`oth_eq_ppbond`（永续债）是 `oth_eqt_tools` 的“其中”子项（官方 36.md 证实），原误归 equity 导致权益 bucket 重复计入；改归 `sub_item`，四家公司（安克/新乳业/伊利/美的）回归无破坏 |
 | 2026-06-11 | 新增 override `clean_category` 重分类机制：处理 TuShare 字段默认 bucket 与公司列报口径不一致（比亚迪 `estimated_liab` 预计负债列报为流动而非 TuShare 默认非流动）。`bs_bucket_sum`/`check_bs` 接受 per-period `reclass` 映射；`apply_annual_overrides` 从 override 的 `clean_category` 写 `wide.attrs["bs_reclass"]`，只影响该公司该期 bucket 归属，不改静态分类；`clean_adjustments` 增加 `clean_category` 审计列。reconciler 端：`build_field_context` 纳入 known-defect 命中字段（即便不在 bucket）并透传 `clean_category`/别名，override builder 从候选透传 `clean_category`；新增 `knowledge/known_tushare_defects.json` 第 2 条 `BS 3.1/current_liab/estimated_liab`（比亚迪 2016-2025）。候选生成已验证；LLM 端到端 override 生成与 clean 重跑验证待补 |
+| 2026-06-11 | 修正 SQLite clean 表输出契约：`clean.py` 写入 `data.db` 的 `clean_annual` / `clean_quarterly` 必须保留完整 clean 宽表（`period` + 325 个官方字段 + 6 个 QA plug 字段），QA plug 是 clean 阶段的显式审计/防呆字段，供 defaults_gen 等下游从 SQLite 主库直接读取 |
+| 2026-06-11 | 新增 YAML2 默认 DCF 层：`yaml2_schema.py` 定义 YAML2 读写/校验，`defaults_gen.py` 从最新 `clean_annual` + `meta` 生成带 `value/source` 的 `defaults.yaml`，`calc.py` 按 IS→BS→CF→DCF 顺序生成默认预测三表和估值 summary；财务费用拆为利息支出、利息收入、其他财务费用，每个预测年循环求解 IS→BS plug→平均现金/债务→财务费用直到收敛；会计恒等式不配平即失败，cash plug 产生负现金只写 `review_flags.negative_cash_from_plug` warning，不阻断计算。5 家现有公司均已跑通，BS/CF 残差为浮点误差级 |
+| 2026-06-11 | 扩展 `report_downloader.py` 支持季报下载：底层复用 vendored `cninfo.api` 的 `KIND_TO_CATEGORY`（`category_yjdbg_szsh`/`category_bndbg_szsh`/`category_sjdbg_szsh`），分别查询 3 个 category 后合并去重；通用化 `Report` dataclass 替代 `AnnualReport`，支持 `kind`（annual/q1/h1/q3）；标题过滤匹配 `YYYY年第一季度报告`/`半年度报告`/`第三季度报告` 及修订版；CLI 新增 `--quarterly`（仅季报）和 `--all-reports`（年报+季报）互斥参数；年报保持 `annuals/` 扁平目录，季报按年放入 `quarterlyreports/{year}/` 子目录；`init.py` 新增 `--include-quarterly` 参数，默认仍只下载年报，保持向后兼容 |

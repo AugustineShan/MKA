@@ -1584,9 +1584,15 @@ def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *,
 
 
 def write_clean_table(conn: sqlite3.Connection, table_name: str, wide: pd.DataFrame) -> None:
-    out = wide.copy()
+    """Write the full validated clean wide table consumed by downstream models.
+
+    QA plug fields are part of the clean-data contract. They keep quarterly
+    residual absorption explicit and make downstream reconciliation auditable.
+    Annual plugs normally remain zero, but the schema stays identical.
+    """
+    out = ensure_qa_columns(wide.copy())
     out.index.name = "period"
-    out.reset_index().to_sql(table_name, conn, if_exists="replace", index=False)
+    out.to_sql(table_name, conn, if_exists="replace", index=True, index_label="period")
 
 
 ADJUSTMENT_COLUMNS = [
@@ -1990,7 +1996,8 @@ def clean_dataset(
             )
 
     write_clean_table(conn, table_name, wide)
-    LOGGER.info("Written table %s (%d periods, %d fields)", table_name, len(wide), len(wide.columns))
+    sqlite_field_count = len(ensure_qa_columns(wide.copy()).columns)
+    LOGGER.info("Written table %s (%d periods, %d fields)", table_name, len(wide), sqlite_field_count)
     return wide
 
 
