@@ -1,0 +1,1214 @@
+"""Diagnose clean.py hard-check failures against annual-report Markdown.
+
+This is an out-of-band companion for clean.py.  It reuses clean.py's annual
+wide-table pipeline and hard-check functions, then inspects the corresponding
+annual-report Markdown only for failed checks.  When configured, it asks an LLM
+to return structured evidence about whether the failure is likely caused by
+missing or wrong TuShare fields.
+
+The script never mutates raw_tushare, clean_annual_*.csv, or data.db.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sqlite3
+import sys
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import requests
+
+import clean
+
+
+ROOT = Path(__file__).resolve().parent
+COMPANIES_DIR = ROOT / "companies"
+DOCS_DIR = ROOT / ".refs" / "tushare-docs"
+KNOWN_DEFECTS_PATH = ROOT / "knowledge" / "known_tushare_defects.json"
+
+LLM_TIMEOUT_SECONDS = 120
+DEFAULT_MAX_FAILURES = 12
+EVIDENCE_VERSION = 1
+OVERRIDE_VERSION = 1
+COMMON_ANNUAL_ALIASES = {
+    "lending_funds": "发放贷款和垫款",
+    "decr_in_disbur": "发放贷款和垫款",
+    "money_cap": "货币资金",
+    "nca_within_1y": "一年内到期的非流动资产",
+    "oth_cur_assets": "其他流动资产",
+    "total_cur_assets": "流动资产合计",
+    "total_nca": "非流动资产合计",
+    "total_cur_liab": "流动负债合计",
+    "total_ncl": "非流动负债合计",
+}
+
+
+@dataclass
+class Failure:
+    period: str
+    code: str
+    statement: str
+    title: str
+    message: str
+    residual: float | None
+    target_value: float | None
+    calc_value: float | None
+    direction: str | None
+
+
+def load_env(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def parse_ticker(ticker: str) -> tuple[str, str]:
+    match = re.fullmatch(r"(\d{6})\.(SZ|SH|BJ)", ticker.strip().upper())
+    if not match:
+        raise ValueError("ticker must look like 000333.SZ / 600519.SH / 430047.BJ")
+    return match.group(1), match.group(2)
+
+
+def find_company_dir(ticker: str, explicit: str | None = None) -> Path:
+    code, _ = parse_ticker(ticker)
+    if explicit:
+        company_dir = Path(explicit).resolve()
+        if not company_dir.exists():
+            raise FileNotFoundError(company_dir)
+        return company_dir
+
+    matches = sorted(COMPANIES_DIR.glob(f"*_{code}"))
+    if not matches:
+        raise FileNotFoundError(f"No company directory matching companies/*_{code}")
+    if len(matches) > 1:
+        raise RuntimeError(f"Multiple company directories match {code}: {matches}")
+    return matches[0]
+
+
+def default_db_path(company_dir: Path, explicit: str | None = None) -> Path:
+    if explicit:
+        db_path = Path(explicit).resolve()
+    else:
+        db_path = company_dir / "data.db"
+    if not db_path.exists():
+        raise FileNotFoundError(db_path)
+    return db_path
+
+
+def collect_annual_wide(db_path: Path, ticker: str) -> tuple[pd.DataFrame, dict[str, set[str]]]:
+    with sqlite3.connect(db_path) as conn:
+        raw = clean.load_raw_tushare(conn, ticker, mode="annual")
+    raw = clean.dedupe_by_f_ann_date(raw)
+    return clean.pivot_to_wide(raw, mode="annual")
+
+
+def parse_failure_message(message: str) -> Failure:
+    residual_match = re.search(r"residual=([0-9.]+)", message)
+    residual = float(residual_match.group(1)) if residual_match else None
+
+    header = re.match(r"(?P<prefix>IS|BS|CF|跨表)\s+(?P<code>[0-9.]+[ab]?)\s+(?P<period>\d{4})\s+(?P<title>[^:：]+)", message)
+    if header:
+        prefix = header.group("prefix")
+        code = f"{prefix} {header.group('code')}"
+        period = header.group("period")
+        title = header.group("title").strip()
+    else:
+        code = "UNKNOWN"
+        period = "UNKNOWN"
+        title = message.split(":", 1)[0]
+
+    statement = {
+        "IS": "income",
+        "BS": "balancesheet",
+        "CF": "cashflow",
+        "跨表": "cross_table",
+    }.get(code.split(" ", 1)[0], "unknown")
+
+    values = [float(x) for x in re.findall(r"=(-?[0-9.]+)", message)]
+    target_value = values[0] if values else None
+    calc_value = values[1] if len(values) > 1 else None
+    direction = None
+    if target_value is not None and calc_value is not None:
+        if target_value > calc_value:
+            direction = "target_gt_calc"
+        elif target_value < calc_value:
+            direction = "target_lt_calc"
+        else:
+            direction = "equal"
+
+    return Failure(
+        period=period,
+        code=code,
+        statement=statement,
+        title=title,
+        message=message,
+        residual=residual,
+        target_value=target_value,
+        calc_value=calc_value,
+        direction=direction,
+    )
+
+
+def collect_failures(wide: pd.DataFrame, present_by_period: dict[str, set[str]]) -> list[Failure]:
+    failures: list[Failure] = []
+    prev_period_end_cash: float | None = None
+
+    for period in sorted(str(period) for period in wide.index.tolist()):
+        row = wide.loc[period].to_dict()
+        present = present_by_period.get(period, set())
+
+        messages: list[str] = []
+        messages.extend(clean.check_is(row, present, period))
+        messages.extend(clean.check_bs(row, present, period))
+        messages.extend(clean.check_cf(row, present, period))
+        messages.extend(clean.check_is_supplement(row, present, period))
+        messages.extend(clean.check_cross_table(row, present, period))
+
+        c_cash_equ_beg = clean._vc(row, "c_cash_equ_beg_period")
+        if prev_period_end_cash is not None and c_cash_equ_beg != 0:
+            residual = abs(prev_period_end_cash - c_cash_equ_beg)
+            if residual >= clean.TOLERANCE:
+                messages.append(
+                    f"跨表 7.4 {period} 上期CF期末({prev_period_end_cash:.4f}) "
+                    f"≠ 本期CF期初({c_cash_equ_beg:.4f}) residual={residual:.4f}"
+                )
+        prev_period_end_cash = clean._vc(row, "c_cash_equ_end_period")
+
+        failures.extend(parse_failure_message(message) for message in messages)
+
+    return failures
+
+
+def read_tushare_field_docs() -> dict[str, dict[str, str]]:
+    docs = {
+        "income": DOCS_DIR / "33.md",
+        "balancesheet": DOCS_DIR / "36.md",
+        "cashflow": DOCS_DIR / "44.md",
+    }
+    out: dict[str, dict[str, str]] = {}
+    pattern = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_.]*)\s+\|\s+float\s+\|\s+[^|]+\|\s+(.+?)\s*$")
+    for endpoint, path in docs.items():
+        fields: dict[str, str] = {}
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                match = pattern.match(line.strip())
+                if match:
+                    fields[match.group(1)] = match.group(2).strip()
+        out[endpoint] = fields
+    return out
+
+
+def failure_candidate_fields(failure: Failure) -> tuple[str, list[str]]:
+    code = failure.code
+
+    if code == "BS 2.1":
+        return "current_asset", bs_fields_for_bucket("current_asset")
+    if code == "BS 2.2":
+        return "noncurrent_asset", bs_fields_for_bucket("noncurrent_asset")
+    if code == "BS 3.1":
+        return "current_liab", bs_fields_for_bucket("current_liab")
+    if code == "BS 3.2":
+        return "noncurrent_liab", bs_fields_for_bucket("noncurrent_liab")
+    if code == "BS 4.1":
+        return "equity", bs_fields_for_bucket("equity")
+
+    if code == "IS 1.1":
+        return "cost_item", fields_by_category(clean.IS_FIELD_CATEGORIES, {"cost_item", "subtotal"})
+    if code in {"IS 1.2", "IS 1.3", "IS 1.4", "IS 1.5", "IS 6.1", "IS 6.2", "IS 6.3"}:
+        return "income_formula", fields_by_category(
+            clean.IS_FIELD_CATEGORIES,
+            {"revenue_item", "cost_item", "operating_adjustment", "below_line", "tax", "attribution", "comprehensive", "subtotal", "sub_item"},
+        )
+    if code == "IS 1.6":
+        return "revenue_item", fields_by_category(clean.IS_FIELD_CATEGORIES, {"revenue_item", "subtotal"})
+
+    if code == "CF 5.1":
+        return "cfo", fields_by_category(clean.CF_FIELD_CATEGORIES, {"cfo_inflow", "cfo_outflow", "subtotal"})
+    if code == "CF 5.2":
+        return "cfi", fields_by_category(clean.CF_FIELD_CATEGORIES, {"cfi_inflow", "cfi_outflow", "subtotal"})
+    if code == "CF 5.3":
+        return "cff", fields_by_category(clean.CF_FIELD_CATEGORIES, {"cff_inflow", "cff_outflow", "subtotal"})
+    if code in {"CF 5.4", "CF 5.5"}:
+        return "cashflow_formula", fields_by_category(clean.CF_FIELD_CATEGORIES, {"subtotal", "balance"})
+
+    return "all_relevant", []
+
+
+def load_known_defects(path: Path = KNOWN_DEFECTS_PATH) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    return [
+        item
+        for item in data.get("defects", [])
+        if isinstance(item, dict) and item.get("status", "active") == "active"
+    ]
+
+
+def known_defect_hints_for_failure(
+    failure: Failure,
+    row: dict[str, float],
+    present: set[str],
+    known_defects: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    bucket, _fields = failure_candidate_fields(failure)
+    hints: list[dict[str, Any]] = []
+
+    for defect in known_defects:
+        if defect.get("check_code") not in {failure.code, None}:
+            continue
+        if defect.get("endpoint") not in {failure.statement, None}:
+            continue
+        if defect.get("bucket_or_scope") not in {bucket, None}:
+            continue
+
+        trigger = defect.get("trigger", {})
+        if isinstance(trigger, dict) and trigger.get("direction") not in {failure.direction, None}:
+            continue
+
+        field = str(defect.get("field") or "")
+        field_value = float(row.get(field, 0.0) or 0.0) if field else 0.0
+        value_pattern = trigger.get("field_value_pattern") if isinstance(trigger, dict) else None
+        if value_pattern == "missing_or_zero" and field:
+            if field in present and abs(field_value) >= clean.TOLERANCE:
+                continue
+
+        hints.append(
+            {
+                "id": defect.get("id"),
+                "check_code": defect.get("check_code"),
+                "endpoint": defect.get("endpoint"),
+                "bucket_or_scope": defect.get("bucket_or_scope"),
+                "field": field,
+                "field_cn": defect.get("field_cn"),
+                "trigger": trigger,
+                "current_tushare_value_million_cny": field_value,
+                "present_in_raw_tushare": field in present if field else None,
+                "llm_hint": defect.get("llm_hint", {}),
+                "confirmed_examples": defect.get("confirmed_examples", []),
+            }
+        )
+
+    return hints
+
+
+def fields_by_category(categories: dict[str, str], selected: set[str]) -> list[str]:
+    return sorted(field for field, cat in categories.items() if cat in selected)
+
+
+def bs_fields_for_bucket(bucket: str) -> list[str]:
+    fields = [field for field, cat in clean.BS_FIELD_CATEGORIES.items() if cat == bucket]
+    for combo, (_splits, combo_bucket) in clean.COMBO_RESOLVE.items():
+        if combo_bucket == bucket:
+            fields.append(combo)
+    return sorted(set(fields))
+
+
+def statement_endpoint_for_field(failure: Failure, field: str) -> str:
+    if failure.statement == "cross_table":
+        if field in clean.CF_FIELD_CATEGORIES:
+            return "cashflow"
+        return "income"
+    if failure.statement in {"income", "balancesheet", "cashflow"}:
+        return failure.statement
+    return "unknown"
+
+
+def build_field_context(
+    failure: Failure,
+    row: dict[str, float],
+    present: set[str],
+    field_docs: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    _bucket, fields = failure_candidate_fields(failure)
+    if not fields:
+        fields = sorted(
+            set(clean.IS_FIELD_CATEGORIES)
+            | set(clean.BS_FIELD_CATEGORIES)
+            | set(clean.CF_FIELD_CATEGORIES)
+        )
+
+    context: list[dict[str, Any]] = []
+    for field in fields:
+        endpoint = statement_endpoint_for_field(failure, field)
+        col = field
+        if endpoint == "income" and field in clean.CROSS_ENDPOINT_FIELDS:
+            col = f"income.{field}"
+        elif endpoint == "cashflow" and field in clean.CROSS_ENDPOINT_FIELDS:
+            col = f"cashflow.{field}"
+
+        value = float(row.get(col, row.get(field, 0.0)) or 0.0)
+        desc = field_docs.get(endpoint, {}).get(field, "")
+        if value == 0.0 and field not in present and desc == "":
+            continue
+        context.append(
+            {
+                "field": field,
+                "endpoint": endpoint,
+                "description": desc,
+                "annual_report_alias": COMMON_ANNUAL_ALIASES.get(field),
+                "value_million_cny": value,
+                "present_in_raw_tushare": field in present,
+            }
+        )
+
+    context.sort(key=lambda item: (abs(float(item["value_million_cny"])) == 0.0, item["field"]))
+    return context
+
+
+def annual_markdown_path(company_dir: Path, year: str) -> Path | None:
+    annuals = company_dir / "annuals"
+    if not annuals.exists():
+        return None
+    matches = sorted(annuals.glob(f"{year}_*.md"))
+    return matches[0] if matches else None
+
+
+def read_md_lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+
+def find_line(lines: list[str], patterns: list[str], start: int = 0) -> int | None:
+    for idx in range(max(start, 0), len(lines)):
+        line = lines[idx]
+        if all(pattern in line for pattern in patterns):
+            return idx
+    return None
+
+
+def compact_window(lines: list[str], center: int, before: int = 35, after: int = 80) -> dict[str, Any]:
+    start = max(0, center - before)
+    end = min(len(lines), center + after)
+    text = "\n".join(f"{i + 1}: {lines[i]}" for i in range(start, end))
+    return {"start_line": start + 1, "end_line": end, "text": text}
+
+
+def section_markers(failure: Failure) -> list[list[str]]:
+    if failure.statement == "balancesheet":
+        return [["合并及公司资产负债表"], ["资产负债表"]]
+    if failure.statement == "income":
+        return [["合并及公司利润表"], ["利润表"]]
+    if failure.statement == "cashflow":
+        return [["合并及公司现金流量表"], ["现金流量表"]]
+    return [["合并及公司"], ["财务报表"]]
+
+
+def search_terms_for_failure(failure: Failure, field_context: list[dict[str, Any]]) -> list[str]:
+    terms = [failure.title.strip()]
+    alias_items = [item for item in field_context[:80] if COMMON_ANNUAL_ALIASES.get(str(item.get("field")))]
+    alias_items.sort(key=lambda item: (abs(float(item.get("value_million_cny") or 0.0)) != 0.0, str(item.get("field"))))
+    for item in alias_items:
+        alias = COMMON_ANNUAL_ALIASES.get(str(item.get("field")))
+        if alias and alias not in terms:
+            terms.append(alias)
+    for item in field_context[:80]:
+        desc = str(item.get("description") or "").strip()
+        if desc and desc not in terms:
+            terms.append(desc)
+    return [term for term in terms if term]
+
+
+def add_known_defect_search_terms(terms: list[str], hints: list[dict[str, Any]]) -> list[str]:
+    hint_terms: list[str] = []
+    for hint in hints:
+        llm_hint = hint.get("llm_hint", {})
+        if isinstance(llm_hint, dict):
+            hint_terms.extend(str(alias) for alias in llm_hint.get("search_aliases", []) if alias)
+        if hint.get("field_cn"):
+            hint_terms.append(str(hint["field_cn"]))
+
+    out = hint_terms + list(terms)
+    uniq: list[str] = []
+    for term in out:
+        term = term.strip()
+        if term and term not in uniq:
+            uniq.append(term)
+    return uniq[:24]
+
+
+def slim_field_context_for_llm(field_context: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep LLM input compact while preserving likely missing-field candidates."""
+    slim: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in field_context:
+        field = str(item.get("field"))
+        desc = str(item.get("description") or "")
+        value = float(item.get("value_million_cny") or 0.0)
+        keep = value != 0.0 or field in COMMON_ANNUAL_ALIASES or any(term in desc for term in ("贷款", "垫款", "融资", "资金"))
+        if keep and field not in seen:
+            slim.append(item)
+            seen.add(field)
+    return slim[:80]
+
+
+def slim_markdown_context_for_llm(markdown_context: dict[str, Any]) -> dict[str, Any]:
+    snippets = markdown_context.get("snippets")
+    if not isinstance(snippets, list):
+        return markdown_context
+    compact_snippets = []
+    for snippet in snippets:
+        if not isinstance(snippet, dict):
+            continue
+        if compact_snippets and snippet.get("kind") != "statement":
+            continue
+        text = str(snippet.get("text", ""))
+        compact = dict(snippet)
+        compact["text"] = text[:14000]
+        compact_snippets.append(compact)
+        if len(compact_snippets) >= 1:
+            break
+    return {**markdown_context, "snippets": compact_snippets}
+
+
+def extract_markdown_context(
+    failure: Failure,
+    md_path: Path,
+    field_context: list[dict[str, Any]],
+    known_defect_hints: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    lines = read_md_lines(md_path)
+    snippets: list[dict[str, Any]] = []
+    used_ranges: list[tuple[int, int]] = []
+
+    for marker in section_markers(failure):
+        idx = find_line(lines, marker)
+        if idx is not None:
+            window = compact_window(lines, idx, before=10, after=170)
+            snippets.append({"kind": "statement", "patterns": marker, **window})
+            used_ranges.append((window["start_line"], window["end_line"]))
+            break
+
+    terms = add_known_defect_search_terms(
+        search_terms_for_failure(failure, field_context),
+        known_defect_hints or [],
+    )
+    for term in terms:
+        idx = find_line(lines, [term])
+        if idx is None:
+            continue
+        window = compact_window(lines, idx, before=18, after=45)
+        span = (window["start_line"], window["end_line"])
+        if any(not (span[1] < old[0] or old[1] < span[0]) for old in used_ranges):
+            continue
+        snippets.append({"kind": "term", "term": term, **window})
+        used_ranges.append(span)
+        if len(snippets) >= 7:
+            break
+
+    return {
+        "markdown_path": str(md_path),
+        "snippets": snippets,
+    }
+
+
+def llm_prompt(
+    ticker: str,
+    company_dir: Path,
+    failure: Failure,
+    field_context: list[dict[str, Any]],
+    markdown_context: dict[str, Any],
+    known_defect_hints: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    payload = {
+        "ticker": ticker,
+        "company_dir": str(company_dir),
+        "failure": asdict(failure),
+        "tushare_unit": "百万元人民币",
+        "annual_report_unit": "通常为千元人民币；如片段另有说明，以片段为准。换算到 TuShare 口径需除以 1000。",
+        "known_tushare_defect_hints": known_defect_hints,
+        "candidate_tushare_fields": slim_field_context_for_llm(field_context),
+        "annual_report_markdown_context": slim_markdown_context_for_llm(markdown_context),
+    }
+
+    system = (
+        "你是A股财报勾稽核对专家。你的任务是判断 clean.py 的硬校验失败是否可能由 TuShare "
+        "字段缺失、字段取错、字段口径不完整或重复字段口径导致。必须只基于用户提供的 TuShare "
+        "字段值和年报 Markdown 片段作判断，不要编造片段外的数据。"
+    )
+    user = (
+        "请核对下面的失败项。输出必须是一个 JSON object，不要输出 Markdown。\n"
+        "JSON schema:\n"
+        "{\n"
+        '  "suspected_tushare_issue": boolean,\n'
+        '  "confidence": "high|medium|low",\n'
+        '  "failure_code": string,\n'
+        '  "period": string,\n'
+        '  "root_cause": string,\n'
+        '  "missing_or_suspicious_items": [\n'
+        "    {\n"
+        '      "annual_report_item": string,\n'
+        '      "annual_report_value_raw": number|null,\n'
+        '      "annual_report_unit": string,\n'
+        '      "value_million_cny": number|null,\n'
+        '      "candidate_tushare_field": string|null,\n'
+        '      "tushare_value_million_cny": number|null,\n'
+        '      "explains_residual": boolean,\n'
+        '      "residual_difference_million_cny": number|null,\n'
+        '      "evidence_lines": string\n'
+        "    }\n"
+        "  ],\n"
+        '  "duplicate_or_combo_risks": [string],\n'
+        '  "recommended_action": "none|manual_review|add_override|fix_classification|fix_combo_resolve|rerun_clean",\n'
+        '  "notes": string\n'
+        "}\n\n"
+        "判断要求：\n"
+        "1. 如果年报某个明细科目能解释 target-calc 残差，优先指出该科目和对应 TuShare 字段；"
+        "candidate_tushare_fields 里的 annual_report_alias 是本地维护的年报常见别名，可用于映射。\n"
+        "2. known_tushare_defect_hints 只是检索提示，不是证据；只有年报片段金额真正解释残差时才可据此判断。\n"
+        "3. 如果残差更像重复计入、分类错误或公式口径问题，不要误判为 TuShare 错。\n"
+        "4. 年报金额若是千元，换算成百万元时除以 1000。\n"
+        "5. residual_difference_million_cny 应填 abs(失败残差 - 该年报科目换算后的百万元值)。\n"
+        "6. evidence_lines 填引用的片段行号范围和简短证据，不要大段复制。\n\n"
+        f"输入数据：\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def llm_provider() -> str:
+    return os.environ.get("LLM_PROVIDER") or ("glm" if os.environ.get("GLM_API_KEY") else "kimi")
+
+
+def llm_api_key(provider: str) -> str | None:
+    if provider == "glm":
+        return os.environ.get("GLM_API_KEY")
+    if provider == "kimi":
+        return os.environ.get("KIMI_API_KEY")
+    return os.environ.get("LLM_API_KEY")
+
+
+def llm_base_url(provider: str) -> str:
+    if provider == "glm":
+        return os.environ.get("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4").rstrip("/")
+    if provider == "kimi":
+        return os.environ.get("KIMI_BASE_URL", "https://api.moonshot.cn/v1").rstrip("/")
+    return os.environ.get("LLM_BASE_URL", "").rstrip("/")
+
+
+def llm_model(provider: str) -> str:
+    if provider == "glm":
+        return os.environ.get("GLM_MODEL", "glm-5-turbo")
+    if provider == "kimi":
+        return os.environ.get("KIMI_MODEL", "kimi-k2.6")
+    return os.environ.get("LLM_MODEL", "")
+
+
+def llm_timeout_seconds(provider: str) -> int:
+    if provider == "glm":
+        return int(os.environ.get("GLM_TIMEOUT_SECONDS", os.environ.get("LLM_TIMEOUT_SECONDS", str(LLM_TIMEOUT_SECONDS))))
+    if provider == "kimi":
+        return int(os.environ.get("KIMI_TIMEOUT_SECONDS", os.environ.get("LLM_TIMEOUT_SECONDS", str(LLM_TIMEOUT_SECONDS))))
+    return int(os.environ.get("LLM_TIMEOUT_SECONDS", str(LLM_TIMEOUT_SECONDS)))
+
+
+def call_llm(messages: list[dict[str, str]]) -> dict[str, Any]:
+    provider = llm_provider()
+    api_key = llm_api_key(provider)
+    if not api_key:
+        return {"error": f"{provider.upper()} API key is not configured", "_provider": provider}
+
+    base_url = llm_base_url(provider)
+    model = llm_model(provider)
+    if not base_url or not model:
+        return {"error": f"{provider} base URL/model is not configured", "_provider": provider}
+    url = f"{base_url}/chat/completions"
+    body = {
+        "model": model,
+        "messages": messages,
+        "temperature": float(os.environ.get("LLM_TEMPERATURE", "0.2")),
+        "max_tokens": int(os.environ.get("LLM_MAX_TOKENS", os.environ.get("KIMI_MAX_TOKENS", "8192"))),
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        response = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=body,
+            timeout=llm_timeout_seconds(provider),
+        )
+    except requests.RequestException as exc:
+        return {"error": f"{provider} request failed: {type(exc).__name__}", "detail": str(exc), "_provider": provider}
+    if response.status_code >= 400:
+        return {"error": f"{provider} HTTP {response.status_code}", "body": response.text[:1000], "_provider": provider}
+
+    data = response.json()
+    content = data["choices"][0]["message"]["content"]
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        parsed = {"error": "LLM response was not valid JSON", "raw": content}
+    parsed["_usage"] = data.get("usage", {})
+    parsed["_model"] = data.get("model", model)
+    parsed["_provider"] = provider
+    return parsed
+
+
+def analyze_failure(
+    ticker: str,
+    company_dir: Path,
+    failure: Failure,
+    row: dict[str, float],
+    present: set[str],
+    field_docs: dict[str, dict[str, str]],
+    known_defects: list[dict[str, Any]],
+    *,
+    use_llm: bool,
+) -> dict[str, Any]:
+    field_context = build_field_context(failure, row, present, field_docs)
+    known_defect_hints = known_defect_hints_for_failure(failure, row, present, known_defects)
+    md_path = annual_markdown_path(company_dir, failure.period)
+    markdown_context: dict[str, Any]
+    if md_path is None:
+        markdown_context = {"error": f"No annual markdown found for {failure.period}"}
+    else:
+        markdown_context = extract_markdown_context(failure, md_path, field_context, known_defect_hints)
+
+    result: dict[str, Any] = {
+        "failure": asdict(failure),
+        "bucket_or_scope": failure_candidate_fields(failure)[0],
+        "known_tushare_defect_hints": known_defect_hints,
+        "candidate_tushare_fields": field_context,
+        "annual_report_context": markdown_context,
+        "llm": None,
+    }
+
+    if use_llm and md_path is not None:
+        messages = llm_prompt(ticker, company_dir, failure, field_context, markdown_context, known_defect_hints)
+        result["llm"] = call_llm(messages)
+
+    return result
+
+
+def output_path(company_dir: Path, explicit: str | None = None) -> Path:
+    if explicit:
+        return Path(explicit).resolve()
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    return company_dir / "recon" / f"annual_report_reconciliation_{ts}.json"
+
+
+def write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def parse_report_number(value: str) -> float | None:
+    cleaned = value.strip()
+    if cleaned in {"", "-", "—"}:
+        return None
+    negative = cleaned.startswith("(") and cleaned.endswith(")")
+    cleaned = cleaned.strip("()").replace(",", "")
+    try:
+        number = float(cleaned)
+    except ValueError:
+        return None
+    return -number if negative else number
+
+
+def numbered_lines(text: str) -> list[tuple[int, str]]:
+    out: list[tuple[int, str]] = []
+    for raw in text.splitlines():
+        match = re.match(r"\s*(\d+):\s*(.*)$", raw)
+        if match:
+            out.append((int(match.group(1)), match.group(2)))
+    return out
+
+
+def compact_text(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    """Find exact annual-report line-item matches without an LLM.
+
+    This is intentionally conservative: it only suggests a field when a known
+    annual-report alias appears in the statement snippet and one of the nearby
+    reported numbers equals the hard-check residual after converting 千元→百万元.
+    It is diagnostic-only; approved override generation is LLM-only.
+    """
+    failure = analysis.get("failure", {})
+    residual = failure.get("residual")
+    if residual is None:
+        return []
+    expected_raw = float(residual) * 1000.0
+
+    snippets = [
+        str(snippet.get("text") or "")
+        for snippet in analysis.get("annual_report_context", {}).get("snippets", [])
+        if isinstance(snippet, dict)
+    ]
+    if not snippets:
+        return []
+
+    suggestions: list[dict[str, Any]] = []
+    hint_alias_by_field: dict[str, list[str]] = {}
+    for hint in analysis.get("known_tushare_defect_hints", []):
+        if not isinstance(hint, dict):
+            continue
+        field = str(hint.get("field") or "")
+        llm_hint = hint.get("llm_hint", {})
+        aliases = []
+        if isinstance(llm_hint, dict):
+            aliases.extend(str(alias) for alias in llm_hint.get("search_aliases", []) if alias)
+        if hint.get("field_cn"):
+            aliases.append(str(hint["field_cn"]))
+        if field and aliases:
+            hint_alias_by_field[field] = aliases
+
+    for field in analysis.get("candidate_tushare_fields", []):
+        aliases = []
+        if field.get("annual_report_alias"):
+            aliases.append(str(field["annual_report_alias"]))
+        aliases.extend(hint_alias_by_field.get(str(field.get("field")), []))
+        aliases = list(dict.fromkeys(aliases))
+        if not aliases:
+            continue
+        old_value = float(field.get("value_million_cny") or 0.0)
+        if abs(old_value) >= clean.TOLERANCE:
+            continue
+
+        for text in snippets:
+            lines = numbered_lines(text)
+            for idx, (line_no, content) in enumerate(lines):
+                matched_alias = next(
+                    (alias for alias in aliases if compact_text(alias) in compact_text(content)),
+                    None,
+                )
+                if not matched_alias:
+                    continue
+                nearby = lines[idx + 1 : idx + 10]
+                for value_line_no, value_text in nearby:
+                    for token in re.findall(r"\(?-?\d[\d,]*(?:\.\d+)?\)?", value_text):
+                        raw_value = parse_report_number(token)
+                        if raw_value is None:
+                            continue
+                        if abs(raw_value - expected_raw) <= max(1.0, abs(expected_raw) * 0.00001):
+                            suggestions.append(
+                                {
+                                    "source": "rule:alias_exact_residual",
+                                    "confidence": "high",
+                                    "annual_report_item": matched_alias,
+                                    "annual_report_value_raw": raw_value,
+                                    "annual_report_unit": "千元人民币",
+                                    "value_million_cny": raw_value / 1000.0,
+                                    "candidate_tushare_field": field.get("field"),
+                                    "tushare_value_million_cny": old_value,
+                                    "explains_residual": True,
+                                    "residual_difference_million_cny": abs(float(residual) - raw_value / 1000.0),
+                                    "evidence_lines": f"{line_no}-{value_line_no}: {matched_alias} {token} 千元",
+                                }
+                            )
+                            break
+                    if suggestions and suggestions[-1].get("candidate_tushare_field") == field.get("field"):
+                        break
+                if suggestions and suggestions[-1].get("candidate_tushare_field") == field.get("field"):
+                    break
+            if suggestions and suggestions[-1].get("candidate_tushare_field") == field.get("field"):
+                break
+    return suggestions
+
+
+def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    llm = analysis.get("llm")
+    if not isinstance(llm, dict) or llm.get("error"):
+        return []
+    if not llm.get("suspected_tushare_issue"):
+        return []
+    if llm.get("confidence") != "high":
+        return []
+
+    out: list[dict[str, Any]] = []
+    provider = str(llm.get("_provider") or llm_provider())
+    for item in llm.get("missing_or_suspicious_items", []):
+        if not isinstance(item, dict):
+            continue
+        field = item.get("candidate_tushare_field")
+        value = item.get("value_million_cny")
+        diff = item.get("residual_difference_million_cny")
+        if not field or value is None:
+            continue
+        if diff is not None and abs(float(diff)) >= clean.TOLERANCE:
+            continue
+        out.append({"source": provider, "confidence": llm.get("confidence"), **item})
+    return out
+
+
+def collect_rule_candidates(reconciliation: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for analysis in reconciliation.get("analyses", []):
+        failure = analysis.get("failure", {})
+        for candidate in rule_based_override_suggestions(analysis):
+            candidates.append(
+                {
+                    "period": str(failure.get("period")),
+                    "failure": failure,
+                    "candidate": candidate,
+                }
+            )
+    return candidates
+
+
+def batch_llm_confirm_candidates(ticker: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    if not candidates:
+        return {"adjustments": []}
+
+    payload = {
+        "ticker": ticker,
+        "unit": "TuShare/clean values are 百万元人民币; annual_report_value_raw is 千元人民币.",
+        "candidates": candidates,
+    }
+    system = (
+        "你是A股财报勾稽核对专家。你要审核一组候选年报补数。"
+        "候选项由本地规则提出，但只有你确认后才可写入 clean override。"
+        "必须基于 failure、candidate、evidence_lines 判断，不要编造额外数据。"
+    )
+    user = (
+        "请逐条判断候选补数是否可以作为 TuShare 字段缺失的 approved override。"
+        "输出必须是 JSON object，不要输出 Markdown。\n"
+        "JSON schema:\n"
+        "{\n"
+        '  "adjustments": [\n'
+        "    {\n"
+        '      "period": string,\n'
+        '      "approved": boolean,\n'
+        '      "confidence": "high|medium|low",\n'
+        '      "candidate_tushare_field": string|null,\n'
+        '      "value_million_cny": number|null,\n'
+        '      "annual_report_item": string|null,\n'
+        '      "annual_report_value_raw": number|null,\n'
+        '      "annual_report_unit": string|null,\n'
+        '      "tushare_value_million_cny": number|null,\n'
+        '      "residual_difference_million_cny": number|null,\n'
+        '      "evidence_lines": string|null,\n'
+        '      "reason": string\n'
+        "    }\n"
+        "  ],\n"
+        '  "notes": string\n'
+        "}\n\n"
+        "批准标准：\n"
+        "1. failure residual 与候选年报值换算为百万元后的金额必须在 1 百万元内吻合。\n"
+        "2. 候选字段必须能对应年报科目；如果只是规则猜测但字段不可靠，不批准。\n"
+        "3. 只批准 suspected TuShare field missing/zero 的情形；重复计入或分类错误不批准。\n"
+        "4. 对美的集团“发放贷款和垫款”流动部分，对应候选 TuShare 字段为 lending_funds 时，如金额吻合可批准。\n\n"
+        f"输入数据：\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+    return call_llm([{"role": "system", "content": system}, {"role": "user", "content": user}])
+
+
+def build_override_file_from_batch_llm(
+    ticker: str,
+    reconciliation_path: Path,
+    reconciliation: dict[str, Any],
+    llm_confirmation: dict[str, Any],
+    *,
+    approve_high_confidence: bool,
+) -> dict[str, Any]:
+    failure_by_period = {
+        str(analysis.get("failure", {}).get("period")): analysis.get("failure", {})
+        for analysis in reconciliation.get("analyses", [])
+    }
+    field_values: dict[tuple[str, str], float] = {}
+    markdown_by_period: dict[str, str | None] = {}
+    for analysis in reconciliation.get("analyses", []):
+        period = str(analysis.get("failure", {}).get("period"))
+        markdown_by_period[period] = analysis.get("annual_report_context", {}).get("markdown_path")
+        for item in analysis.get("candidate_tushare_fields", []):
+            if isinstance(item, dict):
+                field_values[(period, str(item.get("field")))] = float(item.get("value_million_cny") or 0.0)
+
+    adjustments: list[dict[str, Any]] = []
+    provider = str(llm_confirmation.get("_provider") or llm_provider())
+    for item in llm_confirmation.get("adjustments", []):
+        if not isinstance(item, dict):
+            continue
+        if not item.get("approved") or item.get("confidence") != "high":
+            continue
+        field = item.get("candidate_tushare_field")
+        period = str(item.get("period"))
+        value = item.get("value_million_cny")
+        if not field or value is None:
+            continue
+
+        failure = failure_by_period.get(period, {})
+        old_value = field_values.get((period, str(field)), float(item.get("tushare_value_million_cny") or 0.0))
+        new_value = float(value)
+        status = "approved" if approve_high_confidence else "candidate"
+        adjustments.append(
+            {
+                "status": status,
+                "approved_by": f"{provider}:high_confidence" if status == "approved" else None,
+                "ticker": ticker,
+                "period": period,
+                "endpoint": "balancesheet" if str(failure.get("statement")) == "balancesheet" else str(failure.get("statement")),
+                "field": str(field),
+                "old_value_million_cny": old_value,
+                "new_value_million_cny": new_value,
+                "delta_million_cny": new_value - old_value,
+                "failure_code": failure.get("code"),
+                "failure_message": failure.get("message"),
+                "annual_report_item": item.get("annual_report_item"),
+                "annual_report_value_raw": item.get("annual_report_value_raw"),
+                "annual_report_unit": item.get("annual_report_unit"),
+                "confidence": item.get("confidence"),
+                "source": provider,
+                "source_markdown_path": markdown_by_period.get(period),
+                "source_reconciliation_path": str(reconciliation_path),
+                "evidence_lines": item.get("evidence_lines"),
+                "reason": item.get("reason"),
+            }
+        )
+
+    return {
+        "version": OVERRIDE_VERSION,
+        "ticker": ticker,
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "source": "annual_report_reconciler.py",
+        "source_reconciliation_path": str(reconciliation_path),
+        "approval_policy": "LLM-only; approved only when --approve-high-confidence is used",
+        "llm_provider": provider,
+        "llm_confirmation": llm_confirmation,
+        "adjustments": adjustments,
+    }
+
+
+def merge_existing_overrides(override_path: Path, overrides: dict[str, Any], ticker: str) -> dict[str, Any]:
+    """Preserve existing override adjustments when regenerating the default file."""
+    if not override_path.exists():
+        return overrides
+    try:
+        existing = json.loads(override_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return overrides
+    if existing.get("ticker") not in {ticker, None}:
+        return overrides
+
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in existing.get("adjustments", []):
+        if not isinstance(item, dict):
+            continue
+        period, endpoint, field = item.get("period"), item.get("endpoint"), item.get("field")
+        if period and endpoint and field:
+            key = (str(period), str(endpoint), str(field))
+            merged[key] = item
+
+    new_count = 0
+    for item in overrides.get("adjustments", []):
+        if not isinstance(item, dict):
+            continue
+        period, endpoint, field = item.get("period"), item.get("endpoint"), item.get("field")
+        if period and endpoint and field:
+            key = (str(period), str(endpoint), str(field))
+            merged[key] = item
+            new_count += 1
+
+    out = dict(overrides)
+    out["adjustments"] = [
+        merged[key]
+        for key in sorted(
+            merged,
+            key=lambda value: (value[0], value[1], value[2]),
+        )
+    ]
+    out["merged_existing_override_path"] = str(override_path)
+    out["new_adjustments_from_current_run"] = new_count
+    out["preserved_existing_adjustments"] = max(len(out["adjustments"]) - new_count, 0)
+    return out
+
+
+def build_override_file(
+    ticker: str,
+    reconciliation_path: Path,
+    reconciliation: dict[str, Any],
+    *,
+    approve_high_confidence: bool,
+) -> dict[str, Any]:
+    adjustments: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for analysis in reconciliation.get("analyses", []):
+        failure = analysis.get("failure", {})
+        candidates = llm_override_suggestions(analysis)
+        field_values = {
+            item.get("field"): float(item.get("value_million_cny") or 0.0)
+            for item in analysis.get("candidate_tushare_fields", [])
+            if isinstance(item, dict)
+        }
+        markdown_path = analysis.get("annual_report_context", {}).get("markdown_path")
+        for candidate in candidates:
+            period = str(failure.get("period"))
+            field = str(candidate.get("candidate_tushare_field"))
+            if not period or not field or (period, field) in seen:
+                continue
+            new_value = float(candidate["value_million_cny"])
+            old_value = field_values.get(field, float(candidate.get("tushare_value_million_cny") or 0.0))
+            status = "approved" if approve_high_confidence and candidate.get("confidence") == "high" else "candidate"
+            adjustments.append(
+                {
+                    "status": status,
+                    "approved_by": f"{candidate.get('source')}:high_confidence_exact_residual" if status == "approved" else None,
+                    "ticker": ticker,
+                    "period": period,
+                    "endpoint": "balancesheet" if str(failure.get("statement")) == "balancesheet" else str(failure.get("statement")),
+                    "field": field,
+                    "old_value_million_cny": old_value,
+                    "new_value_million_cny": new_value,
+                    "delta_million_cny": new_value - old_value,
+                    "failure_code": failure.get("code"),
+                    "failure_message": failure.get("message"),
+                    "annual_report_item": candidate.get("annual_report_item"),
+                    "annual_report_value_raw": candidate.get("annual_report_value_raw"),
+                    "annual_report_unit": candidate.get("annual_report_unit"),
+                    "confidence": candidate.get("confidence"),
+                    "source": candidate.get("source"),
+                    "source_markdown_path": markdown_path,
+                    "source_reconciliation_path": str(reconciliation_path),
+                    "evidence_lines": candidate.get("evidence_lines"),
+                    "reason": (
+                        f"{candidate.get('annual_report_item')} from annual report explains "
+                        f"{failure.get('code')} residual; applying to TuShare field {field}."
+                    ),
+                }
+            )
+            seen.add((period, field))
+
+    return {
+        "version": OVERRIDE_VERSION,
+        "ticker": ticker,
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "source": "annual_report_reconciler.py",
+        "source_reconciliation_path": str(reconciliation_path),
+        "approval_policy": "LLM-only; approved only when --approve-high-confidence is used",
+        "adjustments": adjustments,
+    }
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ticker", required=True, help="A-share ticker, e.g. 000333.SZ")
+    parser.add_argument("--company-dir", help="Company directory; defaults to companies/*_{code}")
+    parser.add_argument("--db", help="SQLite data.db path; defaults to company-dir/data.db")
+    parser.add_argument("--output", help="Output JSON path")
+    parser.add_argument("--max-failures", type=int, default=DEFAULT_MAX_FAILURES)
+    parser.add_argument("--only-year", help="Limit to one annual period, e.g. 2025")
+    parser.add_argument("--only-code", help="Limit to one check code, e.g. 'BS 2.1'")
+    parser.add_argument("--no-llm", action="store_true", help="Do not call the configured LLM; only collect snippets/context")
+    parser.add_argument("--no-kimi", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--write-overrides", action="store_true", help="Write recon/annual_report_overrides.json from high-confidence LLM evidence")
+    parser.add_argument("--approve-high-confidence", action="store_true", help="Mark exact high-confidence LLM override suggestions as approved")
+    parser.add_argument("--override-output", help="Override JSON path; defaults to recon/annual_report_overrides.json")
+    parser.add_argument("--fail-on-findings", action="store_true", help="Exit with code 1 when hard-check failures are found")
+    parser.add_argument("--verbose", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv or sys.argv[1:])
+    if args.no_kimi:
+        args.no_llm = True
+    if args.write_overrides and args.no_llm:
+        print("--write-overrides requires LLM evidence; remove --no-llm.", file=sys.stderr)
+        return 2
+
+    load_env(ROOT / ".env")
+
+    ticker = args.ticker.strip().upper()
+    company_dir = find_company_dir(ticker, args.company_dir)
+    db_path = default_db_path(company_dir, args.db)
+
+    wide, present_by_period = collect_annual_wide(db_path, ticker)
+    failures = collect_failures(wide, present_by_period)
+
+    if args.only_year:
+        failures = [failure for failure in failures if failure.period == args.only_year]
+    if args.only_code:
+        failures = [failure for failure in failures if failure.code == args.only_code]
+
+    total_failures = len(failures)
+    failures = failures[: max(args.max_failures, 0)]
+    field_docs = read_tushare_field_docs()
+    known_defects = load_known_defects()
+
+    analyses: list[dict[str, Any]] = []
+    use_llm = not args.no_llm and not args.write_overrides
+    for failure in failures:
+        row = wide.loc[failure.period].to_dict()
+        present = present_by_period.get(failure.period, set())
+        if args.verbose:
+            print(f"Analyzing {failure.code} {failure.period}: {failure.title}", file=sys.stderr)
+        analyses.append(
+            analyze_failure(
+                ticker,
+                company_dir,
+                failure,
+                row,
+                present,
+                field_docs,
+                known_defects,
+                use_llm=use_llm,
+            )
+        )
+
+    out = {
+        "version": EVIDENCE_VERSION,
+        "ticker": ticker,
+        "company_dir": str(company_dir),
+        "db_path": str(db_path),
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "source": "annual_report_reconciler.py",
+        "total_failures_found": total_failures,
+        "failures_analyzed": len(analyses),
+        "llm_provider": llm_provider(),
+        "known_defects_path": str(KNOWN_DEFECTS_PATH),
+        "known_defects_loaded": len(known_defects),
+        "used_llm": use_llm or args.write_overrides,
+        "used_llm_per_failure": use_llm,
+        "requested_llm_override_confirmation": bool(args.write_overrides),
+        "analyses": analyses,
+    }
+
+    path = output_path(company_dir, args.output)
+    write_json(path, out)
+    latest_path = company_dir / "recon" / "annual_report_reconciliation_latest.json"
+    write_json(latest_path, out)
+
+    override_path: Path | None = None
+    if args.write_overrides:
+        override_path = Path(args.override_output).resolve() if args.override_output else company_dir / "recon" / "annual_report_overrides.json"
+        rule_candidates = collect_rule_candidates(out)
+        llm_confirmation = batch_llm_confirm_candidates(ticker, rule_candidates)
+        overrides = build_override_file_from_batch_llm(
+            ticker,
+            path,
+            out,
+            llm_confirmation,
+            approve_high_confidence=args.approve_high_confidence,
+        )
+        overrides = merge_existing_overrides(override_path, overrides, ticker)
+        write_json(override_path, overrides)
+
+    print(f"Wrote {path}")
+    print(f"Wrote {latest_path}")
+    if override_path is not None:
+        approved = sum(1 for item in overrides["adjustments"] if item.get("status") == "approved")
+        print(f"Wrote {override_path} ({approved}/{len(overrides['adjustments'])} approved adjustment(s)).")
+    print(f"Found {total_failures} failure(s), analyzed {len(analyses)}.")
+    if args.fail_on_findings and total_failures:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

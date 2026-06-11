@@ -7,8 +7,12 @@ Public API:
 from __future__ import annotations
 
 import logging
+import json
+import re
 import sqlite3
+import subprocess
 import sys
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -26,6 +30,18 @@ QUARTER_BY_SUFFIX = {
     "0930": "Q3",
     "1231": "Q4",
 }
+
+QA_BS_PLUG_FIELDS: dict[str, str] = {
+    "current_asset": "qa_bs_current_asset_plug",
+    "noncurrent_asset": "qa_bs_noncurrent_asset_plug",
+    "current_liab": "qa_bs_current_liab_plug",
+    "noncurrent_liab": "qa_bs_noncurrent_liab_plug",
+    "equity": "qa_bs_equity_plug",
+}
+
+QA_CF_CASH_PLUG_FIELD = "qa_cf_cash_reconcile_plug"
+QA_FIELDS = sorted([*QA_BS_PLUG_FIELDS.values(), QA_CF_CASH_PLUG_FIELD])
+APPROVED_OVERRIDE_SOURCES = {"glm", "kimi"}
 
 # ── 跨端点同名字段（需在 pivot 时消歧） ───────────────────────
 # credit_impa_loss 同时存在于 income 和 cashflow，值可能不同
@@ -557,7 +573,18 @@ def bs_bucket_sum(bucket: str, row: dict[str, float], present: set[str]) -> floa
         splits, _ = COMBO_RESOLVE[combo]
         total += resolve(splits, combo, row, present)
 
+    plug_field = QA_BS_PLUG_FIELDS.get(bucket)
+    if plug_field:
+        total += row.get(plug_field, 0.0)
+
     return total
+
+
+def ensure_qa_columns(wide: pd.DataFrame) -> pd.DataFrame:
+    for field in QA_FIELDS:
+        if field not in wide.columns:
+            wide[field] = 0.0
+    return wide
 
 
 # ── 数据读取与透视 ─────────────────────────────────────────────
@@ -641,8 +668,35 @@ def pivot_to_wide(df: pd.DataFrame, *, mode: str) -> tuple[pd.DataFrame, dict[st
         df = df[df["period"].isin(income_single_periods)]
         # Keep only last 12 years of quarters to avoid early-disclosure quirks
         all_periods = sorted(str(p) for p in df["period"].unique())
-        if len(all_periods) > 48:
-            df = df[df["period"].isin(all_periods[-48:])]
+        cashflow_periods = set(
+            str(p) for p in df[df["endpoint"] == "cashflow"]["period"].unique()
+        )
+
+        def previous_cf_period(period: str) -> str | None:
+            quarter = period[4:]
+            if quarter == "Q1":
+                return None
+            previous = {"Q2": "Q1", "Q3": "Q2", "Q4": "Q3"}.get(quarter)
+            return f"{period[:4]}{previous}" if previous else None
+
+        def cf_buildable(period: str) -> bool:
+            if period not in cashflow_periods:
+                return False
+            previous = previous_cf_period(period)
+            return previous is None or previous in cashflow_periods
+
+        buildable_periods = [period for period in all_periods if cf_buildable(period)]
+        output_periods = (buildable_periods or all_periods)[-48:]
+
+        # Cashflow data is cumulative inside a year. Keep only the output
+        # periods plus their immediate cumulative predecessors as split helpers.
+        helper_periods_set = set(output_periods)
+        for period in output_periods:
+            previous = previous_cf_period(period)
+            if previous:
+                helper_periods_set.add(previous)
+        helper_periods = [period for period in all_periods if period in helper_periods_set]
+        df = df[df["period"].isin(helper_periods)]
     else:
         raise ValueError(f"Unknown clean mode: {mode}")
 
@@ -684,11 +738,28 @@ def pivot_to_wide(df: pd.DataFrame, *, mode: str) -> tuple[pd.DataFrame, dict[st
     # Re-index columns to include every field, even those that are all-NaN
     pivot = pivot.reindex(columns=all_columns)
     pivot = pivot.fillna(0.0)
+    pivot = ensure_qa_columns(pivot)
+    if mode == "quarterly":
+        pivot.attrs["output_periods"] = output_periods
+        pivot.attrs["helper_periods"] = helper_periods
 
     return pivot, present_by_period
 
 
 CF_BEG_END_FIELDS = {"c_cash_equ_beg_period", "c_cash_equ_end_period"}
+
+
+def cashflow_column_map(wide: pd.DataFrame, raw: pd.DataFrame) -> dict[str, str]:
+    cf_fields = set(raw[raw["endpoint"] == "cashflow"]["field"].unique())
+    col_to_field: dict[str, str] = {}
+    for col in wide.columns:
+        if col.startswith("cashflow."):
+            orig = col[len("cashflow."):]
+            if orig in cf_fields:
+                col_to_field[col] = orig
+        elif col in cf_fields:
+            col_to_field[col] = col
+    return col_to_field
 
 
 def split_cashflow_quarterly(wide: pd.DataFrame, raw: pd.DataFrame) -> pd.DataFrame:
@@ -709,15 +780,7 @@ def split_cashflow_quarterly(wide: pd.DataFrame, raw: pd.DataFrame) -> pd.DataFr
         LOGGER.warning("No cashflow fields found; skipping quarterly split")
         return wide
 
-    # Map wide-table column names back to original cashflow field names
-    col_to_field: dict[str, str] = {}
-    for col in wide.columns:
-        if col.startswith("cashflow."):
-            orig = col[len("cashflow."):]
-            if orig in cf_fields:
-                col_to_field[col] = orig
-        elif col in cf_fields:
-            col_to_field[col] = col
+    col_to_field = cashflow_column_map(wide, raw)
 
     # Columns to split: all CF flow fields except point-in-time beg/end
     split_cols = [
@@ -742,36 +805,141 @@ def split_cashflow_quarterly(wide: pd.DataFrame, raw: pd.DataFrame) -> pd.DataFr
 
     result = wide.copy()
 
+    prev_quarter = {"Q2": "Q1", "Q3": "Q2", "Q4": "Q3"}
+    output_periods = set(str(period) for period in wide.attrs.get("output_periods", wide.index.tolist()))
+
     for year, periods in year_periods.items():
         q_map: dict[str, str] = {}
         for p in periods:
             q_map[p[4:]] = p
 
-        if set(q_map.keys()) != {"Q1", "Q2", "Q3", "Q4"}:
-            LOGGER.warning(
-                "CF split skipped for %s: missing quarters %s",
-                year, sorted(periods),
-            )
-            continue
-
         # Split cumulative flow fields into single-quarter values
         for col in split_cols:
-            q1 = float(result.loc[q_map["Q1"], col])
-            q2 = float(result.loc[q_map["Q2"], col])
-            q3 = float(result.loc[q_map["Q3"], col])
-            q4 = float(result.loc[q_map["Q4"], col])
-            result.loc[q_map["Q1"], col] = q1
-            result.loc[q_map["Q2"], col] = q2 - q1
-            result.loc[q_map["Q3"], col] = q3 - q2
-            result.loc[q_map["Q4"], col] = q4 - q3
+            cumulative = {q: float(wide.loc[p, col]) for q, p in q_map.items()}
+            for q in ("Q2", "Q3", "Q4"):
+                if q not in q_map:
+                    continue
+                prev_q = prev_quarter[q]
+                if prev_q not in q_map:
+                    if q_map[q] in output_periods:
+                        LOGGER.warning(
+                            "CF split left cumulative value for %s%s %s: missing %s helper",
+                            year,
+                            q,
+                            col,
+                            prev_q,
+                        )
+                    continue
+                result.loc[q_map[q], col] = cumulative[q] - cumulative[prev_q]
 
         # Adjust beg cash to previous quarter's end cash
         if beg_col is not None and end_col is not None:
-            result.loc[q_map["Q2"], beg_col] = result.loc[q_map["Q1"], end_col]
-            result.loc[q_map["Q3"], beg_col] = result.loc[q_map["Q2"], end_col]
-            result.loc[q_map["Q4"], beg_col] = result.loc[q_map["Q3"], end_col]
+            for q in ("Q2", "Q3", "Q4"):
+                if q not in q_map:
+                    continue
+                prev_q = prev_quarter[q]
+                if prev_q in q_map:
+                    result.loc[q_map[q], beg_col] = wide.loc[q_map[prev_q], end_col]
+
+    result.attrs = wide.attrs.copy()
 
     return result
+
+
+def filter_to_output_periods(
+    wide: pd.DataFrame,
+    present_by_period: dict[str, set[str]],
+) -> tuple[pd.DataFrame, dict[str, set[str]]]:
+    output_periods = wide.attrs.get("output_periods")
+    if not output_periods:
+        return wide, present_by_period
+
+    keep = [period for period in output_periods if period in wide.index]
+    filtered = wide.loc[keep].copy()
+    filtered.attrs = wide.attrs.copy()
+    filtered_present = {
+        period: present_by_period.get(period, set())
+        for period in keep
+    }
+    return filtered, filtered_present
+
+
+def raw_cashflow_quarterly_wide(raw: pd.DataFrame) -> pd.DataFrame:
+    cf = raw[raw["endpoint"] == "cashflow"].copy()
+    if cf.empty:
+        return pd.DataFrame()
+    cf["period"] = cf["end_date"].astype(str).map(period_label)
+    cf = cf[cf["period"].notna()]
+    if cf.empty:
+        return pd.DataFrame()
+    return cf.pivot_table(
+        index="period",
+        columns="field",
+        values="value",
+        aggfunc="first",
+    ).fillna(0.0)
+
+
+def validate_quarterly_cf_split(
+    wide: pd.DataFrame,
+    raw: pd.DataFrame,
+    *,
+    tolerance: float,
+) -> list[str]:
+    """Hard-check that clean quarterly CF equals raw cumulative differences."""
+    raw_cf = raw_cashflow_quarterly_wide(raw)
+    if raw_cf.empty:
+        return ["CF split audit: no raw cashflow rows are available"]
+
+    col_to_field = cashflow_column_map(wide, raw)
+    split_cols = [
+        col for col, field in col_to_field.items()
+        if field not in CF_BEG_END_FIELDS
+    ]
+    if not split_cols:
+        return ["CF split audit: no cashflow flow columns are available"]
+
+    errors: list[str] = []
+    prev_quarter = {"Q2": "Q1", "Q3": "Q2", "Q4": "Q3"}
+    raw_periods = set(str(period) for period in raw_cf.index.tolist())
+
+    for period in sorted(str(p) for p in wide.index.tolist()):
+        if len(period) < 6 or period[-2] != "Q":
+            continue
+        if period not in raw_periods:
+            errors.append(f"CF split audit {period}: raw cashflow period is missing")
+            continue
+
+        year = period[:4]
+        quarter = period[4:]
+        prev_period = None
+        if quarter in prev_quarter:
+            prev_period = f"{year}{prev_quarter[quarter]}"
+            if prev_period not in raw_periods:
+                errors.append(
+                    f"CF split audit {period}: missing raw {prev_period} helper for cumulative-to-single-quarter split"
+                )
+                continue
+
+        for col in split_cols:
+            field = col_to_field[col]
+            current_raw = float(raw_cf.loc[period, field]) if field in raw_cf.columns else 0.0
+            if prev_period is None:
+                expected = current_raw
+            else:
+                prev_raw = float(raw_cf.loc[prev_period, field]) if field in raw_cf.columns else 0.0
+                expected = current_raw - prev_raw
+            actual = float(wide.loc[period, col])
+            residual = abs(actual - expected)
+            if residual >= tolerance:
+                errors.append(
+                    f"CF split audit {period} {field}: clean={actual:.4f} "
+                    f"raw_diff={expected:.4f} residual={residual:.4f}"
+                )
+                if len(errors) >= 50:
+                    return errors
+
+    return errors
 
 
 # ── 校验引擎 ───────────────────────────────────────────────────
@@ -1015,6 +1183,121 @@ def check_bs(row: dict[str, float], present: set[str], year: str) -> list[str]:
     return errors
 
 
+def apply_quarterly_bs_plugs(
+    wide: pd.DataFrame,
+    present_by_period: dict[str, set[str]],
+    ticker: str,
+) -> list[dict[str, object]]:
+    """Apply transparent BS plug fields for incomplete quarterly disclosures.
+
+    Quarterly reports often disclose subtotals without all line-item details.
+    For bucket subtotal checks only, absorb the residual into explicit QA plug
+    fields.  Parent equations remain hard-checked afterwards.
+    """
+    records: list[dict[str, object]] = []
+    created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    specs = [
+        ("BS 2.1", "current_asset", "total_cur_assets", "流动资产"),
+        ("BS 2.2", "noncurrent_asset", "total_nca", "非流动资产"),
+        ("BS 3.1", "current_liab", "total_cur_liab", "流动负债"),
+        ("BS 3.2", "noncurrent_liab", "total_ncl", "非流动负债"),
+        ("BS 4.1", "equity", "total_hldr_eqy_inc_min_int", "权益合计"),
+    ]
+
+    for period in sorted(str(period) for period in wide.index.tolist()):
+        present = present_by_period.get(period, set())
+        for code, bucket, target_field, label in specs:
+            row_before = wide.loc[period].to_dict()
+            target = _v(row_before, target_field)
+            calc = bs_bucket_sum(bucket, row_before, present)
+            residual = target - calc
+            if abs(residual) < TOLERANCE:
+                continue
+
+            plug_field = QA_BS_PLUG_FIELDS[bucket]
+            old_plug = float(wide.loc[period, plug_field] or 0.0)
+            new_plug = old_plug + residual
+            wide.loc[period, plug_field] = new_plug
+
+            message = (
+                f"{period} {code} {label}季度明细披露不完整，使用 {plug_field}={residual:.4f} "
+                f"吸收差额；公式: {target_field}({target:.4f}) - 明细和({calc:.4f}) = {residual:.4f}。"
+                f"建议检查对应季报/半年报/三季报资产负债表明细，若可定位具体科目，应改用 LLM evidence override。"
+            )
+            records.append(
+                {
+                    "created_at": created_at,
+                    "ticker": ticker,
+                    "period": period,
+                    "severity": "warning",
+                    "code": "quarterly_bs_plug",
+                    "message": message,
+                    "source": "clean.py:quarterly_bs_plug",
+                    "evidence": (
+                        f"check={code}; target_field={target_field}; bucket={bucket}; "
+                        f"target={target:.4f}; detail_sum_before_plug={calc:.4f}; "
+                        f"plug_field={plug_field}; plug_delta={residual:.4f}; plug_total={new_plug:.4f}"
+                    ),
+                }
+            )
+            LOGGER.warning("⚠️  %s", message)
+
+    return records
+
+
+def apply_quarterly_cf_cash_plugs(
+    wide: pd.DataFrame,
+    ticker: str,
+    *,
+    tolerance: float,
+) -> list[dict[str, object]]:
+    """Apply an explicit QA plug for quarterly CF cash-balance residuals."""
+    records: list[dict[str, object]] = []
+    created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    for period in sorted(str(period) for period in wide.index.tolist()):
+        row = wide.loc[period].to_dict()
+        end_cash = _vc(row, "c_cash_equ_end_period")
+        beg_cash = _vc(row, "c_cash_equ_beg_period")
+        net_increase = _vc(row, "n_incr_cash_cash_equ")
+        residual = end_cash - (beg_cash + net_increase)
+        if abs(residual) < tolerance:
+            continue
+
+        old_plug = float(wide.loc[period, QA_CF_CASH_PLUG_FIELD] or 0.0)
+        new_plug = old_plug + residual
+        wide.loc[period, QA_CF_CASH_PLUG_FIELD] = new_plug
+
+        message = (
+            f"{period} CF 5.5 季度现金期初期末桥接存在原始残差，使用 "
+            f"{QA_CF_CASH_PLUG_FIELD}={residual:.4f} 吸收差额；公式: "
+            f"c_cash_equ_end_period({end_cash:.4f}) - "
+            f"[c_cash_equ_beg_period({beg_cash:.4f}) + "
+            f"n_incr_cash_cash_equ({net_increase:.4f})] = {residual:.4f}。"
+            f"建议核对现金流量表期初现金、期末现金和现金净增加额；"
+            f"该 plug 不参与 CF 5.1-5.4 的流量明细加总。"
+        )
+        records.append(
+            {
+                "created_at": created_at,
+                "ticker": ticker,
+                "period": period,
+                "severity": "warning",
+                "code": "quarterly_cf_cash_plug",
+                "message": message,
+                "source": "clean.py:quarterly_cf_cash_plug",
+                "evidence": (
+                    f"check=CF 5.5; end={end_cash:.4f}; beg={beg_cash:.4f}; "
+                    f"net_increase={net_increase:.4f}; plug_field={QA_CF_CASH_PLUG_FIELD}; "
+                    f"plug_delta={residual:.4f}; plug_total={new_plug:.4f}"
+                ),
+            }
+        )
+        LOGGER.warning("⚠️  %s", message)
+
+    return records
+
+
 def check_cf(row: dict[str, float], present: set[str], year: str) -> list[str]:
     """Cash flow statement hard checks."""
     errors: list[str] = []
@@ -1066,11 +1349,13 @@ def check_cf(row: dict[str, float], present: set[str], year: str) -> list[str]:
     # 5.5 期初期末
     c_cash_equ_end_period = _vc(row, "c_cash_equ_end_period")
     c_cash_equ_beg_period = _vc(row, "c_cash_equ_beg_period")
-    residual = abs(c_cash_equ_end_period - (c_cash_equ_beg_period + n_incr_cash_cash_equ))
+    qa_cf_cash_reconcile_plug = _v(row, QA_CF_CASH_PLUG_FIELD)
+    cash_bridge_calc = c_cash_equ_beg_period + n_incr_cash_cash_equ + qa_cf_cash_reconcile_plug
+    residual = abs(c_cash_equ_end_period - cash_bridge_calc)
     if residual >= TOLERANCE:
         errors.append(
             f"CF 5.5 {year} 期初期末: end={c_cash_equ_end_period:.4f} "
-            f"beg+incr={c_cash_equ_beg_period + n_incr_cash_cash_equ:.4f} residual={residual:.4f}"
+            f"beg+incr+qa_plug={cash_bridge_calc:.4f} residual={residual:.4f}"
         )
 
     return errors
@@ -1210,7 +1495,7 @@ def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]
 
 # ── 主入口 ─────────────────────────────────────────────────────
 
-def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *, label: str) -> None:
+def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *, label: str) -> list[str]:
     """Run hard and soft checks on a wide table."""
     all_errors: list[str] = []
     all_warnings: list[str] = []
@@ -1268,11 +1553,332 @@ def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *,
             print(f"... and {len(all_errors) - 20} more errors", file=sys.stderr)
         raise CheckError(f"{len(all_errors)} hard check(s) failed")
 
+    return all_warnings
+
 
 def write_clean_table(conn: sqlite3.Connection, table_name: str, wide: pd.DataFrame) -> None:
     out = wide.copy()
     out.index.name = "period"
     out.reset_index().to_sql(table_name, conn, if_exists="replace", index=False)
+
+
+ADJUSTMENT_COLUMNS = [
+    "applied_at",
+    "ticker",
+    "period",
+    "endpoint",
+    "field",
+    "old_value_million_cny",
+    "new_value_million_cny",
+    "delta_million_cny",
+    "failure_code",
+    "annual_report_item",
+    "confidence",
+    "source",
+    "source_markdown_path",
+    "source_reconciliation_path",
+    "evidence_lines",
+    "reason",
+]
+
+WARNING_COLUMNS = [
+    "created_at",
+    "ticker",
+    "period",
+    "severity",
+    "code",
+    "message",
+    "source",
+    "evidence",
+]
+
+
+def default_overrides_path(db_path: Path) -> Path:
+    return db_path.parent / "recon" / "annual_report_overrides.json"
+
+
+def load_approved_overrides(path: Path | None, ticker: str) -> list[dict[str, object]]:
+    if path is None or not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("ticker") not in {ticker, None}:
+        raise ValueError(f"Override ticker mismatch: {data.get('ticker')} != {ticker}")
+
+    adjustments = []
+    for item in data.get("adjustments", []):
+        if item.get("status") != "approved":
+            continue
+        if item.get("source") not in APPROVED_OVERRIDE_SOURCES:
+            LOGGER.warning(
+                "Override skipped: %s %s.%s source=%s is not approved LLM evidence",
+                item.get("period"),
+                item.get("endpoint"),
+                item.get("field"),
+                item.get("source"),
+            )
+            continue
+        else:
+            adjustments.append(item)
+    LOGGER.info("Loaded %d approved annual-report override(s) from %s", len(adjustments), path)
+    return adjustments
+
+
+def override_column_name(endpoint: str, field: str) -> str:
+    if field in CROSS_ENDPOINT_FIELDS and endpoint in {"income", "cashflow"}:
+        return f"{endpoint}.{field}"
+    return field
+
+
+def apply_annual_overrides(
+    wide: pd.DataFrame,
+    present_by_period: dict[str, set[str]],
+    ticker: str,
+    adjustments: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Apply approved annual-report overrides to the clean annual wide table.
+
+    raw_tushare remains untouched.  Every applied adjustment is returned for
+    SQLite audit tables and warning logs.
+    """
+    applied: list[dict[str, object]] = []
+    applied_at = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    for item in adjustments:
+        period = str(item.get("period") or "")
+        endpoint = str(item.get("endpoint") or "")
+        field = str(item.get("field") or "")
+        if not period or not field:
+            continue
+        if period not in wide.index:
+            LOGGER.warning("Override skipped: period %s not in annual wide table", period)
+            continue
+
+        column = override_column_name(endpoint, field)
+        if column not in wide.columns:
+            wide[column] = 0.0
+        old_value = float(wide.loc[period, column] or 0.0)
+        new_value = float(item.get("new_value_million_cny") or 0.0)
+        wide.loc[period, column] = new_value
+        present_by_period.setdefault(period, set()).add(field)
+
+        record = {
+            "applied_at": applied_at,
+            "ticker": ticker,
+            "period": period,
+            "endpoint": endpoint,
+            "field": field,
+            "old_value_million_cny": old_value,
+            "new_value_million_cny": new_value,
+            "delta_million_cny": new_value - old_value,
+            "failure_code": item.get("failure_code"),
+            "annual_report_item": item.get("annual_report_item"),
+            "confidence": item.get("confidence"),
+            "source": item.get("source"),
+            "source_markdown_path": item.get("source_markdown_path"),
+            "source_reconciliation_path": item.get("source_reconciliation_path"),
+            "evidence_lines": item.get("evidence_lines"),
+            "reason": item.get("reason"),
+        }
+        applied.append(record)
+        LOGGER.warning(
+            "Applied annual-report override %s %s.%s: %.4f -> %.4f (%s)",
+            period,
+            endpoint,
+            field,
+            old_value,
+            new_value,
+            item.get("evidence_lines"),
+        )
+
+    return applied
+
+
+def warning_period(message: str) -> str | None:
+    match = re.search(r"\b(20\d{2}(?:Q[1-4])?)\b", message)
+    return match.group(1) if match else None
+
+
+def warning_code(message: str) -> str:
+    match = re.match(r"((?:跨表\s+)?\d+(?:\.\d+)?[a-z]?)", message)
+    return match.group(1) if match else "warning"
+
+
+def write_audit_tables(
+    conn: sqlite3.Connection,
+    adjustments: list[dict[str, object]],
+    validation_warnings: list[dict[str, object]],
+) -> None:
+    adj_df = pd.DataFrame(adjustments, columns=ADJUSTMENT_COLUMNS)
+    adj_df.to_sql("clean_adjustments", conn, if_exists="replace", index=False)
+
+    warnings = [
+        {
+            "created_at": item["applied_at"],
+            "ticker": item["ticker"],
+            "period": item["period"],
+            "severity": "warning",
+            "code": "annual_report_override",
+            "message": (
+                f"Applied annual-report override for {item['endpoint']}.{item['field']}: "
+                f"{item['old_value_million_cny']:.4f} -> {item['new_value_million_cny']:.4f}"
+            ),
+            "source": item["source"],
+            "evidence": item["evidence_lines"],
+        }
+        for item in adjustments
+    ]
+    warnings.extend(validation_warnings)
+    warn_df = pd.DataFrame(warnings, columns=WARNING_COLUMNS)
+    warn_df.to_sql("clean_warnings", conn, if_exists="replace", index=False)
+
+
+def read_audit_table(conn: sqlite3.Connection, table_name: str, columns: list[str]) -> list[dict[str, object]]:
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    if not exists:
+        return []
+    return pd.read_sql_query(f"SELECT * FROM {table_name}", conn).reindex(columns=columns).to_dict("records")
+
+
+def write_audit_tables_for_mode(
+    conn: sqlite3.Connection,
+    adjustments: list[dict[str, object]],
+    validation_warnings: list[dict[str, object]],
+    *,
+    mode: str,
+) -> None:
+    """Update audit tables without deleting unrelated mode history."""
+    if mode == "all":
+        write_audit_tables(conn, adjustments, validation_warnings)
+        return
+
+    existing_adjustments = read_audit_table(conn, "clean_adjustments", ADJUSTMENT_COLUMNS)
+    existing_warnings = read_audit_table(conn, "clean_warnings", WARNING_COLUMNS)
+
+    if mode == "quarterly":
+        kept_adjustments = existing_adjustments
+        kept_warnings = [
+            item for item in existing_warnings
+            if item.get("source") not in {
+                "clean.py:quarterly",
+                "clean.py:quarterly_bs_plug",
+                "clean.py:quarterly_cf_cash_plug",
+            }
+            and item.get("code") not in {"quarterly_bs_plug", "quarterly_cf_cash_plug"}
+        ]
+        write_audit_tables(conn, kept_adjustments + adjustments, kept_warnings + validation_warnings)
+        return
+
+    if mode == "annual":
+        kept_warnings = [
+            item for item in existing_warnings
+            if item.get("source") in {
+                "clean.py:quarterly",
+                "clean.py:quarterly_bs_plug",
+                "clean.py:quarterly_cf_cash_plug",
+            }
+            or item.get("code") in {"quarterly_bs_plug", "quarterly_cf_cash_plug"}
+        ]
+        write_audit_tables(conn, adjustments, kept_warnings + validation_warnings)
+        return
+
+    raise ValueError(f"Unknown clean mode: {mode}")
+
+
+def approved_override_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    return sum(
+        1
+        for item in data.get("adjustments", [])
+        if item.get("status") == "approved" and item.get("source") in APPROVED_OVERRIDE_SOURCES
+    )
+
+
+def auto_reconcile_annual_failure(db_path: Path, ticker: str, *, max_failures: int) -> int:
+    """Strong-trigger annual report reconciliation after an annual hard-check failure."""
+    script = Path(__file__).resolve().with_name("annual_report_reconciler.py")
+    if not script.exists():
+        print(
+            f"Annual reconciliation skipped: {script.name} was not found next to clean.py.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 127
+
+    override_path = default_overrides_path(db_path)
+    before_approved = approved_override_count(override_path)
+    cmd = [
+        sys.executable,
+        str(script),
+        "--ticker",
+        ticker,
+        "--db",
+        str(db_path),
+        "--max-failures",
+        str(max_failures),
+        "--write-overrides",
+        "--approve-high-confidence",
+    ]
+
+    print(
+        "\nAnnual hard checks failed. This is a clean-data blocker, not a soft warning.",
+        file=sys.stderr,
+        flush=True,
+    )
+    print(
+        "clean.py has stopped before producing a trusted annual clean output for this run.",
+        file=sys.stderr,
+        flush=True,
+    )
+    print(
+        "Strong trigger: running annual_report_reconciler.py with LLM evidence to inspect local annual-report Markdown.",
+        file=sys.stderr,
+        flush=True,
+    )
+    print("Command: " + " ".join(cmd), file=sys.stderr, flush=True)
+
+    result = subprocess.run(cmd, cwd=Path(__file__).resolve().parent)
+    after_approved = approved_override_count(override_path)
+    if result.returncode == 0:
+        latest_path = db_path.parent / "recon" / "annual_report_reconciliation_latest.json"
+        print(f"Annual reconciliation evidence: {latest_path}", file=sys.stderr, flush=True)
+        print(f"Annual override file: {override_path}", file=sys.stderr, flush=True)
+        if after_approved > before_approved:
+            print(
+                f"LLM approved {after_approved - before_approved} new override(s). "
+                "Rerun clean.py to apply them; raw_tushare remains unchanged.",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif after_approved:
+            print(
+                f"No new approved override was added; {after_approved} approved override(s) already exist. "
+                "Inspect the reconciliation JSON if annual clean still fails.",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                "No approved override was generated. Treat this as manual review: "
+                "check the reconciliation JSON for classification/formula/TuShare evidence.",
+                file=sys.stderr,
+                flush=True,
+            )
+    else:
+        print(
+            f"annual_report_reconciler.py exited with code {result.returncode}. "
+            "Inspect its output before trusting annual clean data.",
+            file=sys.stderr,
+            flush=True,
+        )
+    return result.returncode
 
 
 def clean_dataset(
@@ -1282,6 +1888,9 @@ def clean_dataset(
     mode: str,
     table_name: str,
     tolerance: float,
+    annual_overrides: list[dict[str, object]] | None = None,
+    applied_adjustments: list[dict[str, object]] | None = None,
+    warning_records: list[dict[str, object]] | None = None,
 ) -> pd.DataFrame:
     """Clean one report_type/mode pair and write its wide table."""
     global TOLERANCE
@@ -1292,50 +1901,119 @@ def clean_dataset(
 
     if mode == "quarterly":
         wide = split_cashflow_quarterly(wide, raw)
+        wide, present_by_period = filter_to_output_periods(wide, present_by_period)
+        cf_split_errors = validate_quarterly_cf_split(wide, raw, tolerance=tolerance)
+        if cf_split_errors:
+            print("\n❌ Quarterly CF split validation failed:", file=sys.stderr)
+            for err in cf_split_errors[:20]:
+                print("  - " + err, file=sys.stderr)
+            if len(cf_split_errors) > 20:
+                print(f"... and {len(cf_split_errors) - 20} more errors", file=sys.stderr)
+            raise CheckError(f"{len(cf_split_errors)} quarterly CF split audit error(s)")
+        cf_cash_warnings = apply_quarterly_cf_cash_plugs(wide, ticker, tolerance=tolerance)
+        bs_plug_warnings = apply_quarterly_bs_plugs(wide, present_by_period, ticker)
+        if warning_records is not None:
+            warning_records.extend(cf_cash_warnings)
+            warning_records.extend(bs_plug_warnings)
+    elif mode == "annual" and annual_overrides:
+        applied = apply_annual_overrides(wide, present_by_period, ticker, annual_overrides)
+        if applied_adjustments is not None:
+            applied_adjustments.extend(applied)
 
     old_tolerance = TOLERANCE
     TOLERANCE = tolerance
     try:
-        validate_wide(wide, present_by_period, label=mode)
+        validation_warnings = validate_wide(wide, present_by_period, label=mode)
     finally:
         TOLERANCE = old_tolerance
+
+    if warning_records is not None:
+        created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        for message in validation_warnings:
+            warning_records.append(
+                {
+                    "created_at": created_at,
+                    "ticker": ticker,
+                    "period": warning_period(message),
+                    "severity": "warning",
+                    "code": warning_code(message),
+                    "message": message,
+                    "source": f"clean.py:{mode}",
+                    "evidence": None,
+                }
+            )
 
     write_clean_table(conn, table_name, wide)
     LOGGER.info("Written table %s (%d periods, %d fields)", table_name, len(wide), len(wide.columns))
     return wide
 
 
-def clean_all(db_path: str | Path, ticker: str) -> dict[str, pd.DataFrame]:
+def clean_all(
+    db_path: str | Path,
+    ticker: str,
+    *,
+    overrides_path: str | Path | None = None,
+    apply_overrides: bool = True,
+    mode: str = "all",
+) -> dict[str, pd.DataFrame]:
     """Clean annual and quarterly data, write SQLite tables, and export debug CSVs."""
     db_path = Path(db_path)
     if not db_path.exists():
         raise FileNotFoundError(f"Database not found: {db_path}")
+    if mode not in {"annual", "quarterly", "all"}:
+        raise ValueError("mode must be annual, quarterly, or all")
+
+    override_file = Path(overrides_path) if overrides_path else default_overrides_path(db_path)
+    annual_overrides = (
+        load_approved_overrides(override_file, ticker)
+        if apply_overrides and mode in {"annual", "all"}
+        else []
+    )
+    applied_adjustments: list[dict[str, object]] = []
+    warning_records: list[dict[str, object]] = []
+    outputs: dict[str, pd.DataFrame] = {}
 
     with closing(sqlite3.connect(db_path)) as conn:
-        annual = clean_dataset(
-            conn,
-            ticker,
-            mode="annual",
-            table_name="clean_annual",
-            tolerance=ANNUAL_TOLERANCE,
-        )
-        quarterly = clean_dataset(
-            conn,
-            ticker,
-            mode="quarterly",
-            table_name="clean_quarterly",
-            tolerance=QUARTERLY_TOLERANCE,
-        )
+        if mode in {"annual", "all"}:
+            try:
+                outputs["annual"] = clean_dataset(
+                    conn,
+                    ticker,
+                    mode="annual",
+                    table_name="clean_annual",
+                    tolerance=ANNUAL_TOLERANCE,
+                    annual_overrides=annual_overrides,
+                    applied_adjustments=applied_adjustments,
+                    warning_records=warning_records,
+                )
+            except CheckError as exc:
+                raise CheckError(f"annual validation failed: {exc}") from exc
+        if mode in {"quarterly", "all"}:
+            try:
+                outputs["quarterly"] = clean_dataset(
+                    conn,
+                    ticker,
+                    mode="quarterly",
+                    table_name="clean_quarterly",
+                    tolerance=QUARTERLY_TOLERANCE,
+                    warning_records=warning_records,
+                )
+            except CheckError as exc:
+                raise CheckError(f"quarterly validation failed: {exc}") from exc
+        write_audit_tables_for_mode(conn, applied_adjustments, warning_records, mode=mode)
         conn.commit()
 
     code = ticker.split(".")[0]
-    annual_csv_path = db_path.parent / f"clean_annual_{code}.csv"
-    quarterly_csv_path = db_path.parent / f"clean_quarterly_{code}.csv"
-    annual.to_csv(annual_csv_path, encoding="utf-8-sig")
-    quarterly.to_csv(quarterly_csv_path, encoding="utf-8-sig")
-    LOGGER.info("Written debug CSVs %s and %s", annual_csv_path, quarterly_csv_path)
+    if "annual" in outputs:
+        annual_csv_path = db_path.parent / f"clean_annual_{code}.csv"
+        outputs["annual"].to_csv(annual_csv_path, encoding="utf-8-sig")
+        LOGGER.info("Written debug CSV %s", annual_csv_path)
+    if "quarterly" in outputs:
+        quarterly_csv_path = db_path.parent / f"clean_quarterly_{code}.csv"
+        outputs["quarterly"].to_csv(quarterly_csv_path, encoding="utf-8-sig")
+        LOGGER.info("Written debug CSV %s", quarterly_csv_path)
 
-    return {"annual": annual, "quarterly": quarterly}
+    return outputs
 
 
 def clean(db_path: str | Path, ticker: str) -> pd.DataFrame:
@@ -1349,6 +2027,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Clean TuShare raw data into validated wide-table CSV.")
     parser.add_argument("--ticker", required=True, help="A-share ticker, e.g. 300866.SZ")
     parser.add_argument("--db", default=None, help="Path to data.db (auto-detected if omitted)")
+    parser.add_argument("--overrides", default=None, help="Approved annual-report override JSON (default: company/recon/annual_report_overrides.json)")
+    parser.add_argument("--no-overrides", action="store_true", help="Do not apply approved annual-report overrides")
+    parser.add_argument("--mode", choices=["annual", "quarterly", "all"], default="all", help="Which clean table(s) to build")
+    parser.add_argument("--no-auto-reconcile", action="store_true", help="Do not run annual_report_reconciler.py after annual hard-check failure")
+    parser.add_argument("--auto-reconcile-max-failures", type=int, default=20, help="Maximum annual failures to analyze when auto-reconciliation is triggered")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     args = parser.parse_args(argv)
 
@@ -1370,9 +2053,16 @@ def main(argv: list[str] | None = None) -> int:
         db_path = candidates[0]
 
     try:
-        clean(db_path, ticker)
+        clean_all(db_path, ticker, overrides_path=args.overrides, apply_overrides=not args.no_overrides, mode=args.mode)
     except CheckError as exc:
         print(f"\nValidation failed: {exc}", file=sys.stderr)
+        annual_failure = args.mode == "annual" or str(exc).startswith("annual validation failed")
+        if annual_failure and not args.no_auto_reconcile:
+            auto_reconcile_annual_failure(
+                Path(db_path),
+                ticker,
+                max_failures=max(args.auto_reconcile_max_failures, 0),
+            )
         return 1
     except Exception as exc:
         print(f"\nError: {exc}", file=sys.stderr)
