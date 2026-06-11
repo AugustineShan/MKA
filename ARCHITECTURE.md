@@ -111,6 +111,51 @@ TuShare Pro API
 
 ## 3. 模块职责
 
+### 3.0 init.py（一键编排入口）
+
+`init.py` 是给 Agent / 人的单一入口，把 data_fetcher → report_downloader → clean
+三个独立 CLI 按正确顺序编排成全流程，并保证幂等与如实上报。配套
+`.claude/skills/init/SKILL.md` 让 Agent 用 `init <公司>` 触发。
+
+| 组件 | 职责 |
+|------|------|
+| `resolve_ticker()` | 公司名 / 裸代码 / 完整 ticker → 规范 ticker；中文名经 TuShare `stock_basic` 解析，歧义/无匹配抛 `TickerResolutionError`（退出码 2，交 Agent 用 websearch 兜底） |
+| `stage_fetch()` | 阶段①拉取；幂等：当日 `meta.last_updated` 已是今天则跳过（除非 `--force`），否则 UPSERT 增量 |
+| `stage_reports()` | 年报 PDF/Markdown 下载（**必须在 clean 之前**，否则失败时 reconciler 无年报可切片）；report_downloader 自身幂等，下载失败不致命 |
+| `stage_clean()` | 阶段②清洗校验，含"年度失败→生成 override→重跑应用"两段式；用 `approved_override_count()` 比对前后判断是否新增补数 |
+| `build_report()` | 输出数据拉取报告：三阶段状态 + 年度/季度期数 + `clean_adjustments`（年报确认补全科目）+ `clean_warnings` 汇总 |
+
+**编排链路**：
+```
+输入 → resolve_ticker → stage_fetch → stage_reports → stage_clean
+                                                          ├─ 首跑过 → 退出码 0
+                                                          └─ 年度失败 → reconciler 生成 override
+                                                               → 重跑 clean 应用补数
+                                                                    ├─ 过 → 退出码 0
+                                                                    └─ 仍失败 → 退出码 3（真问题，如实上报）
+```
+
+**退出码语义**：
+
+| 码 | 含义 | Agent 应做 |
+|----|------|-----------|
+| 0 | 全链路成功（纯 TuShare 或经年报确认补全后通过） | 转述数据拉取报告 |
+| 2 | 输入无法解析为唯一 ticker | websearch 查代码后重传完整 ticker |
+| 3 | 应用年报补数后仍年度硬校验失败（真数据问题） | 停下如实上报，不静默放行 |
+| 1 | API/网络/鉴权等异常 | 报错并提示检查 `.env`/网络 |
+
+**纪律**：失败的 clean 运行不改判成功；override 只在重跑时应用；`raw_tushare` 永不被修改。
+批量由 Agent 多次调用或 `python init.py A B C`，严重度取 max（3>2>1>0）。
+Windows 控制台 GBK 下强制 UTF-8 输出以兼容报告中的 emoji。
+
+**CLI**：
+```bash
+python init.py 美的集团          # 中文名
+python init.py 000333            # 裸代码
+python init.py 000333.SZ 600519.SH   # 批量
+python init.py 美的集团 --force  # 全量重拉
+```
+
 ### 3.1 data_fetcher.py（阶段①）
 
 | 组件 | 职责 |
@@ -781,3 +826,6 @@ companies/美的集团_000333/
 | 2026-06-11 | 新增年度 hard-check 强触发：`clean.py` 在 annual/all 年度硬校验失败时默认自动调用 `annual_report_reconciler.py --write-overrides --approve-high-confidence`，终端明确标记为 clean-data blocker；自动触发只生成 LLM evidence/approved override，不修改 raw，也不把失败运行改判成功；override 文件重写时合并既有 approved 记录 |
 | 2026-06-11 | 年报智能核对默认 LLM 从 Kimi 切换为 GLM `glm-5-turbo`：`.env` 使用 `LLM_PROVIDER=glm`、`GLM_*` 配置，Kimi 配置保留为注释；`clean.py` 接受 `source=glm/kimi` 的历史 approved override |
 | 2026-06-11 | 新增轻量已知缺陷提示卡：`knowledge/known_tushare_defects.json` 以“触发条件+字段”沉淀 TuShare 缺陷诊断经验；首条记录为 `BS 2.1/current_asset/lending_funds`，仅用于 annual_report_reconciler 的 LLM 年报检索提示，不自动补数、不替代 evidence |
+| 2026-06-11 | 新增一键编排入口 `init.py` + `.claude/skills/init/SKILL.md`：输入公司名/裸代码/完整 ticker，自动按序编排 data_fetcher→report_downloader→clean，含年报补全两段式重跑；幂等（当日已拉取跳过取数、已有年报跳过下载、补数只在重跑应用）；退出码 0/2/3/1 语义化交给 Agent；输出数据拉取报告（纯 TuShare 通过 vs 年报确认补全科目，全程可追溯）；美的集团（000333.SZ）端到端实测退出码 0 |
+| 2026-06-11 | 比亚迪（002594.SZ）暴露并修复 BS 4.1 重复计数 bug：`oth_eqt_tools_p_shr`（优先股）/`oth_eq_ppbond`（永续债）是 `oth_eqt_tools` 的“其中”子项（官方 36.md 证实），原误归 equity 导致权益 bucket 重复计入；改归 `sub_item`，四家公司（安克/新乳业/伊利/美的）回归无破坏 |
+| 2026-06-11 | 新增 override `clean_category` 重分类机制：处理 TuShare 字段默认 bucket 与公司列报口径不一致（比亚迪 `estimated_liab` 预计负债列报为流动而非 TuShare 默认非流动）。`bs_bucket_sum`/`check_bs` 接受 per-period `reclass` 映射；`apply_annual_overrides` 从 override 的 `clean_category` 写 `wide.attrs["bs_reclass"]`，只影响该公司该期 bucket 归属，不改静态分类；`clean_adjustments` 增加 `clean_category` 审计列。reconciler 端：`build_field_context` 纳入 known-defect 命中字段（即便不在 bucket）并透传 `clean_category`/别名，override builder 从候选透传 `clean_category`；新增 `knowledge/known_tushare_defects.json` 第 2 条 `BS 3.1/current_liab/estimated_liab`（比亚迪 2016-2025）。候选生成已验证；LLM 端到端 override 生成与 clean 重跑验证待补 |

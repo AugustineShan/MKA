@@ -459,8 +459,10 @@ BS_FIELD_CATEGORIES: dict[str, str] = {
     "forex_differ": "equity",
     "oth_comp_income": "equity",
     "oth_eqt_tools": "equity",
-    "oth_eqt_tools_p_shr": "equity",
-    "oth_eq_ppbond": "equity",
+    # oth_eqt_tools 的"其中"明细（官方文档 36.md: 优先股 / 永续债），已含于父项，
+    # 归 sub_item 避免重复计入权益 bucket（比亚迪 002594 BS 4.1 验证）。
+    "oth_eqt_tools_p_shr": "sub_item",
+    "oth_eq_ppbond": "sub_item",
     "minority_int": "equity",
 
     # ── 小计/合计 (9) ──
@@ -535,15 +537,28 @@ def resolve(
     return 0.0
 
 
-def bs_bucket_sum(bucket: str, row: dict[str, float], present: set[str]) -> float:
+def bs_bucket_sum(
+    bucket: str,
+    row: dict[str, float],
+    present: set[str],
+    reclass: dict[str, str] | None = None,
+) -> float:
     """Sum all fields in a BS bucket, handling combo/resolve logic.
 
     Atomic fields in the bucket are summed directly.  Combo fields that
     belong to the bucket are resolved (split parts vs combo value) and
     added.  Split parts are skipped to avoid double counting.
+
+    ``reclass`` lets an approved annual-report override move a field into a
+    different bucket for one period (e.g. 比亚迪 estimated_liab 预计负债 列报为
+    流动而非 TuShare 默认的非流动)。它只覆盖 BS_FIELD_CATEGORIES 的静态归类，
+    不修改全局分类，也不影响其他公司/期间。
     """
-    # Atomic fields belonging to this bucket
-    atomic_fields = [f for f, c in BS_FIELD_CATEGORIES.items() if c == bucket]
+    reclass = reclass or {}
+    # Atomic fields belonging to this bucket（含被 override 重分类进来的字段）
+    atomic_fields = [
+        f for f, c in BS_FIELD_CATEGORIES.items() if reclass.get(f, c) == bucket
+    ]
 
     # Which fields are split parts of combos in this bucket?
     skip: set[str] = set()
@@ -1075,13 +1090,23 @@ def check_is(row: dict[str, float], present: set[str], year: str) -> list[str]:
     return errors
 
 
-def check_bs(row: dict[str, float], present: set[str], year: str) -> list[str]:
-    """Balance sheet hard checks using exhaustive field categorisation."""
+def check_bs(
+    row: dict[str, float],
+    present: set[str],
+    year: str,
+    reclass: dict[str, str] | None = None,
+) -> list[str]:
+    """Balance sheet hard checks using exhaustive field categorisation.
+
+    ``reclass`` 是本期 override 重分类映射（field -> bucket），用于把如
+    estimated_liab 这类 TuShare 默认非流动、但本公司本年列报为流动的科目，
+    在 bucket 加总时移到正确的 bucket。
+    """
     errors: list[str] = []
 
     # 2.1 流动资产合计
     total_cur_assets = _v(row, "total_cur_assets")
-    cur_assets_calc = bs_bucket_sum("current_asset", row, present)
+    cur_assets_calc = bs_bucket_sum("current_asset", row, present, reclass)
     residual = abs(total_cur_assets - cur_assets_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -1091,7 +1116,7 @@ def check_bs(row: dict[str, float], present: set[str], year: str) -> list[str]:
 
     # 2.2 非流动资产合计
     total_nca = _v(row, "total_nca")
-    nca_calc = bs_bucket_sum("noncurrent_asset", row, present)
+    nca_calc = bs_bucket_sum("noncurrent_asset", row, present, reclass)
     residual = abs(total_nca - nca_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -1110,7 +1135,7 @@ def check_bs(row: dict[str, float], present: set[str], year: str) -> list[str]:
 
     # 3.1 流动负债合计
     total_cur_liab = _v(row, "total_cur_liab")
-    cur_liab_calc = bs_bucket_sum("current_liab", row, present)
+    cur_liab_calc = bs_bucket_sum("current_liab", row, present, reclass)
     residual = abs(total_cur_liab - cur_liab_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -1120,7 +1145,7 @@ def check_bs(row: dict[str, float], present: set[str], year: str) -> list[str]:
 
     # 3.2 非流动负债合计
     total_ncl = _v(row, "total_ncl")
-    ncl_calc = bs_bucket_sum("noncurrent_liab", row, present)
+    ncl_calc = bs_bucket_sum("noncurrent_liab", row, present, reclass)
     residual = abs(total_ncl - ncl_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -1138,7 +1163,7 @@ def check_bs(row: dict[str, float], present: set[str], year: str) -> list[str]:
         )
 
     # 4.1 权益明细加总
-    equity_calc = bs_bucket_sum("equity", row, present)
+    equity_calc = bs_bucket_sum("equity", row, present, reclass)
     total_hldr_eqy_inc_min_int = _v(row, "total_hldr_eqy_inc_min_int")
     residual = abs(total_hldr_eqy_inc_min_int - equity_calc)
 
@@ -1502,10 +1527,12 @@ def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *,
 
     sorted_periods = sorted(str(period) for period in wide.index.tolist())
     prev_period_end_cash: float | None = None
+    bs_reclass_by_period: dict[str, dict[str, str]] = wide.attrs.get("bs_reclass", {})
 
     for period in sorted_periods:
         row = wide.loc[period].to_dict()
         present = present_by_period.get(period, set())
+        reclass = bs_reclass_by_period.get(period)
 
         period_errors: list[str] = []
         if label == "quarterly":
@@ -1513,7 +1540,7 @@ def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *,
         else:
             period_warnings = []
             period_errors.extend(check_is(row, present, period))
-        period_errors.extend(check_bs(row, present, period))
+        period_errors.extend(check_bs(row, present, period, reclass))
         period_errors.extend(check_cf(row, present, period))
         if label == "quarterly":
             period_warnings.extend(check_is_supplement(row, present, period))
@@ -1579,6 +1606,7 @@ ADJUSTMENT_COLUMNS = [
     "source_reconciliation_path",
     "evidence_lines",
     "reason",
+    "clean_category",
 ]
 
 WARNING_COLUMNS = [
@@ -1642,6 +1670,7 @@ def apply_annual_overrides(
     """
     applied: list[dict[str, object]] = []
     applied_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    bs_reclass: dict[str, dict[str, str]] = wide.attrs.get("bs_reclass", {})
 
     for item in adjustments:
         period = str(item.get("period") or "")
@@ -1661,6 +1690,19 @@ def apply_annual_overrides(
         wide.loc[period, column] = new_value
         present_by_period.setdefault(period, set()).add(field)
 
+        # 可选：override 指定 clean_category 时，把该字段在本期重分类到目标 bucket。
+        # 用于 TuShare 字段默认 bucket 与本公司列报口径不一致（如比亚迪 estimated_liab
+        # 预计负债列报为流动而非 TuShare 默认非流动）。只影响本期 bucket 加总，不改静态分类。
+        clean_category = item.get("clean_category")
+        if clean_category and endpoint == "balancesheet":
+            default_cat = BS_FIELD_CATEGORIES.get(field)
+            if str(clean_category) != default_cat:
+                bs_reclass.setdefault(period, {})[field] = str(clean_category)
+                LOGGER.warning(
+                    "Override reclassified %s %s: %s -> %s (本期 bucket 归属)",
+                    period, field, default_cat, clean_category,
+                )
+
         record = {
             "applied_at": applied_at,
             "ticker": ticker,
@@ -1678,6 +1720,7 @@ def apply_annual_overrides(
             "source_reconciliation_path": item.get("source_reconciliation_path"),
             "evidence_lines": item.get("evidence_lines"),
             "reason": item.get("reason"),
+            "clean_category": item.get("clean_category"),
         }
         applied.append(record)
         LOGGER.warning(
@@ -1689,6 +1732,9 @@ def apply_annual_overrides(
             new_value,
             item.get("evidence_lines"),
         )
+
+    if bs_reclass:
+        wide.attrs["bs_reclass"] = bs_reclass
 
     return applied
 

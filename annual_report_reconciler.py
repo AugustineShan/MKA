@@ -296,6 +296,7 @@ def known_defect_hints_for_failure(
                 "bucket_or_scope": defect.get("bucket_or_scope"),
                 "field": field,
                 "field_cn": defect.get("field_cn"),
+                "clean_category": defect.get("clean_category"),
                 "trigger": trigger,
                 "current_tushare_value_million_cny": field_value,
                 "present_in_raw_tushare": field in present if field else None,
@@ -334,6 +335,7 @@ def build_field_context(
     row: dict[str, float],
     present: set[str],
     field_docs: dict[str, dict[str, str]],
+    known_defect_hints: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     _bucket, fields = failure_candidate_fields(failure)
     if not fields:
@@ -342,6 +344,21 @@ def build_field_context(
             | set(clean.BS_FIELD_CATEGORIES)
             | set(clean.CF_FIELD_CATEGORIES)
         )
+
+    # 已知缺陷提示卡命中的字段，即便其 TuShare 静态分类不在本 bucket（如
+    # estimated_liab 默认非流动、但本公司列报为流动负债），也要纳入候选，
+    # 否则 reconciler 永远提不出这个补数。clean_category/别名从提示卡透传。
+    hint_meta: dict[str, dict[str, Any]] = {}
+    for hint in known_defect_hints or []:
+        field = str(hint.get("field") or "")
+        if not field:
+            continue
+        llm_hint = hint.get("llm_hint", {}) if isinstance(hint.get("llm_hint"), dict) else {}
+        hint_meta[field] = {
+            "clean_category": hint.get("clean_category") or llm_hint.get("clean_category"),
+            "alias": hint.get("field_cn") or (llm_hint.get("search_aliases") or [None])[0],
+        }
+    fields = sorted(set(fields) | set(hint_meta))
 
     context: list[dict[str, Any]] = []
     for field in fields:
@@ -354,16 +371,18 @@ def build_field_context(
 
         value = float(row.get(col, row.get(field, 0.0)) or 0.0)
         desc = field_docs.get(endpoint, {}).get(field, "")
-        if value == 0.0 and field not in present and desc == "":
+        if value == 0.0 and field not in present and desc == "" and field not in hint_meta:
             continue
+        meta = hint_meta.get(field, {})
         context.append(
             {
                 "field": field,
                 "endpoint": endpoint,
                 "description": desc,
-                "annual_report_alias": COMMON_ANNUAL_ALIASES.get(field),
+                "annual_report_alias": COMMON_ANNUAL_ALIASES.get(field) or meta.get("alias"),
                 "value_million_cny": value,
                 "present_in_raw_tushare": field in present,
+                "clean_category": meta.get("clean_category"),
             }
         )
 
@@ -389,6 +408,11 @@ def find_line(lines: list[str], patterns: list[str], start: int = 0) -> int | No
         if all(pattern in line for pattern in patterns):
             return idx
     return None
+
+
+def find_all_lines(lines: list[str], patterns: list[str]) -> list[int]:
+    """Return all line indices matching every pattern."""
+    return [idx for idx, line in enumerate(lines) if all(p in line for p in patterns)]
 
 
 def compact_window(lines: list[str], center: int, before: int = 35, after: int = 80) -> dict[str, Any]:
@@ -475,6 +499,10 @@ def slim_markdown_context_for_llm(markdown_context: dict[str, Any]) -> dict[str,
     return {**markdown_context, "snippets": compact_snippets}
 
 
+def _overlaps(span: tuple[int, int], used_ranges: list[tuple[int, int]]) -> bool:
+    return any(not (span[1] < old[0] or old[1] < span[0]) for old in used_ranges)
+
+
 def extract_markdown_context(
     failure: Failure,
     md_path: Path,
@@ -485,6 +513,7 @@ def extract_markdown_context(
     snippets: list[dict[str, Any]] = []
     used_ranges: list[tuple[int, int]] = []
 
+    # 1. Statement-level snippet (balance sheet / income / cashflow)
     for marker in section_markers(failure):
         idx = find_line(lines, marker)
         if idx is not None:
@@ -493,21 +522,26 @@ def extract_markdown_context(
             used_ranges.append((window["start_line"], window["end_line"]))
             break
 
+    # 2. Term-level snippets: generate one for *every* occurrence so the LLM
+    #    can pick the context where the matching number actually appears.
+    #    Kimi context is ~200k; 20 snippets of ~100 lines each is trivial.
     terms = add_known_defect_search_terms(
         search_terms_for_failure(failure, field_context),
         known_defect_hints or [],
     )
+    MAX_TERM_SNIPPETS = 20
     for term in terms:
-        idx = find_line(lines, [term])
-        if idx is None:
-            continue
-        window = compact_window(lines, idx, before=18, after=45)
-        span = (window["start_line"], window["end_line"])
-        if any(not (span[1] < old[0] or old[1] < span[0]) for old in used_ranges):
-            continue
-        snippets.append({"kind": "term", "term": term, **window})
-        used_ranges.append(span)
-        if len(snippets) >= 7:
+        indices = find_all_lines(lines, [term])
+        for idx in indices:
+            window = compact_window(lines, idx, before=18, after=80)
+            span = (window["start_line"], window["end_line"])
+            if _overlaps(span, used_ranges):
+                continue
+            snippets.append({"kind": "term", "term": term, **window})
+            used_ranges.append(span)
+            if len(snippets) >= MAX_TERM_SNIPPETS:
+                break
+        if len(snippets) >= MAX_TERM_SNIPPETS:
             break
 
     return {
@@ -626,13 +660,15 @@ def call_llm(messages: list[dict[str, str]]) -> dict[str, Any]:
     if not base_url or not model:
         return {"error": f"{provider} base URL/model is not configured", "_provider": provider}
     url = f"{base_url}/chat/completions"
-    body = {
+    body: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": float(os.environ.get("LLM_TEMPERATURE", "0.2")),
         "max_tokens": int(os.environ.get("LLM_MAX_TOKENS", os.environ.get("KIMI_MAX_TOKENS", "8192"))),
         "response_format": {"type": "json_object"},
     }
+    # kimi-k2.6 only allows temperature=1; skip it for Kimi to use the default.
+    if provider != "kimi":
+        body["temperature"] = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
     try:
         response = requests.post(
             url,
@@ -668,8 +704,8 @@ def analyze_failure(
     *,
     use_llm: bool,
 ) -> dict[str, Any]:
-    field_context = build_field_context(failure, row, present, field_docs)
     known_defect_hints = known_defect_hints_for_failure(failure, row, present, known_defects)
+    field_context = build_field_context(failure, row, present, field_docs, known_defect_hints)
     md_path = annual_markdown_path(company_dir, failure.period)
     markdown_context: dict[str, Any]
     if md_path is None:
@@ -743,7 +779,6 @@ def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, 
     residual = failure.get("residual")
     if residual is None:
         return []
-    expected_raw = float(residual) * 1000.0
 
     snippets = [
         str(snippet.get("text") or "")
@@ -795,20 +830,33 @@ def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, 
                         raw_value = parse_report_number(token)
                         if raw_value is None:
                             continue
-                        if abs(raw_value - expected_raw) <= max(1.0, abs(expected_raw) * 0.00001):
+                        # Try 千元 first, then 元 (older annual reports use 元)
+                        matched = False
+                        if abs(raw_value - float(residual) * 1000.0) <= max(1.0, abs(float(residual) * 1000.0) * 0.00001):
+                            matched = True
+                            unit = "千元人民币"
+                            value_million = raw_value / 1000.0
+                            evidence_unit = "千元"
+                        elif abs(raw_value - float(residual) * 1_000_000.0) <= max(1.0, abs(float(residual) * 1_000_000.0) * 0.00001):
+                            matched = True
+                            unit = "元人民币"
+                            value_million = raw_value / 1_000_000.0
+                            evidence_unit = "元"
+                        if matched:
                             suggestions.append(
                                 {
                                     "source": "rule:alias_exact_residual",
                                     "confidence": "high",
                                     "annual_report_item": matched_alias,
                                     "annual_report_value_raw": raw_value,
-                                    "annual_report_unit": "千元人民币",
-                                    "value_million_cny": raw_value / 1000.0,
+                                    "annual_report_unit": unit,
+                                    "value_million_cny": value_million,
                                     "candidate_tushare_field": field.get("field"),
+                                    "clean_category": field.get("clean_category"),
                                     "tushare_value_million_cny": old_value,
                                     "explains_residual": True,
-                                    "residual_difference_million_cny": abs(float(residual) - raw_value / 1000.0),
-                                    "evidence_lines": f"{line_no}-{value_line_no}: {matched_alias} {token} 千元",
+                                    "residual_difference_million_cny": abs(float(residual) - value_million),
+                                    "evidence_lines": f"{line_no}-{value_line_no}: {matched_alias} {token} {evidence_unit}",
                                 }
                             )
                             break
@@ -902,7 +950,11 @@ def batch_llm_confirm_candidates(ticker: str, candidates: list[dict[str, Any]]) 
         "1. failure residual 与候选年报值换算为百万元后的金额必须在 1 百万元内吻合。\n"
         "2. 候选字段必须能对应年报科目；如果只是规则猜测但字段不可靠，不批准。\n"
         "3. 只批准 suspected TuShare field missing/zero 的情形；重复计入或分类错误不批准。\n"
-        "4. 对美的集团“发放贷款和垫款”流动部分，对应候选 TuShare 字段为 lending_funds 时，如金额吻合可批准。\n\n"
+        "4. 对美的集团“发放贷款和垫款”流动部分，对应候选 TuShare 字段为 lending_funds 时，如金额吻合可批准。\n"
+        "5. 若候选项带有 clean_category（说明该 TuShare 字段默认 bucket 与本公司列报口径不一致，"
+        "如 estimated_liab 预计负债默认非流动但本年列报为流动），且年报金额与残差吻合、"
+        "TuShare 该字段缺失/为0，可批准；批准时在该条 adjustment 中原样回传 clean_category 字段。\n\n"
+        "若候选项含 clean_category，请在对应 adjustment JSON 中加入 \"clean_category\": string 字段原样返回。\n\n"
         f"输入数据：\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
     return call_llm([{"role": "system", "content": system}, {"role": "user", "content": user}])
@@ -921,6 +973,7 @@ def build_override_file_from_batch_llm(
         for analysis in reconciliation.get("analyses", [])
     }
     field_values: dict[tuple[str, str], float] = {}
+    clean_category_by: dict[tuple[str, str], str] = {}
     markdown_by_period: dict[str, str | None] = {}
     for analysis in reconciliation.get("analyses", []):
         period = str(analysis.get("failure", {}).get("period"))
@@ -928,6 +981,8 @@ def build_override_file_from_batch_llm(
         for item in analysis.get("candidate_tushare_fields", []):
             if isinstance(item, dict):
                 field_values[(period, str(item.get("field")))] = float(item.get("value_million_cny") or 0.0)
+                if item.get("clean_category"):
+                    clean_category_by[(period, str(item.get("field")))] = str(item["clean_category"])
 
     adjustments: list[dict[str, Any]] = []
     provider = str(llm_confirmation.get("_provider") or llm_provider())
@@ -968,6 +1023,7 @@ def build_override_file_from_batch_llm(
                 "source_reconciliation_path": str(reconciliation_path),
                 "evidence_lines": item.get("evidence_lines"),
                 "reason": item.get("reason"),
+                "clean_category": clean_category_by.get((period, str(field))),
             }
         )
 

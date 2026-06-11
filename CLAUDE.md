@@ -2,6 +2,17 @@
 
 两阶段流水线：① 从 TuShare Pro API 拉取三表数据 → 标准化 → 入库 SQLite；② 从 SQLite 读取原始数据 → 透视宽表 → 严格配平校验 → 输出清洗后 CSV。
 
+## 🔴 项目第一原则（理解项目必须先懂这条）
+
+**TuShare 数据缺口 = 用 reconciler 去年报里拉干净。这是本项目存在的根本理由。**
+
+当 `clean.py` 年度硬校验出现 `target_gt_calc`（合计 > 明细和，即 TuShare 漏披露某明细科目）时，**正确的解法不是放弃、不是人工、不是季度式 plug 收纳，而是 `annual_report_reconciler.py` 去对应年报 Markdown 里把缺失的明细金额找回来**，LLM 高置信确认残差后生成 approved override，重跑 `clean.py` 应用补全。
+
+- `raw_tushare` 永不被修改；补全只进年度 clean 宽表，并写入 `clean_adjustments`/`clean_warnings` 审计，全程可追溯。
+- 美的集团 `lending_funds`（发放贷款和垫款）、比亚迪 BS 3.1 流动负债缺明细，都是这一类，都由 reconciler 解决。
+- 遇到 `target_gt_calc` 类年度缺口，**默认动作就是让 reconciler 拉年报补全**，不要问"要不要保持失败/要不要人工"——那是对项目使命的误解。
+- 唯一例外：`target_lt_calc`（明细和 > 合计，即 clean.py 自己重复计数/误分类），这是 clean.py 的 bug，应修字段分类，**不是** reconciler 的活。
+
 ## 技术栈
 
 - **语言**: Python 3.11+（系统全局 Python，禁止 venv）
@@ -135,7 +146,15 @@ python annual_report_reconciler.py --ticker {ticker} --db {data.db} --max-failur
 
 `knowledge/known_tushare_defects.json` 是给 `annual_report_reconciler.py` 的轻量 LLM 检索提示，不是补丁库。索引用“触发条件 + 字段”，不要用公司名；命中后只把 hint 写入 reconciliation JSON 并加入年报 Markdown 检索词。
 
-当前第一条：`BS 2.1` / `balancesheet` / `current_asset` / `lending_funds`。如果 `total_cur_assets` 大于流动资产明细和，且 `lending_funds` 缺失或为 0，就提示 LLM 优先查合并资产负债表里的“发放贷款和垫款 / 发放贷款 / 垫款 / 贷款”。这条来自美的集团 2016-2025 年确认案例，但不能作为自动补数依据。
+当前条目：
+1. `BS 2.1` / `balancesheet` / `current_asset` / `lending_funds`（美的集团 2016-2025）：`total_cur_assets` 大于流动资产明细和且 `lending_funds` 缺失/为 0 时，提示 LLM 查“发放贷款和垫款 / 发放贷款 / 垫款 / 贷款”。
+2. `BS 3.1` / `balancesheet` / `current_liab` / `estimated_liab`（比亚迪 2016-2025）：`total_cur_liab` 大于流动负债明细和且 `estimated_liab` 缺失/为 0 时，提示 LLM 查流动负债段的“预计负债-流动 / 预计负债”。该条带 `clean_category=current_liab`：TuShare 只有一个 `estimated_liab` 字段且默认按非流动归类，当公司把预计负债列在流动负债时，override 用 `clean_category` 把补数在本期重分类到流动负债 bucket（见下「override clean_category 重分类」）。
+
+这些来自确认案例，但不能作为自动补数依据，仍须年报片段金额 + LLM high confidence 确认。
+
+### override clean_category 重分类（处理 TuShare 字段归类与公司列报口径不一致）
+
+部分 TuShare 字段的 bucket 归属对个别公司不成立（典型：`estimated_liab` 预计负债，TuShare 默认非流动，但比亚迪列报为流动）。这类情况**不能改 clean.py 的静态分类**（会破坏其他公司），而是由 reconciler 在 override 记录里写 `clean_category`，`clean.py` 应用时只对**该公司该期**把字段重分类到目标 bucket（写入 `wide.attrs["bs_reclass"]`，`bs_bucket_sum` 按 `reclass.get(field, 静态分类)` 取 bucket）。字段值照常补进宽表（下游可见），bucket 加总落到正确的一侧。`clean_adjustments` 记录 `clean_category` 审计。
 
 重要边界：known defect hint 只是“去哪查”的线索；approved override 仍必须靠年报片段金额解释残差，并由 LLM high confidence 结构化确认。
 
