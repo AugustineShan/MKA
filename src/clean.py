@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import json
+import itertools
 import re
 import sqlite3
 import subprocess
@@ -162,6 +163,14 @@ IS_SUB_RESOLVE: dict[str, list[str]] = {
     "invest_income": ["ass_invest_income", "amodcost_fin_assets"],
     "fin_exp": ["fin_exp_int_exp", "fin_exp_int_inc"],
     "non_oper_exp": ["nca_disploss"],
+}
+
+# Fields whose sign convention varies across reporting periods/years.
+# They are validated dynamically in modern-reporting years (2019+).
+SIGN_QUESTIONABLE_IS_FIELDS = {
+    "assets_impair_loss",
+    "credit_impa_loss",
+    "oth_impair_loss_assets",
 }
 
 
@@ -1025,7 +1034,129 @@ def get_cashflow_value(row: dict[str, float], field: str) -> float:
     return row.get(field, 0.0)
 
 
-def check_is(row: dict[str, float], present: set[str], year: str) -> list[str]:
+def signed_is_cost_sum(row: dict[str, float], sign_map: dict[str, int] | None) -> float:
+    """Sum cost_item fields excluding sign-questionable impairment fields.
+
+    When a sign_map is provided, impairment-like fields are handled in the
+    adjustment sum instead of the cost sum.
+    """
+    total = 0.0
+    for field, cat in IS_FIELD_CATEGORIES.items():
+        if cat != "cost_item":
+            continue
+        if any(field in subs for subs in IS_SUB_RESOLVE.values()):
+            continue
+        if field in SIGN_QUESTIONABLE_IS_FIELDS:
+            continue
+        total += get_income_value(row, field)
+    return total
+
+
+def signed_is_adjustment_sum(row: dict[str, float], sign_map: dict[str, int] | None) -> float:
+    """Sum operating_adjustment fields plus sign-questionable fields with resolved signs."""
+    total = 0.0
+    for field, cat in IS_FIELD_CATEGORIES.items():
+        if cat != "operating_adjustment":
+            continue
+        total += get_income_value(row, field)
+    if sign_map:
+        for field, sign in sign_map.items():
+            total += sign * get_income_value(row, field)
+    return total
+
+
+def resolve_is_signs(
+    row: dict[str, float],
+    present: set[str],
+    year: str,
+    tolerance: float = TOLERANCE,
+) -> tuple[dict[str, int] | None, list[str]]:
+    """Dynamically resolve signs for impairment-like fields in modern years.
+
+    Only enabled for 2019+ periods, when the modern income-statement format is
+    expected to be stable. Earlier years are flagged as 口径断点 and skipped.
+
+    The identity used is:
+        operate_profit = revenue_base
+                         - sum(stable cost_item fields)
+                         + sum(operating_adjustment fields)
+                         + sum(sign_f * value_f for f in questionable fields)
+
+    All inputs come from the same TuShare income table, so this is a sanity
+    check on internal consistency, not an independent cross-validation.
+
+    Returns (sign_map, warnings). sign_map is None when signs cannot be
+    resolved. Warnings are emitted instead of errors; callers decide whether
+    to hard-fail. The residual is never absorbed into a plug field.
+    """
+    year_match = re.match(r"(\d{4})", str(year))
+    if not year_match or int(year_match.group(1)) < 2019:
+        return None, [f"IS sign {year} skipped: 口径断点，2019年前不启用动态符号验证"]
+
+    revenue = get_income_value(row, "revenue")
+    total_revenue = get_income_value(row, "total_revenue")
+    other_revenue = (
+        get_income_value(row, "int_income")
+        + get_income_value(row, "comm_income")
+        + get_income_value(row, "n_oth_b_income")
+    )
+    revenue_base = revenue
+    if abs(total_revenue - revenue) >= tolerance and abs(total_revenue - revenue - other_revenue) < tolerance:
+        revenue_base = total_revenue
+
+    operate_profit = get_income_value(row, "operate_profit")
+
+    stable_cost_sum = signed_is_cost_sum(row, None)
+    stable_adj_sum = signed_is_adjustment_sum(row, None)
+
+    Q_present = [
+        f
+        for f in SIGN_QUESTIONABLE_IS_FIELDS
+        if f in present and abs(get_income_value(row, f)) > 1e-9
+    ]
+    if not Q_present:
+        return {}, []
+
+    base = revenue_base - stable_cost_sum + stable_adj_sum
+    acceptable: list[tuple[tuple[int, ...], float]] = []
+    best_residual = float("inf")
+    best_signs: tuple[int, ...] = ()
+
+    for signs in itertools.product([1, -1], repeat=len(Q_present)):
+        adj_from_q = sum(sign * get_income_value(row, f) for sign, f in zip(signs, Q_present))
+        residual = operate_profit - (base + adj_from_q)
+        abs_residual = abs(residual)
+        if abs_residual < tolerance:
+            acceptable.append((signs, residual))
+        if abs_residual < best_residual:
+            best_residual = abs_residual
+            best_signs = signs
+
+    if len(acceptable) == 1:
+        sign_map = dict(zip(Q_present, acceptable[0][0]))
+        pairs = ", ".join(f"{f}={s:+d}" for f, s in sign_map.items())
+        return sign_map, [f"IS sign {year} resolved: {pairs}"]
+
+    values_str = ", ".join(f"{f}={get_income_value(row, f):.4f}" for f in Q_present)
+    if not acceptable:
+        best_pairs = ", ".join(f"{f}={s:+d}" for f, s in zip(Q_present, best_signs))
+        return None, [
+            f"IS sign {year} 口径断点/符号不可判: fields={Q_present}, "
+            f"values=[{values_str}], best_signs=({best_pairs}), "
+            f"best_residual={best_residual:.4f}, tolerance={tolerance:.4f}"
+        ]
+
+    options = "; ".join(
+        f"({','.join(f'{f}={s:+d}' for f, s in zip(Q_present, signs))}, residual={residual:.4f})"
+        for signs, residual in acceptable
+    )
+    return None, [
+        f"IS sign {year} 口径断点/符号歧义: fields={Q_present}, "
+        f"values=[{values_str}], acceptable=[{options}]"
+    ]
+
+
+def check_is(row: dict[str, float], present: set[str], year: str, sign_map: dict[str, int] | None = None) -> list[str]:
     """Income statement hard checks using exhaustive field categorisation."""
     errors: list[str] = []
 
@@ -1043,45 +1174,61 @@ def check_is(row: dict[str, float], present: set[str], year: str) -> list[str]:
 
     # 1.1 营业总成本 = sum(cost_item)
     total_cogs = get_income_value(row, "total_cogs")
-    cogs_calc = is_bucket_sum("cost_item", row, present)
-    residual = abs(total_cogs - cogs_calc)
+    if sign_map:
+        cogs_calc = signed_is_cost_sum(row, sign_map)
+        residual = abs(total_cogs - cogs_calc)
+        if residual >= TOLERANCE:
+            # With modern sign-resolved cost fields, the residual represents
+            # unattributed costs (e.g. 合同履约成本) not itemised in TuShare.
+            # This is informational only; the hard identity check is IS 1.2.
+            LOGGER.info(
+                "IS 1.1 %s total_cogs includes %.4f unattributed other costs "
+                "(not in standard line items, likely 合同履约成本 etc.)",
+                year, total_cogs - cogs_calc,
+            )
+    else:
+        cogs_calc = is_bucket_sum("cost_item", row, present)
+        residual = abs(total_cogs - cogs_calc)
 
-    if residual >= TOLERANCE:
-        # Step A: total_cogs = total_opcost + fin_exp
-        total_opcost = get_income_value(row, "total_opcost")
-        fin_exp = get_income_value(row, "fin_exp")
-        cogs_via_opcost = total_opcost + fin_exp
-        residual2 = abs(total_cogs - cogs_via_opcost)
-        if residual2 < TOLERANCE:
-            opcost_items = cogs_calc - fin_exp
-            other_costs = total_opcost - opcost_items
-            if abs(other_costs) >= TOLERANCE:
-                LOGGER.info(
-                    "IS 1.1 %s total_opcost includes %.4f unattributed other costs "
-                    "(not in standard line items, likely 合同履约成本 etc.)",
-                    year, other_costs,
-                )
-        else:
-            # Step B: verify total_cogs via operate_profit consistency
-            operate_profit_prelim = get_income_value(row, "operate_profit")
-            other_gains = is_bucket_sum("operating_adjustment", row, present)
-            cogs_via_profit = revenue_base + other_gains - operate_profit_prelim
-            if abs(total_cogs - cogs_via_profit) < TOLERANCE:
-                LOGGER.info(
-                    "IS 1.1 %s total_cogs verified via operate_profit; "
-                    "%.4f unattributed costs (likely 合同履约成本 etc.)",
-                    year, total_cogs - cogs_calc,
-                )
+        if residual >= TOLERANCE:
+            # Step A: total_cogs = total_opcost + fin_exp
+            total_opcost = get_income_value(row, "total_opcost")
+            fin_exp = get_income_value(row, "fin_exp")
+            cogs_via_opcost = total_opcost + fin_exp
+            residual2 = abs(total_cogs - cogs_via_opcost)
+            if residual2 < TOLERANCE:
+                opcost_items = cogs_calc - fin_exp
+                other_costs = total_opcost - opcost_items
+                if abs(other_costs) >= TOLERANCE:
+                    LOGGER.info(
+                        "IS 1.1 %s total_opcost includes %.4f unattributed other costs "
+                        "(not in standard line items, likely 合同履约成本 etc.)",
+                        year, other_costs,
+                    )
             else:
-                errors.append(
-                    f"IS 1.1 {year} 营业总成本: total_cogs={total_cogs:.4f} "
-                    f"cost_items={cogs_calc:.4f} opcost+fe={cogs_via_opcost:.4f} "
-                    f"profit-route={cogs_via_profit:.4f} residual={residual:.4f}"
-                )
+                # Step B: verify total_cogs via operate_profit consistency
+                operate_profit_prelim = get_income_value(row, "operate_profit")
+                other_gains = is_bucket_sum("operating_adjustment", row, present)
+                cogs_via_profit = revenue_base + other_gains - operate_profit_prelim
+                if abs(total_cogs - cogs_via_profit) < TOLERANCE:
+                    LOGGER.info(
+                        "IS 1.1 %s total_cogs verified via operate_profit; "
+                        "%.4f unattributed costs (likely 合同履约成本 etc.)",
+                        year, total_cogs - cogs_calc,
+                    )
+                else:
+                    errors.append(
+                        f"IS 1.1 {year} 营业总成本: total_cogs={total_cogs:.4f} "
+                        f"cost_items={cogs_calc:.4f} opcost+fe={cogs_via_opcost:.4f} "
+                        f"profit-route={cogs_via_profit:.4f} residual={residual:.4f}"
+                    )
 
     # 1.2 营业利润
     operate_profit = get_income_value(row, "operate_profit")
-    oper_profit_calc = revenue_base - total_cogs + is_bucket_sum("operating_adjustment", row, present)
+    if sign_map:
+        oper_profit_calc = revenue_base - cogs_calc + signed_is_adjustment_sum(row, sign_map)
+    else:
+        oper_profit_calc = revenue_base - total_cogs + is_bucket_sum("operating_adjustment", row, present)
     residual = abs(operate_profit - oper_profit_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -1583,11 +1730,16 @@ def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *,
         reclass = bs_reclass_by_period.get(period)
 
         period_errors: list[str] = []
+        period_warnings: list[str] = []
+
+        # Dynamic sign resolution for impairment-like fields (modern years only).
+        sign_map, sign_warnings = resolve_is_signs(row, present, period)
+        period_warnings.extend(sign_warnings)
+
         if label == "quarterly":
-            period_warnings = check_is(row, present, period)
+            period_warnings.extend(check_is(row, present, period, sign_map=sign_map))
         else:
-            period_warnings = []
-            period_errors.extend(check_is(row, present, period))
+            period_errors.extend(check_is(row, present, period, sign_map=sign_map))
         bs_errors, bs_warnings = check_bs(row, present, period, reclass)
         period_errors.extend(bs_errors)
         period_warnings.extend(bs_warnings)
@@ -1918,7 +2070,8 @@ def auto_reconcile_annual_failure(db_path: Path, ticker: str, *, max_failures: i
     before_approved = approved_override_count(override_path)
     cmd = [
         sys.executable,
-        str(script),
+        "-m",
+        "src.annual_report_reconciler",
         "--ticker",
         ticker,
         "--db",

@@ -21,7 +21,8 @@ admin = revenue × admin_exp_rate                ← 读 YAML2 的 admin_exp_rat
 rnd = revenue × rd_exp_rate                     ← 读 YAML2 的 rd_exp_rate
 fin_exp = 直接用绝对值                           ← 读 YAML2 的 fin_exp
 
-impairment = 直接用绝对值                        ← 读 YAML2 的 assets_impair_loss + credit_impa_loss
+impairment = 按原值代数并入营业利润    ← 读 YAML2 的 assets_impair_loss + credit_impa_loss + oth_impair_loss_assets
+                                         负值=损失（侵蚀利润），正值=收益/ reversal；不计入 total_cogs
 other_income = 直接用绝对值                      ← 读 YAML2 的 oth_income
 invest_income = 直接用绝对值                     ← 读 YAML2 的 invest_income
 fv_change = 直接用绝对值                         ← 读 YAML2 的 fv_value_chg_gain

@@ -35,6 +35,14 @@ TOLERANCE = 1e-4
 MAX_ITERATIONS = 100
 CONVERGENCE_TOLERANCE = 1e-7
 
+# Impairment-like fields are signed P&L adjustments, not positive costs.
+# They are read from cost_abs but merged into operate_profit algebraically.
+IMPACT_ADJUSTMENT_FIELDS = {
+    "assets_impair_loss",
+    "credit_impa_loss",
+    "oth_impair_loss_assets",
+}
+
 
 class CalcError(RuntimeError):
     """Raised when the forecast violates accounting identities."""
@@ -142,13 +150,21 @@ def build_income_statement(yaml2: dict[str, Any], revenue: float, financial_expe
     row["fin_exp_int_exp"] = financial_expense["fin_exp_int_exp"]
     row["fin_exp_int_inc"] = financial_expense["fin_exp_int_inc"]
 
-    cost_fields = set(["oper_cost", "fin_exp"]) | set(cost_rates) | set(cost_abs)
+    cost_fields = (
+        set(["oper_cost", "fin_exp"])
+        | set(cost_rates)
+        | (set(cost_abs) - IMPACT_ADJUSTMENT_FIELDS)
+    )
     row["total_cogs"] = sum(row.get(field, 0.0) for field in cost_fields)
     row["total_opcost"] = row["total_cogs"]
 
     for field, value in op_adj.items():
         row[field] = value
-    row["operate_profit"] = row["total_revenue"] - row["total_cogs"] + sum(op_adj.values())
+    impact_fields = set(cost_abs) & IMPACT_ADJUSTMENT_FIELDS
+    impact_adjustment = sum(row.get(field, 0.0) for field in impact_fields)
+    row["operate_profit"] = (
+        row["total_revenue"] - row["total_cogs"] + sum(op_adj.values()) + impact_adjustment
+    )
 
     for field, value in below_line.items():
         row[field] = value
