@@ -407,6 +407,8 @@ def _download_single_report(
     timeout: float,
     generate_markdown: bool,
     force_markdown: bool,
+    min_interval: float = 1.0,
+    max_interval: float = 2.0,
 ) -> tuple[int, int, int, int]:
     """Download one report (PDF + optional Markdown) in a worker thread."""
     # Each worker gets its own session for thread safety
@@ -437,6 +439,7 @@ def _download_single_report(
         skipped_pdf += 1
     else:
         print(f"down  pdf {report.year} {kind_label} {'修订版' if report.is_revision else '原始版'} {report.title}")
+        sleep_between_requests(min_interval, max_interval)
         data = fetch_pdf_bytes(report.pdf_url, timeout=timeout, session=worker_session)
         pdf_path.write_bytes(data)
         downloaded += 1
@@ -491,6 +494,8 @@ def download_reports(
                 timeout=timeout,
                 generate_markdown=generate_markdown,
                 force_markdown=force_markdown,
+                min_interval=min_interval,
+                max_interval=max_interval,
             ): report
             for report in reports
         }

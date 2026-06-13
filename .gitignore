@@ -1,0 +1,36 @@
+# Environment / secrets
+.env
+*.env
+
+# Generated data directories
+companies/
+.recon/
+annuals/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Logs
+*.log
+
+# Worktrees
+.worktrees/
+worktrees/
+
+# IDE / local config
+.claude/
+.obsidian/
+.serena/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary / draft docs
+~$*
+*.tmp

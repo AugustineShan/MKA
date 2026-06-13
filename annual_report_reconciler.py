@@ -171,12 +171,12 @@ def collect_failures(wide: pd.DataFrame, present_by_period: dict[str, set[str]])
 
         messages: list[str] = []
         messages.extend(clean.check_is(row, present, period))
-        messages.extend(clean.check_bs(row, present, period))
+        messages.extend(clean.check_bs(row, present, period)[0])
         messages.extend(clean.check_cf(row, present, period))
         messages.extend(clean.check_is_supplement(row, present, period))
         messages.extend(clean.check_cross_table(row, present, period))
 
-        c_cash_equ_beg = clean._vc(row, "c_cash_equ_beg_period")
+        c_cash_equ_beg = clean.get_cashflow_value(row, "c_cash_equ_beg_period")
         if prev_period_end_cash is not None and c_cash_equ_beg != 0:
             residual = abs(prev_period_end_cash - c_cash_equ_beg)
             if residual >= clean.TOLERANCE:
@@ -184,7 +184,7 @@ def collect_failures(wide: pd.DataFrame, present_by_period: dict[str, set[str]])
                     f"跨表 7.4 {period} 上期CF期末({prev_period_end_cash:.4f}) "
                     f"≠ 本期CF期初({c_cash_equ_beg:.4f}) residual={residual:.4f}"
                 )
-        prev_period_end_cash = clean._vc(row, "c_cash_equ_end_period")
+        prev_period_end_cash = clean.get_cashflow_value(row, "c_cash_equ_end_period")
 
         failures.extend(parse_failure_message(message) for message in messages)
 
@@ -909,7 +909,64 @@ def collect_rule_candidates(reconciliation: dict[str, Any]) -> list[dict[str, An
     return candidates
 
 
-def batch_llm_confirm_candidates(ticker: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+def format_known_defects_for_prompt(known_defects: list[dict[str, Any]]) -> str:
+    """Render active known defects as concise prompt guidance for the LLM."""
+    if not known_defects:
+        return "（当前无已知 TuShare 缺陷提示卡）"
+    lines: list[str] = []
+    for defect in known_defects:
+        field = defect.get("field", "")
+        field_cn = defect.get("field_cn", "")
+        check_code = defect.get("check_code", "")
+        clean_category = defect.get("clean_category", "")
+        llm_hint = defect.get("llm_hint", {}) or {}
+        search_aliases = llm_hint.get("search_aliases", [])
+        diagnosis = llm_hint.get("diagnosis_hint", "")
+        line = f"- {check_code} / {field_cn} ({field}): 年报检索词：{', '.join(search_aliases)}；"
+        if clean_category:
+            line += f" 如批准需带回 clean_category={clean_category}；"
+        line += f" {diagnosis}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def validate_batch_llm_response(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Validate and sanitize the JSON object returned by the batch LLM call.
+
+    Required top-level key: adjustments (list).  Each adjustment must contain
+    at least period and approved; malformed entries are dropped and counted.
+    """
+    if "error" in parsed:
+        return parsed
+    adjustments = parsed.get("adjustments")
+    if not isinstance(adjustments, list):
+        parsed["error"] = "LLM response missing valid 'adjustments' list"
+        parsed["adjustments"] = []
+        parsed["_malformed"] = True
+        return parsed
+
+    validated: list[dict[str, Any]] = []
+    malformed_indices: list[int] = []
+    for idx, item in enumerate(adjustments):
+        if not isinstance(item, dict):
+            malformed_indices.append(idx)
+            continue
+        if "period" not in item or "approved" not in item:
+            malformed_indices.append(idx)
+            continue
+        validated.append(item)
+
+    parsed["adjustments"] = validated
+    if malformed_indices:
+        parsed["_malformed_indices"] = malformed_indices
+    return parsed
+
+
+def batch_llm_confirm_candidates(
+    ticker: str,
+    candidates: list[dict[str, Any]],
+    known_defects: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     if not candidates:
         return {"adjustments": []}
 
@@ -950,14 +1007,67 @@ def batch_llm_confirm_candidates(ticker: str, candidates: list[dict[str, Any]]) 
         "1. failure residual 与候选年报值换算为百万元后的金额必须在 1 百万元内吻合。\n"
         "2. 候选字段必须能对应年报科目；如果只是规则猜测但字段不可靠，不批准。\n"
         "3. 只批准 suspected TuShare field missing/zero 的情形；重复计入或分类错误不批准。\n"
-        "4. 对美的集团“发放贷款和垫款”流动部分，对应候选 TuShare 字段为 lending_funds 时，如金额吻合可批准。\n"
+        "4. 已知 TuShare 字段缺失模式（按年报核对提示卡），金额吻合且字段匹配时可批准；"
+        "不要依赖公司名称，只根据字段和金额判断：\n"
+        f"{format_known_defects_for_prompt(known_defects or [])}\n"
         "5. 若候选项带有 clean_category（说明该 TuShare 字段默认 bucket 与本公司列报口径不一致，"
         "如 estimated_liab 预计负债默认非流动但本年列报为流动），且年报金额与残差吻合、"
         "TuShare 该字段缺失/为0，可批准；批准时在该条 adjustment 中原样回传 clean_category 字段。\n\n"
         "若候选项含 clean_category，请在对应 adjustment JSON 中加入 \"clean_category\": string 字段原样返回。\n\n"
         f"输入数据：\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
-    return call_llm([{"role": "system", "content": system}, {"role": "user", "content": user}])
+    return validate_batch_llm_response(
+        call_llm([{"role": "system", "content": system}, {"role": "user", "content": user}])
+    )
+
+
+def _build_adjustment_record(
+    ticker: str,
+    period: str,
+    field: str,
+    new_value: float,
+    old_value: float,
+    failure: dict[str, Any],
+    *,
+    status: str,
+    approved_by: str | None,
+    source: str,
+    confidence: str | None,
+    annual_report_item: str | None,
+    annual_report_value_raw: float | None,
+    annual_report_unit: str | None,
+    evidence_lines: str | None,
+    reason: str | None,
+    source_markdown_path: str | None,
+    source_reconciliation_path: str,
+    clean_category: str | None = None,
+) -> dict[str, Any]:
+    """Construct a single override adjustment record with consistent fields."""
+    statement = str(failure.get("statement"))
+    endpoint = "balancesheet" if statement == "balancesheet" else statement
+    return {
+        "status": status,
+        "approved_by": approved_by,
+        "ticker": ticker,
+        "period": period,
+        "endpoint": endpoint,
+        "field": field,
+        "old_value_million_cny": old_value,
+        "new_value_million_cny": new_value,
+        "delta_million_cny": new_value - old_value,
+        "failure_code": failure.get("code"),
+        "failure_message": failure.get("message"),
+        "annual_report_item": annual_report_item,
+        "annual_report_value_raw": annual_report_value_raw,
+        "annual_report_unit": annual_report_unit,
+        "confidence": confidence,
+        "source": source,
+        "source_markdown_path": source_markdown_path,
+        "source_reconciliation_path": source_reconciliation_path,
+        "evidence_lines": evidence_lines,
+        "reason": reason,
+        "clean_category": clean_category,
+    }
 
 
 def build_override_file_from_batch_llm(
@@ -1002,29 +1112,26 @@ def build_override_file_from_batch_llm(
         new_value = float(value)
         status = "approved" if approve_high_confidence else "candidate"
         adjustments.append(
-            {
-                "status": status,
-                "approved_by": f"{provider}:high_confidence" if status == "approved" else None,
-                "ticker": ticker,
-                "period": period,
-                "endpoint": "balancesheet" if str(failure.get("statement")) == "balancesheet" else str(failure.get("statement")),
-                "field": str(field),
-                "old_value_million_cny": old_value,
-                "new_value_million_cny": new_value,
-                "delta_million_cny": new_value - old_value,
-                "failure_code": failure.get("code"),
-                "failure_message": failure.get("message"),
-                "annual_report_item": item.get("annual_report_item"),
-                "annual_report_value_raw": item.get("annual_report_value_raw"),
-                "annual_report_unit": item.get("annual_report_unit"),
-                "confidence": item.get("confidence"),
-                "source": provider,
-                "source_markdown_path": markdown_by_period.get(period),
-                "source_reconciliation_path": str(reconciliation_path),
-                "evidence_lines": item.get("evidence_lines"),
-                "reason": item.get("reason"),
-                "clean_category": clean_category_by.get((period, str(field))),
-            }
+            _build_adjustment_record(
+                ticker=ticker,
+                period=period,
+                field=str(field),
+                new_value=new_value,
+                old_value=old_value,
+                failure=failure,
+                status=status,
+                approved_by=f"{provider}:high_confidence" if status == "approved" else None,
+                source=provider,
+                confidence=item.get("confidence"),
+                annual_report_item=item.get("annual_report_item"),
+                annual_report_value_raw=item.get("annual_report_value_raw"),
+                annual_report_unit=item.get("annual_report_unit"),
+                evidence_lines=item.get("evidence_lines"),
+                reason=item.get("reason"),
+                source_markdown_path=markdown_by_period.get(period),
+                source_reconciliation_path=str(reconciliation_path),
+                clean_category=clean_category_by.get((period, str(field))),
+            )
         )
 
     return {
@@ -1111,32 +1218,30 @@ def build_override_file(
             new_value = float(candidate["value_million_cny"])
             old_value = field_values.get(field, float(candidate.get("tushare_value_million_cny") or 0.0))
             status = "approved" if approve_high_confidence and candidate.get("confidence") == "high" else "candidate"
+            source = str(candidate.get("source"))
             adjustments.append(
-                {
-                    "status": status,
-                    "approved_by": f"{candidate.get('source')}:high_confidence_exact_residual" if status == "approved" else None,
-                    "ticker": ticker,
-                    "period": period,
-                    "endpoint": "balancesheet" if str(failure.get("statement")) == "balancesheet" else str(failure.get("statement")),
-                    "field": field,
-                    "old_value_million_cny": old_value,
-                    "new_value_million_cny": new_value,
-                    "delta_million_cny": new_value - old_value,
-                    "failure_code": failure.get("code"),
-                    "failure_message": failure.get("message"),
-                    "annual_report_item": candidate.get("annual_report_item"),
-                    "annual_report_value_raw": candidate.get("annual_report_value_raw"),
-                    "annual_report_unit": candidate.get("annual_report_unit"),
-                    "confidence": candidate.get("confidence"),
-                    "source": candidate.get("source"),
-                    "source_markdown_path": markdown_path,
-                    "source_reconciliation_path": str(reconciliation_path),
-                    "evidence_lines": candidate.get("evidence_lines"),
-                    "reason": (
+                _build_adjustment_record(
+                    ticker=ticker,
+                    period=period,
+                    field=field,
+                    new_value=new_value,
+                    old_value=old_value,
+                    failure=failure,
+                    status=status,
+                    approved_by=f"{source}:high_confidence_exact_residual" if status == "approved" else None,
+                    source=source,
+                    confidence=candidate.get("confidence"),
+                    annual_report_item=candidate.get("annual_report_item"),
+                    annual_report_value_raw=candidate.get("annual_report_value_raw"),
+                    annual_report_unit=candidate.get("annual_report_unit"),
+                    evidence_lines=candidate.get("evidence_lines"),
+                    reason=(
                         f"{candidate.get('annual_report_item')} from annual report explains "
                         f"{failure.get('code')} residual; applying to TuShare field {field}."
                     ),
-                }
+                    source_markdown_path=markdown_path,
+                    source_reconciliation_path=str(reconciliation_path),
+                )
             )
             seen.add((period, field))
 
@@ -1244,7 +1349,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.write_overrides:
         override_path = Path(args.override_output).resolve() if args.override_output else company_dir / "recon" / "annual_report_overrides.json"
         rule_candidates = collect_rule_candidates(out)
-        llm_confirmation = batch_llm_confirm_candidates(ticker, rule_candidates)
+        llm_confirmation = batch_llm_confirm_candidates(ticker, rule_candidates, known_defects=known_defects)
         overrides = build_override_file_from_batch_llm(
             ticker,
             path,

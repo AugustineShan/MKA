@@ -281,14 +281,19 @@ class TushareDataFetcher:
     def _fetch_daily_basic(self, ticker: str, trade_date: str) -> Any:
         fields = "ts_code,trade_date,total_share,float_share,total_mv,pe_ttm,pb,close"
         start = dt.datetime.strptime(trade_date, "%Y%m%d").date()
+        last_candidate = trade_date
         for offset in range(0, 15):
             candidate = (start - dt.timedelta(days=offset)).strftime("%Y%m%d")
+            last_candidate = candidate
             df = self._call_api("daily_basic", ts_code=ticker, trade_date=candidate, fields=fields)
             if not dataframe_empty(df):
                 if candidate != trade_date:
                     LOGGER.warning("daily_basic empty for %s; using fallback trade_date=%s", trade_date, candidate)
                 return df
-        return df
+        raise RuntimeError(
+            f"daily_basic returned empty for {ticker} on {trade_date} "
+            f"and all fallback trading days back to {last_candidate}"
+        )
 
     def _get_company_name(self, ticker: str) -> str:
         try:
@@ -354,6 +359,8 @@ class TushareDataFetcher:
                 message = str(exc).lower()
                 if is_auth_or_permission_error(exc):
                     raise RuntimeError(f"TuShare {endpoint} authentication/permission error: {exc}") from exc
+                if is_permanent_error(exc):
+                    raise RuntimeError(f"TuShare {endpoint} permanent request error, not retrying: {exc}") from exc
                 if "fields" in params and ("field" in message or "字段" in message):
                     LOGGER.warning("%s rejected explicit fields; retrying without fields", endpoint)
                     params = {key: value for key, value in params.items() if key != "fields"}
@@ -419,6 +426,35 @@ def is_auth_or_permission_error(exc: Exception) -> bool:
             "积分",
         ]
     )
+
+
+def is_permanent_error(exc: Exception) -> bool:
+    """Return True for TuShare errors that will not resolve by retrying.
+
+    These are typically client-side mistakes (invalid parameter, unknown
+    field/code, non-existent endpoint) rather than transient server issues.
+    """
+    message = str(exc).lower()
+    permanent_markers = [
+        "参数错误",
+        "参数不对",
+        "invalid parameter",
+        "参数不能为空",
+        "ts_code不存在",
+        "ts_code 不存在",
+        "股票代码不存在",
+        "代码不存在",
+        "invalid ts_code",
+        "接口不存在",
+        "api不存在",
+        "field不存在",
+        "字段不存在",
+        "no such field",
+        "unknown field",
+        "endpoint不存在",
+        "不存在该接口",
+    ]
+    return any(marker in message for marker in permanent_markers)
 
 
 def load_env_file(path: Path) -> dict[str, str]:

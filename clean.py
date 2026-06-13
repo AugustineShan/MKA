@@ -308,12 +308,12 @@ def _bucket_sum(
 
 def is_bucket_sum(bucket: str, row: dict[str, float], present: set[str]) -> float:
     """Sum all fields in an IS bucket; sub-items skipped."""
-    return _bucket_sum(IS_FIELD_CATEGORIES, IS_SUB_RESOLVE, _vi, bucket, row, present)
+    return _bucket_sum(IS_FIELD_CATEGORIES, IS_SUB_RESOLVE, get_income_value, bucket, row, present)
 
 
 def cf_bucket_sum(bucket: str, row: dict[str, float], present: set[str]) -> float:
     """Sum all fields in a CF bucket; sub-items skipped."""
-    return _bucket_sum(CF_FIELD_CATEGORIES, CF_SUB_RESOLVE, _vc, bucket, row, present)
+    return _bucket_sum(CF_FIELD_CATEGORIES, CF_SUB_RESOLVE, get_cashflow_value, bucket, row, present)
 
 # ── BS 字段全量分类（TuShare balancesheet 150 个 float 字段） ──
 # 依据中国会计准则资产负债表模板，每个字段只归一类。
@@ -609,14 +609,15 @@ def load_raw_tushare(conn: sqlite3.Connection, ticker: str, *, mode: str) -> pd.
     if mode == "annual":
         where = "ticker = ? AND report_type = '1' AND comp_type = '1'"
     elif mode == "quarterly":
-        # income report_type=2 provides true single-quarter data.
-        # balancesheet is point-in-time, so report_type=1 is used directly.
-        # cashflow report_type=2 returns cumulative values (not single-quarter),
-        # so we read report_type=1 quarterly cumulative data and split locally
-        # in split_cashflow_quarterly().
+        # income report_type=2 provides true single-quarter data when available.
+        # We also read report_type=1 as a fallback so that BS/CF data for a
+        # quarter is not silently dropped just because single-quarter income is
+        # missing.  balancesheet is point-in-time, so report_type=1 is used
+        # directly.  cashflow report_type=1 quarterly cumulative data is split
+        # locally in split_cashflow_quarterly().
         where = (
             "ticker = ? AND comp_type = '1' AND ("
-            "(endpoint = 'income' AND report_type = '2') OR "
+            "(endpoint = 'income' AND report_type IN ('1', '2')) OR "
             "(endpoint IN ('balancesheet', 'cashflow') AND report_type = '1')"
             ")"
         )
@@ -634,17 +635,31 @@ def load_raw_tushare(conn: sqlite3.Connection, ticker: str, *, mode: str) -> pd.
 
 
 def dedupe_by_f_ann_date(df: pd.DataFrame) -> pd.DataFrame:
-    """For same (endpoint, end_date, field), keep row with max f_ann_date."""
+    """For same (endpoint, end_date, field), keep row with max f_ann_date.
+
+    For income in quarterly mode, single-quarter report_type='2' takes
+    precedence over cumulative report_type='1' so that a missing rt2 does not
+    silently drop the whole quarter; if rt2 is absent, rt1 is kept as fallback.
+    """
     if df.empty:
         return df
     df = df.copy()
     df["_f_ann_sort"] = df["f_ann_date"].fillna("")
+    # Prefer income report_type=2 over report_type=1 when both exist.
+    df["_rt_sort"] = df.apply(
+        lambda r: (
+            0
+            if r.get("endpoint") == "income" and str(r.get("report_type")) == "2"
+            else 1
+        ),
+        axis=1,
+    )
     df = df.sort_values(
-        ["endpoint", "end_date", "field", "_f_ann_sort"],
-        ascending=[True, True, True, True],
+        ["endpoint", "end_date", "field", "_rt_sort", "_f_ann_sort"],
+        ascending=[True, True, True, False, True],
     )
     df = df.drop_duplicates(subset=["endpoint", "end_date", "field"], keep="last")
-    df = df.drop(columns=["_f_ann_sort"])
+    df = df.drop(columns=["_f_ann_sort", "_rt_sort"])
     return df
 
 
@@ -657,7 +672,12 @@ def period_label(end_date: str) -> str | None:
     return f"{end_date[:4]}{quarter}"
 
 
-def pivot_to_wide(df: pd.DataFrame, *, mode: str) -> tuple[pd.DataFrame, dict[str, set[str]]]:
+def pivot_to_wide(
+    df: pd.DataFrame,
+    *,
+    mode: str,
+    max_quarters: int = 48,
+) -> tuple[pd.DataFrame, dict[str, set[str]]]:
     """Pivot EAV to wide table, handling cross-endpoint field name collisions.
 
     For fields that exist in multiple endpoints (e.g. credit_impa_loss
@@ -680,7 +700,17 @@ def pivot_to_wide(df: pd.DataFrame, *, mode: str) -> tuple[pd.DataFrame, dict[st
                 & (df["report_type"].astype(str) == "2")
             ]["period"].tolist()
         )
-        df = df[df["period"].isin(income_single_periods)]
+        income_any_periods = set(
+            df[df["endpoint"] == "income"]["period"].tolist()
+        )
+        missing_single_quarter_income = income_any_periods - income_single_periods
+        if missing_single_quarter_income:
+            LOGGER.warning(
+                "Income report_type=2 missing for quarterly periods %s; "
+                "report_type=1 cumulative values will be used as fallback where available. "
+                "Single-quarter income semantics may be affected.",
+                sorted(missing_single_quarter_income),
+            )
         # Keep only last 12 years of quarters to avoid early-disclosure quirks
         all_periods = sorted(str(p) for p in df["period"].unique())
         cashflow_periods = set(
@@ -701,7 +731,18 @@ def pivot_to_wide(df: pd.DataFrame, *, mode: str) -> tuple[pd.DataFrame, dict[st
             return previous is None or previous in cashflow_periods
 
         buildable_periods = [period for period in all_periods if cf_buildable(period)]
-        output_periods = (buildable_periods or all_periods)[-48:]
+        candidate_periods = buildable_periods or all_periods
+        if max_quarters > 0 and len(candidate_periods) > max_quarters:
+            dropped_periods = candidate_periods[:-max_quarters]
+            output_periods = candidate_periods[-max_quarters:]
+            LOGGER.warning(
+                "Quarterly mode dropped %d early period(s) beyond max_quarters=%d: %s",
+                len(dropped_periods),
+                max_quarters,
+                dropped_periods,
+            )
+        else:
+            output_periods = candidate_periods
 
         # Cashflow data is cumulative inside a year. Keep only the output
         # periods plus their immediate cumulative predecessors as split helpers.
@@ -963,12 +1004,12 @@ class CheckError(Exception):
     """Raised when a hard check fails."""
 
 
-def _v(row: dict[str, float], field: str) -> float:
+def get_value(row: dict[str, float], field: str) -> float:
     """Get value from row, default 0.0."""
     return row.get(field, 0.0)
 
 
-def _vi(row: dict[str, float], field: str) -> float:
+def get_income_value(row: dict[str, float], field: str) -> float:
     """Get income-endpoint value from row (handles cross-endpoint prefix)."""
     prefixed = f"income.{field}"
     if prefixed in row:
@@ -976,7 +1017,7 @@ def _vi(row: dict[str, float], field: str) -> float:
     return row.get(field, 0.0)
 
 
-def _vc(row: dict[str, float], field: str) -> float:
+def get_cashflow_value(row: dict[str, float], field: str) -> float:
     """Get cashflow-endpoint value from row (handles cross-endpoint prefix)."""
     prefixed = f"cashflow.{field}"
     if prefixed in row:
@@ -993,22 +1034,22 @@ def check_is(row: dict[str, float], present: set[str], year: str) -> list[str]:
     # into total_revenue but not revenue. When the gap is explained by these
     # items, use total_revenue as the income base so that operate_profit and
     # total_cogs consistency checks hold.
-    revenue = _vi(row, "revenue")
-    total_revenue = _vi(row, "total_revenue")
-    other_revenue = _vi(row, "int_income") + _vi(row, "comm_income") + _vi(row, "n_oth_b_income")
+    revenue = get_income_value(row, "revenue")
+    total_revenue = get_income_value(row, "total_revenue")
+    other_revenue = get_income_value(row, "int_income") + get_income_value(row, "comm_income") + get_income_value(row, "n_oth_b_income")
     revenue_base = revenue
     if abs(total_revenue - revenue) >= TOLERANCE and abs(total_revenue - revenue - other_revenue) < TOLERANCE:
         revenue_base = total_revenue
 
     # 1.1 营业总成本 = sum(cost_item)
-    total_cogs = _vi(row, "total_cogs")
+    total_cogs = get_income_value(row, "total_cogs")
     cogs_calc = is_bucket_sum("cost_item", row, present)
     residual = abs(total_cogs - cogs_calc)
 
     if residual >= TOLERANCE:
         # Step A: total_cogs = total_opcost + fin_exp
-        total_opcost = _vi(row, "total_opcost")
-        fin_exp = _vi(row, "fin_exp")
+        total_opcost = get_income_value(row, "total_opcost")
+        fin_exp = get_income_value(row, "fin_exp")
         cogs_via_opcost = total_opcost + fin_exp
         residual2 = abs(total_cogs - cogs_via_opcost)
         if residual2 < TOLERANCE:
@@ -1022,7 +1063,7 @@ def check_is(row: dict[str, float], present: set[str], year: str) -> list[str]:
                 )
         else:
             # Step B: verify total_cogs via operate_profit consistency
-            operate_profit_prelim = _vi(row, "operate_profit")
+            operate_profit_prelim = get_income_value(row, "operate_profit")
             other_gains = is_bucket_sum("operating_adjustment", row, present)
             cogs_via_profit = revenue_base + other_gains - operate_profit_prelim
             if abs(total_cogs - cogs_via_profit) < TOLERANCE:
@@ -1039,7 +1080,7 @@ def check_is(row: dict[str, float], present: set[str], year: str) -> list[str]:
                 )
 
     # 1.2 营业利润
-    operate_profit = _vi(row, "operate_profit")
+    operate_profit = get_income_value(row, "operate_profit")
     oper_profit_calc = revenue_base - total_cogs + is_bucket_sum("operating_adjustment", row, present)
     residual = abs(operate_profit - oper_profit_calc)
     if residual >= TOLERANCE:
@@ -1049,8 +1090,8 @@ def check_is(row: dict[str, float], present: set[str], year: str) -> list[str]:
         )
 
     # 1.3 利润总额
-    total_profit = _vi(row, "total_profit")
-    total_profit_calc = operate_profit + _vi(row, "non_oper_income") - _vi(row, "non_oper_exp")
+    total_profit = get_income_value(row, "total_profit")
+    total_profit_calc = operate_profit + get_income_value(row, "non_oper_income") - get_income_value(row, "non_oper_exp")
     residual = abs(total_profit - total_profit_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -1059,8 +1100,8 @@ def check_is(row: dict[str, float], present: set[str], year: str) -> list[str]:
         )
 
     # 1.4 净利润
-    n_income = _vi(row, "n_income")
-    n_income_calc = total_profit - _vi(row, "income_tax")
+    n_income = get_income_value(row, "n_income")
+    n_income_calc = total_profit - get_income_value(row, "income_tax")
     residual = abs(n_income - n_income_calc)
     if residual >= TOLERANCE:
         errors.append(
@@ -1069,8 +1110,8 @@ def check_is(row: dict[str, float], present: set[str], year: str) -> list[str]:
         )
 
     # 1.5 净利润归属
-    n_income_attr_p = _vi(row, "n_income_attr_p")
-    minority_gain = _vi(row, "minority_gain")
+    n_income_attr_p = get_income_value(row, "n_income_attr_p")
+    minority_gain = get_income_value(row, "minority_gain")
     residual = abs(n_income - (n_income_attr_p + minority_gain))
     if residual >= TOLERANCE:
         errors.append(
@@ -1095,17 +1136,18 @@ def check_bs(
     present: set[str],
     year: str,
     reclass: dict[str, str] | None = None,
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Balance sheet hard checks using exhaustive field categorisation.
 
-    ``reclass`` 是本期 override 重分类映射（field -> bucket），用于把如
-    estimated_liab 这类 TuShare 默认非流动、但本公司本年列报为流动的科目，
-    在 bucket 加总时移到正确的 bucket。
+    Returns (errors, warnings).  ``reclass`` 是本期 override 重分类映射
+    （field -> bucket），用于把如 estimated_liab 这类 TuShare 默认非流动、
+    但本公司本年列报为流动的科目，在 bucket 加总时移到正确的 bucket。
     """
     errors: list[str] = []
+    warnings: list[str] = []
 
     # 2.1 流动资产合计
-    total_cur_assets = _v(row, "total_cur_assets")
+    total_cur_assets = get_value(row, "total_cur_assets")
     cur_assets_calc = bs_bucket_sum("current_asset", row, present, reclass)
     residual = abs(total_cur_assets - cur_assets_calc)
     if residual >= TOLERANCE:
@@ -1115,7 +1157,7 @@ def check_bs(
         )
 
     # 2.2 非流动资产合计
-    total_nca = _v(row, "total_nca")
+    total_nca = get_value(row, "total_nca")
     nca_calc = bs_bucket_sum("noncurrent_asset", row, present, reclass)
     residual = abs(total_nca - nca_calc)
     if residual >= TOLERANCE:
@@ -1125,7 +1167,7 @@ def check_bs(
         )
 
     # 2.3 总资产 = 流动 + 非流动
-    total_assets = _v(row, "total_assets")
+    total_assets = get_value(row, "total_assets")
     residual = abs(total_assets - (total_cur_assets + total_nca))
     if residual >= TOLERANCE:
         errors.append(
@@ -1134,7 +1176,7 @@ def check_bs(
         )
 
     # 3.1 流动负债合计
-    total_cur_liab = _v(row, "total_cur_liab")
+    total_cur_liab = get_value(row, "total_cur_liab")
     cur_liab_calc = bs_bucket_sum("current_liab", row, present, reclass)
     residual = abs(total_cur_liab - cur_liab_calc)
     if residual >= TOLERANCE:
@@ -1144,7 +1186,7 @@ def check_bs(
         )
 
     # 3.2 非流动负债合计
-    total_ncl = _v(row, "total_ncl")
+    total_ncl = get_value(row, "total_ncl")
     ncl_calc = bs_bucket_sum("noncurrent_liab", row, present, reclass)
     residual = abs(total_ncl - ncl_calc)
     if residual >= TOLERANCE:
@@ -1154,7 +1196,7 @@ def check_bs(
         )
 
     # 3.3 总负债 = 流动 + 非流动
-    total_liab = _v(row, "total_liab")
+    total_liab = get_value(row, "total_liab")
     residual = abs(total_liab - (total_cur_liab + total_ncl))
     if residual >= TOLERANCE:
         errors.append(
@@ -1164,29 +1206,34 @@ def check_bs(
 
     # 4.1 权益明细加总
     equity_calc = bs_bucket_sum("equity", row, present, reclass)
-    total_hldr_eqy_inc_min_int = _v(row, "total_hldr_eqy_inc_min_int")
+    total_hldr_eqy_inc_min_int = get_value(row, "total_hldr_eqy_inc_min_int")
     residual = abs(total_hldr_eqy_inc_min_int - equity_calc)
 
-    treasury_share = _v(row, "treasury_share")
-    if treasury_share != 0 and abs(residual - 2 * treasury_share) < TOLERANCE:
-        errors.append(
-            f"BS 4.1 {year} treasury_share 符号异常，疑似存为负数 "
-            f"(residual={residual:.4f} ≈ 2*treasury_share={2*treasury_share:.4f})"
+    treasury_share = get_value(row, "treasury_share")
+    treasury_share_anomaly = (
+        treasury_share != 0
+        and abs(residual - 2 * treasury_share) < TOLERANCE
+    )
+    if treasury_share_anomaly:
+        warnings.append(
+            f"BS 4.1 {year} treasury_share 符号异常（经验规则），"
+            f"residual={residual:.4f} ≈ 2*treasury_share={2*treasury_share:.4f}；"
+            f"请核对年报中库藏股列报口径。"
         )
 
-    if residual >= TOLERANCE:
+    if residual >= TOLERANCE and not treasury_share_anomaly:
         errors.append(
             f"BS 4.1 {year} 权益合计: total_hldr_eqy_inc_min_int={total_hldr_eqy_inc_min_int:.4f} "
             f"calc={equity_calc:.4f} residual={residual:.4f}"
         )
 
     # 4.2 归母 + 少数 = 合计
-    total_hldr_eqy_exc_min_int = _v(row, "total_hldr_eqy_exc_min_int")
-    residual = abs(total_hldr_eqy_inc_min_int - (total_hldr_eqy_exc_min_int + _v(row, "minority_int")))
+    total_hldr_eqy_exc_min_int = get_value(row, "total_hldr_eqy_exc_min_int")
+    residual = abs(total_hldr_eqy_inc_min_int - (total_hldr_eqy_exc_min_int + get_value(row, "minority_int")))
     if residual >= TOLERANCE:
         errors.append(
             f"BS 4.2 {year} 归母+少数: total_inc={total_hldr_eqy_inc_min_int:.4f} "
-            f"exc+min={total_hldr_eqy_exc_min_int + _v(row, 'minority_int'):.4f} residual={residual:.4f}"
+            f"exc+min={total_hldr_eqy_exc_min_int + get_value(row, 'minority_int'):.4f} residual={residual:.4f}"
         )
 
     # 4.3 终极配平
@@ -1197,7 +1244,7 @@ def check_bs(
             f"liab+eqy={total_liab + total_hldr_eqy_inc_min_int:.4f} residual={residual1:.4f}"
         )
 
-    total_liab_hldr_eqy = _v(row, "total_liab_hldr_eqy")
+    total_liab_hldr_eqy = get_value(row, "total_liab_hldr_eqy")
     residual2 = abs(total_assets - total_liab_hldr_eqy)
     if total_liab_hldr_eqy != 0 and residual2 >= TOLERANCE:
         errors.append(
@@ -1205,7 +1252,7 @@ def check_bs(
             f"total_liab_hldr_eqy={total_liab_hldr_eqy:.4f} residual={residual2:.4f}"
         )
 
-    return errors
+    return errors, warnings
 
 
 def apply_quarterly_bs_plugs(
@@ -1233,14 +1280,15 @@ def apply_quarterly_bs_plugs(
         present = present_by_period.get(period, set())
         for code, bucket, target_field, label in specs:
             row_before = wide.loc[period].to_dict()
-            target = _v(row_before, target_field)
+            target = get_value(row_before, target_field)
             calc = bs_bucket_sum(bucket, row_before, present)
             residual = target - calc
             if abs(residual) < TOLERANCE:
                 continue
 
             plug_field = QA_BS_PLUG_FIELDS[bucket]
-            old_plug = float(wide.loc[period, plug_field] or 0.0)
+            raw_plug = wide.loc[period, plug_field]
+            old_plug = 0.0 if pd.isna(raw_plug) else float(raw_plug)
             new_plug = old_plug + residual
             wide.loc[period, plug_field] = new_plug
 
@@ -1282,14 +1330,14 @@ def apply_quarterly_cf_cash_plugs(
 
     for period in sorted(str(period) for period in wide.index.tolist()):
         row = wide.loc[period].to_dict()
-        end_cash = _vc(row, "c_cash_equ_end_period")
-        beg_cash = _vc(row, "c_cash_equ_beg_period")
-        net_increase = _vc(row, "n_incr_cash_cash_equ")
+        end_cash = get_cashflow_value(row, "c_cash_equ_end_period")
+        beg_cash = get_cashflow_value(row, "c_cash_equ_beg_period")
+        net_increase = get_cashflow_value(row, "n_incr_cash_cash_equ")
         residual = end_cash - (beg_cash + net_increase)
         if abs(residual) < tolerance:
             continue
 
-        old_plug = float(wide.loc[period, QA_CF_CASH_PLUG_FIELD] or 0.0)
+        old_plug = 0.0 if pd.isna(wide.loc[period, QA_CF_CASH_PLUG_FIELD]) else float(wide.loc[period, QA_CF_CASH_PLUG_FIELD])
         new_plug = old_plug + residual
         wide.loc[period, QA_CF_CASH_PLUG_FIELD] = new_plug
 
@@ -1328,9 +1376,9 @@ def check_cf(row: dict[str, float], present: set[str], year: str) -> list[str]:
     errors: list[str] = []
 
     # 5.1 经营活动
-    n_cashflow_act = _vc(row, "n_cashflow_act")
-    c_inf_fr_operate_a = _vc(row, "c_inf_fr_operate_a")
-    st_cash_out_act = _vc(row, "st_cash_out_act")
+    n_cashflow_act = get_cashflow_value(row, "n_cashflow_act")
+    c_inf_fr_operate_a = get_cashflow_value(row, "c_inf_fr_operate_a")
+    st_cash_out_act = get_cashflow_value(row, "st_cash_out_act")
     residual = abs(n_cashflow_act - (c_inf_fr_operate_a - st_cash_out_act))
     if residual >= TOLERANCE:
         errors.append(
@@ -1339,9 +1387,9 @@ def check_cf(row: dict[str, float], present: set[str], year: str) -> list[str]:
         )
 
     # 5.2 投资活动
-    n_cashflow_inv_act = _vc(row, "n_cashflow_inv_act")
-    stot_inflows_inv_act = _vc(row, "stot_inflows_inv_act")
-    stot_out_inv_act = _vc(row, "stot_out_inv_act")
+    n_cashflow_inv_act = get_cashflow_value(row, "n_cashflow_inv_act")
+    stot_inflows_inv_act = get_cashflow_value(row, "stot_inflows_inv_act")
+    stot_out_inv_act = get_cashflow_value(row, "stot_out_inv_act")
     residual = abs(n_cashflow_inv_act - (stot_inflows_inv_act - stot_out_inv_act))
     if residual >= TOLERANCE:
         errors.append(
@@ -1350,9 +1398,9 @@ def check_cf(row: dict[str, float], present: set[str], year: str) -> list[str]:
         )
 
     # 5.3 筹资活动
-    n_cash_flows_fnc_act = _vc(row, "n_cash_flows_fnc_act")
-    stot_cash_in_fnc_act = _vc(row, "stot_cash_in_fnc_act")
-    stot_cashout_fnc_act = _vc(row, "stot_cashout_fnc_act")
+    n_cash_flows_fnc_act = get_cashflow_value(row, "n_cash_flows_fnc_act")
+    stot_cash_in_fnc_act = get_cashflow_value(row, "stot_cash_in_fnc_act")
+    stot_cashout_fnc_act = get_cashflow_value(row, "stot_cashout_fnc_act")
     residual = abs(n_cash_flows_fnc_act - (stot_cash_in_fnc_act - stot_cashout_fnc_act))
     if residual >= TOLERANCE:
         errors.append(
@@ -1361,8 +1409,8 @@ def check_cf(row: dict[str, float], present: set[str], year: str) -> list[str]:
         )
 
     # 5.4 三大活动汇总
-    n_incr_cash_cash_equ = _vc(row, "n_incr_cash_cash_equ")
-    eff_fx_flu_cash = _vc(row, "eff_fx_flu_cash")
+    n_incr_cash_cash_equ = get_cashflow_value(row, "n_incr_cash_cash_equ")
+    eff_fx_flu_cash = get_cashflow_value(row, "eff_fx_flu_cash")
     total_calc = n_cashflow_act + n_cashflow_inv_act + n_cash_flows_fnc_act + eff_fx_flu_cash
     residual = abs(n_incr_cash_cash_equ - total_calc)
     if residual >= TOLERANCE:
@@ -1372,9 +1420,9 @@ def check_cf(row: dict[str, float], present: set[str], year: str) -> list[str]:
         )
 
     # 5.5 期初期末
-    c_cash_equ_end_period = _vc(row, "c_cash_equ_end_period")
-    c_cash_equ_beg_period = _vc(row, "c_cash_equ_beg_period")
-    qa_cf_cash_reconcile_plug = _v(row, QA_CF_CASH_PLUG_FIELD)
+    c_cash_equ_end_period = get_cashflow_value(row, "c_cash_equ_end_period")
+    c_cash_equ_beg_period = get_cashflow_value(row, "c_cash_equ_beg_period")
+    qa_cf_cash_reconcile_plug = get_value(row, QA_CF_CASH_PLUG_FIELD)
     cash_bridge_calc = c_cash_equ_beg_period + n_incr_cash_cash_equ + qa_cf_cash_reconcile_plug
     residual = abs(c_cash_equ_end_period - cash_bridge_calc)
     if residual >= TOLERANCE:
@@ -1390,9 +1438,9 @@ def check_is_supplement(row: dict[str, float], present: set[str], year: str) -> 
     """IS supplement hard checks (6.1, 6.2, 6.3)."""
     errors: list[str] = []
 
-    t_compr_income = _vi(row, "t_compr_income")
-    n_income = _vi(row, "n_income")
-    oth_compr_income = _vi(row, "oth_compr_income")
+    t_compr_income = get_income_value(row, "t_compr_income")
+    n_income = get_income_value(row, "n_income")
+    oth_compr_income = get_income_value(row, "oth_compr_income")
 
     # 6.1 综合收益 = 净利润 + 其他综合收益
     residual = abs(t_compr_income - (n_income + oth_compr_income))
@@ -1403,8 +1451,8 @@ def check_is_supplement(row: dict[str, float], present: set[str], year: str) -> 
         )
 
     # 6.2 综合收益归属
-    compr_inc_attr_p = _vi(row, "compr_inc_attr_p")
-    compr_inc_attr_m_s = _vi(row, "compr_inc_attr_m_s")
+    compr_inc_attr_p = get_income_value(row, "compr_inc_attr_p")
+    compr_inc_attr_m_s = get_income_value(row, "compr_inc_attr_m_s")
     residual = abs(t_compr_income - (compr_inc_attr_p + compr_inc_attr_m_s))
     if residual >= TOLERANCE:
         errors.append(
@@ -1416,8 +1464,8 @@ def check_is_supplement(row: dict[str, float], present: set[str], year: str) -> 
     # 仅当公司有实质披露（至少一个非零）时校验；
     # 2020年前旧准则不强制拆分，字段存在但为0属正常。
     if "continued_net_profit" in present:
-        continued_net_profit = _vi(row, "continued_net_profit")
-        end_net_profit = _vi(row, "end_net_profit")
+        continued_net_profit = get_income_value(row, "continued_net_profit")
+        end_net_profit = get_income_value(row, "end_net_profit")
         if continued_net_profit != 0.0 or end_net_profit != 0.0:
             residual = abs(n_income - (continued_net_profit + end_net_profit))
             if residual >= TOLERANCE:
@@ -1435,8 +1483,8 @@ def check_cross_table(row: dict[str, float], present: set[str], year: str) -> li
 
     # 7.1 IS 净利润 = CF 附注净利润
     # Only check when CF net_profit is non-zero (some years lack indirect method data)
-    is_n_income = _vi(row, "n_income")
-    cf_net_profit = _vc(row, "net_profit")
+    is_n_income = get_income_value(row, "n_income")
+    cf_net_profit = get_cashflow_value(row, "net_profit")
     if "net_profit" in present and cf_net_profit != 0.0:
         residual = abs(cf_net_profit - is_n_income)
         if residual >= TOLERANCE:
@@ -1458,8 +1506,8 @@ def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]
 
     # 7.2 IS 财务费用 vs CF 附注财务费用 (soft — CF finan_exp is often
     # the interest expense component only, not the net fin_exp)
-    is_fin_exp = _vi(row, "fin_exp")
-    cf_finan_exp = _vc(row, "finan_exp")
+    is_fin_exp = get_income_value(row, "fin_exp")
+    cf_finan_exp = get_cashflow_value(row, "finan_exp")
     if cf_finan_exp != 0.0 or is_fin_exp != 0.0:
         diff = abs(cf_finan_exp - is_fin_exp)
         if diff > TOLERANCE:
@@ -1468,8 +1516,8 @@ def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]
             )
 
     # 7.3 CF期末现金 vs BS货币资金
-    c_cash_equ_end = _vc(row, "c_cash_equ_end_period")
-    money_cap = _v(row, "money_cap")
+    c_cash_equ_end = get_cashflow_value(row, "c_cash_equ_end_period")
+    money_cap = get_value(row, "money_cap")
     diff = abs(c_cash_equ_end - money_cap)
     if diff > TOLERANCE:
         warnings.append(
@@ -1477,10 +1525,10 @@ def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]
         )
 
     # 10.1 方向合理性
-    revenue = _vi(row, "revenue")
-    total_assets = _v(row, "total_assets")
-    n_income_attr_p = _vi(row, "n_income_attr_p")
-    basic_eps = _vi(row, "basic_eps")
+    revenue = get_income_value(row, "revenue")
+    total_assets = get_value(row, "total_assets")
+    n_income_attr_p = get_income_value(row, "n_income_attr_p")
+    basic_eps = get_income_value(row, "basic_eps")
 
     if revenue < 0:
         warnings.append(f"10.1 {year} 营业收入为负: {revenue:.4f}")
@@ -1495,21 +1543,21 @@ def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]
     # 10.2 量级合理性
     if total_assets > 10_000_000:
         warnings.append(f"10.2 {year} 总资产 {total_assets:.0f}M > 10万亿，请确认")
-    total_revenue = _vi(row, "total_revenue")
-    operate_profit = _vi(row, "operate_profit")
+    total_revenue = get_income_value(row, "total_revenue")
+    operate_profit = get_income_value(row, "operate_profit")
     if total_revenue > 0 and abs(operate_profit) > total_revenue:
         warnings.append(f"10.2 {year} 营业利润绝对值({operate_profit:.4f})大于营业收入({total_revenue:.4f})")
 
     # 10.3 折旧 vs 固定资产
-    depr_fa_coga_dpba = _vc(row, "depr_fa_coga_dpba")
-    fix_assets = _v(row, "fix_assets")
-    fix_assets_total = _v(row, "fix_assets_total")
+    depr_fa_coga_dpba = get_cashflow_value(row, "depr_fa_coga_dpba")
+    fix_assets = get_value(row, "fix_assets")
+    fix_assets_total = get_value(row, "fix_assets_total")
     fix_val = fix_assets_total if fix_assets_total != 0 else fix_assets
     if fix_val != 0 and depr_fa_coga_dpba > fix_val * 1.5:
         warnings.append(f"10.3 {year} 折旧({depr_fa_coga_dpba:.4f})超过固定资产({fix_val:.4f})的150%")
 
     # 10.4 毛利率范围
-    oper_cost = _vi(row, "oper_cost")
+    oper_cost = get_income_value(row, "oper_cost")
     if revenue > 0:
         gpm = (revenue - oper_cost) / revenue
         if gpm < -0.5 or gpm > 1.0:
@@ -1540,7 +1588,9 @@ def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *,
         else:
             period_warnings = []
             period_errors.extend(check_is(row, present, period))
-        period_errors.extend(check_bs(row, present, period, reclass))
+        bs_errors, bs_warnings = check_bs(row, present, period, reclass)
+        period_errors.extend(bs_errors)
+        period_warnings.extend(bs_warnings)
         period_errors.extend(check_cf(row, present, period))
         if label == "quarterly":
             period_warnings.extend(check_is_supplement(row, present, period))
@@ -1550,7 +1600,7 @@ def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *,
             period_errors.extend(check_cross_table(row, present, period))
 
         # 7.4 连续性：上一期 CF 期末 = 本期 CF 期初
-        c_cash_equ_beg = _vc(row, "c_cash_equ_beg_period")
+        c_cash_equ_beg = get_cashflow_value(row, "c_cash_equ_beg_period")
         if label != "quarterly" and prev_period_end_cash is not None and c_cash_equ_beg != 0:
             residual = abs(prev_period_end_cash - c_cash_equ_beg)
             if residual >= TOLERANCE:
@@ -1558,7 +1608,7 @@ def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *,
                     f"跨表 7.4 {period} 上期CF期末({prev_period_end_cash:.4f}) ≠ 本期CF期初({c_cash_equ_beg:.4f})"
                 )
 
-        prev_period_end_cash = _vc(row, "c_cash_equ_end_period")
+        prev_period_end_cash = get_cashflow_value(row, "c_cash_equ_end_period")
 
         period_warnings.extend(check_soft(row, present, period))
 
@@ -1855,7 +1905,7 @@ def approved_override_count(path: Path) -> int:
 
 def auto_reconcile_annual_failure(db_path: Path, ticker: str, *, max_failures: int) -> int:
     """Strong-trigger annual report reconciliation after an annual hard-check failure."""
-    script = Path(__file__).resolve().with_name("annual_report_reconciler.py")
+    script = Path(__file__).resolve().parent / "annual_report_reconciler.py"
     if not script.exists():
         print(
             f"Annual reconciliation skipped: {script.name} was not found next to clean.py.",
@@ -1943,13 +1993,14 @@ def clean_dataset(
     annual_overrides: list[dict[str, object]] | None = None,
     applied_adjustments: list[dict[str, object]] | None = None,
     warning_records: list[dict[str, object]] | None = None,
+    max_quarters: int = 48,
 ) -> pd.DataFrame:
     """Clean one report_type/mode pair and write its wide table."""
     global TOLERANCE
 
     raw = load_raw_tushare(conn, ticker, mode=mode)
     raw = dedupe_by_f_ann_date(raw)
-    wide, present_by_period = pivot_to_wide(raw, mode=mode)
+    wide, present_by_period = pivot_to_wide(raw, mode=mode, max_quarters=max_quarters)
 
     if mode == "quarterly":
         wide = split_cashflow_quarterly(wide, raw)
@@ -2008,6 +2059,7 @@ def clean_all(
     overrides_path: str | Path | None = None,
     apply_overrides: bool = True,
     mode: str = "all",
+    max_quarters: int = 48,
 ) -> dict[str, pd.DataFrame]:
     """Clean annual and quarterly data, write SQLite tables, and export debug CSVs."""
     db_path = Path(db_path)
@@ -2050,6 +2102,7 @@ def clean_all(
                     table_name="clean_quarterly",
                     tolerance=QUARTERLY_TOLERANCE,
                     warning_records=warning_records,
+                    max_quarters=max_quarters,
                 )
             except CheckError as exc:
                 raise CheckError(f"quarterly validation failed: {exc}") from exc
@@ -2085,6 +2138,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=["annual", "quarterly", "all"], default="all", help="Which clean table(s) to build")
     parser.add_argument("--no-auto-reconcile", action="store_true", help="Do not run annual_report_reconciler.py after annual hard-check failure")
     parser.add_argument("--auto-reconcile-max-failures", type=int, default=20, help="Maximum annual failures to analyze when auto-reconciliation is triggered")
+    parser.add_argument("--max-quarters", type=int, default=48, help="Maximum quarterly periods to retain (default: 48)")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     args = parser.parse_args(argv)
 
@@ -2106,7 +2160,14 @@ def main(argv: list[str] | None = None) -> int:
         db_path = candidates[0]
 
     try:
-        clean_all(db_path, ticker, overrides_path=args.overrides, apply_overrides=not args.no_overrides, mode=args.mode)
+        clean_all(
+            db_path,
+            ticker,
+            overrides_path=args.overrides,
+            apply_overrides=not args.no_overrides,
+            mode=args.mode,
+            max_quarters=args.max_quarters,
+        )
     except CheckError as exc:
         print(f"\nValidation failed: {exc}", file=sys.stderr)
         annual_failure = args.mode == "annual" or str(exc).startswith("annual validation failed")
