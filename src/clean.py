@@ -1946,7 +1946,7 @@ def auto_reconcile_annual_failure(db_path: Path, ticker: str, *, max_failures: i
     )
     print("Command: " + " ".join(cmd), file=sys.stderr, flush=True)
 
-    result = subprocess.run(cmd, cwd=Path(__file__).resolve().parent)
+    result = subprocess.run(cmd, cwd=Path(__file__).resolve().parent.parent)
     after_approved = approved_override_count(override_path)
     if result.returncode == 0:
         latest_path = db_path.parent / "recon" / "annual_report_reconciliation_latest.json"
@@ -2152,7 +2152,7 @@ def main(argv: list[str] | None = None) -> int:
         db_path = Path(args.db)
     else:
         code = ticker.split(".")[0]
-        base = Path(__file__).resolve().parent / "companies"
+        base = Path(__file__).resolve().parent.parent / "companies"
         candidates = sorted(base.glob(f"*_{code}/data.db"))
         if not candidates:
             print(f"No data.db found for {ticker} in {base}", file=sys.stderr)

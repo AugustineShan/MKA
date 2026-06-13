@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pytest
 
-import data_fetcher
+from src import data_fetcher
 
 
 class TestConvertValue:

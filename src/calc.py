@@ -19,17 +19,17 @@ from typing import Any
 
 import pandas as pd
 
-from clean import BS_FIELD_CATEGORIES, QA_FIELDS, bs_bucket_sum
-from defaults_gen import (
+from src.clean import BS_FIELD_CATEGORIES, QA_FIELDS, bs_bucket_sum
+from src.defaults_gen import (
     COGS_DAYS_FIELDS,
     INTEREST_BEARING_DEBT_FIELDS,
     REVENUE_DRIVER_FIELDS,
     operating_working_capital,
 )
-from yaml2_schema import REVIEW_FLAG_NEGATIVE_CASH, get_path, plain_value, read_yaml2
+from src.yaml2_schema import REVIEW_FLAG_NEGATIVE_CASH, get_path, plain_value, read_yaml2
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 COMPANIES_DIR = BASE_DIR / "companies"
 TOLERANCE = 1e-4
 MAX_ITERATIONS = 100

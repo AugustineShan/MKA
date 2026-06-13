@@ -20,7 +20,7 @@ description: 一键拉取并校验某 A 股公司的财务数据。当用户说 
 ### 第 1 步：直接调用 init.py
 
 ```bash
-python init.py <用户输入>
+python -m src.init <用户输入>
 ```
 
 `<用户输入>` 原样传入即可——脚本能处理这三种形态：
@@ -28,9 +28,8 @@ python init.py <用户输入>
 - 裸代码：`000333`（自动补后缀）
 - 中文公司名：`美的集团`（用 TuShare stock_basic 解析）
 
-批量：`python init.py 000333.SZ 600519.SH 美的集团`
+批量：`python -m src.init 000333.SZ 600519.SH 美的集团`
 
-常用开关：
 - `--force`：全量重拉（清空旧 raw_tushare 重拉）。仅当用户明确要求"强制刷新/重新拉"时用。
 - `--mode annual|quarterly|all`：默认 `all`。
 - `--no-markdown` / `--force-markdown`：年报 Markdown 控制。

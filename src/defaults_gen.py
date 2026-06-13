@@ -16,12 +16,12 @@ from typing import Any
 
 import pandas as pd
 
-from clean import (
+from src.clean import (
     BS_FIELD_CATEGORIES,
     IS_FIELD_CATEGORIES,
     QA_FIELDS,
 )
-from yaml2_schema import (
+from src.yaml2_schema import (
     DEFAULT_FORECAST_YEARS,
     DEFAULT_PLUG,
     DEFAULT_TERMINAL_GROWTH,
@@ -32,7 +32,7 @@ from yaml2_schema import (
 )
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 COMPANIES_DIR = BASE_DIR / "companies"
 
 REVENUE_RATE_FIELDS = [

@@ -1,7 +1,7 @@
 """Annual report extractor: send skill + markdown to the configured LLM, archive the response.
 
 Usage:
-    python annual_report_extractor.py --ticker 002946.SZ --year 2025
+    python -m src.annual_report_extractor --ticker 002946.SZ --year 2025
 
 Output:
     companies/{公司名}_{代码}/Extraction/{公司名}-{年度}-年报萃取.md
@@ -22,7 +22,7 @@ from typing import Any
 
 import requests
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 SKILL_PATH = BASE_DIR / "skills" / "annual_report_extractor_v2.md"
 
 

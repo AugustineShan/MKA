@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-import report_downloader
+from src import report_downloader
 
 
 class TestParseReport:

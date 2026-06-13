@@ -1,9 +1,9 @@
 """Download cninfo annual/quarterly report PDFs and Markdown text for one A-share company.
 
 Usage:
-    python report_downloader.py --ticker 000333.SZ
-    python report_downloader.py --ticker 000333.SZ --quarterly
-    python report_downloader.py --ticker 000333.SZ --all-reports
+    python -m src.report_downloader --ticker 000333.SZ
+    python -m src.report_downloader --ticker 000333.SZ --quarterly
+    python -m src.report_downloader --ticker 000333.SZ --all-reports
 
 This script vendors and reuses rollysys/use_cninfo under vendor/use_cninfo.
 It intentionally stays thin: cninfo query details, title cleanup, and PDF
@@ -27,7 +27,7 @@ from typing import Iterator
 import requests
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 VENDORED_CNINFO_SRC = BASE_DIR / "vendor" / "use_cninfo" / "src"
 if str(VENDORED_CNINFO_SRC) not in sys.path:
     sys.path.insert(0, str(VENDORED_CNINFO_SRC))

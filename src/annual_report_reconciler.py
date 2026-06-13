@@ -25,10 +25,10 @@ from typing import Any
 import pandas as pd
 import requests
 
-import clean
+from src import clean
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 COMPANIES_DIR = ROOT / "companies"
 DOCS_DIR = ROOT / ".refs" / "tushare-docs"
 KNOWN_DEFECTS_PATH = ROOT / "knowledge" / "known_tushare_defects.json"

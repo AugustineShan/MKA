@@ -24,7 +24,7 @@ import pandas as pd
 LOGGER = logging.getLogger("data_fetcher")
 
 TICKER_RE = re.compile(r"^\d{6}\.(SH|SZ|BJ)$")
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_TUSHARE_HTTP_URL = "https://fastapic.stockai888.top"
 DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 0.8
 

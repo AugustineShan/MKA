@@ -24,11 +24,21 @@
 
 ```
 MKA/
-├── data_fetcher.py           # 阶段①：TuShare拉取+标准化+入库（~1250行）
-├── clean.py                  # 阶段②：EAV→宽表+配平校验+CSV输出（~820行）
-├── report_downloader.py      # 巨潮资讯网年报 PDF + Markdown 批量下载
-├── annual_report_reconciler.py # clean.py 年度硬校验失败后的年报 Markdown 智能核对
-├── ARCHITECTURE.md           # 系统架构文档（每次开发完必须更新）
+├── src/                      # 核心 Python 源码
+│   ├── __init__.py
+│   ├── init.py               # 一键编排入口
+│   ├── data_fetcher.py       # 阶段①：TuShare拉取+标准化+入库（~1250行）
+│   ├── clean.py              # 阶段②：EAV→宽表+配平校验+CSV输出（~820行）
+│   ├── report_downloader.py  # 巨潮资讯网年报 PDF + Markdown 批量下载
+│   ├── annual_report_reconciler.py # clean.py 年度硬校验失败后的年报 Markdown 智能核对
+│   ├── annual_report_extractor.py  # 年报 Markdown LLM 萃取
+│   ├── defaults_gen.py       # clean_annual/meta → defaults.yaml
+│   ├── calc.py               # defaults.yaml → 默认预测三表 + DCF
+│   └── yaml2_schema.py       # YAML2 读写与校验
+├── docs/                     # 项目文档
+│   ├── ARCHITECTURE.md       # 系统架构文档（每次开发完必须更新）
+│   ├── CLAUDE.md             # 项目约定与关键规则
+│   └── ...
 ├── requirements.txt          # Python依赖
 ├── .env                      # TUSHARE_TOKEN / HTTP_URL / 限速间隔
 ├── companies/                # 输出目录，每公司一个子目录
@@ -70,10 +80,10 @@ companies/{公司名}_{代码}/clean_quarterly_{code}.csv
 ### CLI
 
 ```bash
-python report_downloader.py --ticker 000333.SZ
-python report_downloader.py --ticker 000333.SZ --list-only
-python report_downloader.py --ticker 000333.SZ --force-markdown
-python report_downloader.py --ticker 000333.SZ --no-markdown
+python -m src.report_downloader --ticker 000333.SZ
+python -m src.report_downloader --ticker 000333.SZ --list-only
+python -m src.report_downloader --ticker 000333.SZ --force-markdown
+python -m src.report_downloader --ticker 000333.SZ --no-markdown
 ```
 
 ### 输出与规则
@@ -91,7 +101,7 @@ python report_downloader.py --ticker 000333.SZ --no-markdown
 ### 已验证样例
 
 ```bash
-python report_downloader.py --ticker 000333.SZ
+python -m src.report_downloader --ticker 000333.SZ
 ```
 
 美的集团（000333.SZ）实测下载 2013-2025 共 13 份中文年度报告 PDF，并生成 13 份同名 Markdown，其中 2016-2025 全部成功；二次运行 `pdf_downloaded=0, pdf_skipped=13, md_written=0, md_skipped=13`。
@@ -103,24 +113,24 @@ python report_downloader.py --ticker 000333.SZ
 ### CLI
 
 ```bash
-python annual_report_reconciler.py --ticker 000333.SZ
-python annual_report_reconciler.py --ticker 000333.SZ --only-year 2025 --only-code "BS 2.1"
-python annual_report_reconciler.py --ticker 000333.SZ --no-llm
-python annual_report_reconciler.py --ticker 000333.SZ --write-overrides --approve-high-confidence
+python -m src.annual_report_reconciler --ticker 000333.SZ
+python -m src.annual_report_reconciler --ticker 000333.SZ --only-year 2025 --only-code "BS 2.1"
+python -m src.annual_report_reconciler --ticker 000333.SZ --no-llm
+python -m src.annual_report_reconciler --ticker 000333.SZ --write-overrides --approve-high-confidence
 ```
 
 输出目录：`companies/{公司名}_{代码}/recon/`，包含时间戳 JSON、`annual_report_reconciliation_latest.json`，以及可选的 `annual_report_overrides.json`。
 
 `annual_report_overrides.json` 必须由 LLM 结构化结论生成；`--write-overrides` 与 `--no-llm` 互斥。`clean.py` 只应用 `annual_report_overrides.json` 中 `status=approved` 且 `source` 为 approved LLM provider（当前 `glm`，历史 `kimi` 仍兼容）的记录，且只应用到年度 clean 宽表；每条应用记录写入 `clean_adjustments`，补数 warning 和软校验 warning 写入 `clean_warnings`。
 
-美的集团（000333.SZ）2016-2025 年 `BS 2.1` 实测：生成 10 条 approved `lending_funds` 补数；`python clean.py --ticker 000333.SZ --mode annual` 后年度 10 期全部硬校验通过。
+美的集团（000333.SZ）2016-2025 年 `BS 2.1` 实测：生成 10 条 approved `lending_funds` 补数；`python -m src.clean --ticker 000333.SZ --mode annual` 后年度 10 期全部硬校验通过。
 
 ### 年度 hard-check 强触发
 
 当 `clean.py` 在 annual 或 all 模式下遇到年度 hard check 失败，必须把它当作 clean-data blocker：这不是 soft warning，当前年度 clean 输出不能被信任。默认行为是自动调用：
 
 ```bash
-python annual_report_reconciler.py --ticker {ticker} --db {data.db} --max-failures 20 --write-overrides --approve-high-confidence
+python -m src.annual_report_reconciler --ticker {ticker} --db {data.db} --max-failures 20 --write-overrides --approve-high-confidence
 ```
 
 终端要清楚告诉用户：哪里失败导致 clean 停止；系统正在用本地年报 Markdown + LLM evidence 判断是否为 TuShare 字段缺失/口径问题；`raw_tushare` 不会被修改；本次失败运行不会被改判成功。若 LLM 生成新的 approved override，用户重跑 `clean.py` 后才会由正常流程应用补数，并写入 `clean_adjustments`/`clean_warnings`。
@@ -170,9 +180,9 @@ fetch_companies(["600519.SH", "300866.SZ"]) -> dict       # 批量拉取
 ### CLI
 
 ```bash
-python data_fetcher.py --ticker 300866.SZ          # 拉取
-python data_fetcher.py --ticker 300866.SZ --force   # 强制刷新（清空旧数据后重拉）
-python data_fetcher.py --ticker 300866.SZ --verbose # 调试日志
+python -m src.data_fetcher --ticker 300866.SZ          # 拉取
+python -m src.data_fetcher --ticker 300866.SZ --force   # 强制刷新（清空旧数据后重拉）
+python -m src.data_fetcher --ticker 300866.SZ --verbose # 调试日志
 ```
 
 ### 关键类与函数
@@ -198,13 +208,13 @@ clean("D:\\MKA\\companies\\某公司_002946\\data.db", "002946.SZ") -> pd.DataFr
 ### CLI
 
 ```bash
-python clean.py --ticker 002946.SZ          # 自动定位 data.db 并清洗
-python clean.py --ticker 002946.SZ --db path/to/data.db  # 指定 db
-python clean.py --ticker 000333.SZ --mode annual          # 只生成年度 clean 表
-python clean.py --ticker 000333.SZ --mode quarterly       # 只生成季度 clean 表，必要时写显式 QA plug warning
-python clean.py --ticker 000333.SZ --no-overrides         # 不应用 approved 年报补数
-python clean.py --ticker 000333.SZ --mode annual --no-auto-reconcile  # 年度失败时不自动触发年报核对
-python clean.py --ticker 002946.SZ --verbose              # 调试日志
+python -m src.clean --ticker 002946.SZ          # 自动定位 data.db 并清洗
+python -m src.clean --ticker 002946.SZ --db path/to/data.db  # 指定 db
+python -m src.clean --ticker 000333.SZ --mode annual          # 只生成年度 clean 表
+python -m src.clean --ticker 000333.SZ --mode quarterly       # 只生成季度 clean 表，必要时写显式 QA plug warning
+python -m src.clean --ticker 000333.SZ --no-overrides         # 不应用 approved 年报补数
+python -m src.clean --ticker 000333.SZ --mode annual --no-auto-reconcile  # 年度失败时不自动触发年报核对
+python -m src.clean --ticker 002946.SZ --verbose              # 调试日志
 ```
 
 ### 关键函数
@@ -307,18 +317,18 @@ python clean.py --ticker 002946.SZ --verbose              # 调试日志
 
 ```bash
 # 1. 语法检查
-py -m py_compile data_fetcher.py
-py -m py_compile clean.py
-py -m py_compile report_downloader.py
+py -m py_compile src/data_fetcher.py
+py -m py_compile src/clean.py
+py -m py_compile src/report_downloader.py
 
 # 2. 阶段①：拉取
-py data_fetcher.py --ticker 300866.SZ --force --verbose
+py -m src.data_fetcher --ticker 300866.SZ --force --verbose
 
 # 3. 阶段②：清洗+配平校验
-py clean.py --ticker 300866.SZ --verbose
+py -m src.clean --ticker 300866.SZ --verbose
 
 # 4. 年报 PDF + Markdown 下载列表检查
-py report_downloader.py --ticker 000333.SZ --list-only
+py -m src.report_downloader --ticker 000333.SZ --list-only
 
 # 5. 检查字段覆盖数
 # income=86×报告期数, balancesheet=150×报告期数, cashflow=89×报告期数

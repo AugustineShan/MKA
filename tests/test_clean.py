@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import clean
+from src import clean
 
 
 class TestResolve:
