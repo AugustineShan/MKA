@@ -1,0 +1,26 @@
+2026-06-10 22:46:25,750 DEBUG urllib3.connectionpool: Starting new HTTPS connection (1): fastapic.stockai888.top:443
+2026-06-10 22:46:27,673 DEBUG urllib3.connectionpool: https://fastapic.stockai888.top:443 "POST /stock_basic HTTP/1.1" 200 None
+2026-06-10 22:46:28,485 DEBUG urllib3.connectionpool: Starting new HTTPS connection (1): fastapic.stockai888.top:443
+2026-06-10 22:46:33,135 DEBUG urllib3.connectionpool: https://fastapic.stockai888.top:443 "POST /trade_cal HTTP/1.1" 200 None
+2026-06-10 22:46:33,957 DEBUG urllib3.connectionpool: Starting new HTTPS connection (1): fastapic.stockai888.top:443
+2026-06-10 22:46:38,157 DEBUG urllib3.connectionpool: https://fastapic.stockai888.top:443 "POST /income HTTP/1.1" 200 None
+2026-06-10 22:46:39,024 DEBUG data_fetcher: income/report_type=1 deduped 94 -> 79 rows
+2026-06-10 22:46:39,027 DEBUG urllib3.connectionpool: Starting new HTTPS connection (1): fastapic.stockai888.top:443
+2026-06-10 22:46:44,271 DEBUG urllib3.connectionpool: https://fastapic.stockai888.top:443 "POST /income HTTP/1.1" 200 None
+2026-06-10 22:46:45,237 DEBUG data_fetcher: income/report_type=2 deduped 78 -> 73 rows
+2026-06-10 22:46:45,254 DEBUG urllib3.connectionpool: Starting new HTTPS connection (1): fastapic.stockai888.top:443
+2026-06-10 22:46:48,672 DEBUG urllib3.connectionpool: https://fastapic.stockai888.top:443 "POST /balancesheet HTTP/1.1" 200 None
+2026-06-10 22:46:49,553 DEBUG data_fetcher: balancesheet/report_type=1 deduped 100 -> 67 rows
+2026-06-10 22:46:49,555 DEBUG urllib3.connectionpool: Starting new HTTPS connection (1): fastapic.stockai888.top:443
+2026-06-10 22:46:53,857 DEBUG urllib3.connectionpool: https://fastapic.stockai888.top:443 "POST /balancesheet HTTP/1.1" 200 30
+2026-06-10 22:46:53,857 WARNING data_fetcher: balancesheet returned an empty payload without fields; treating as empty
+2026-06-10 22:46:54,658 INFO data_fetcher: balancesheet report_type=2 returned empty DataFrame
+2026-06-10 22:46:54,678 DEBUG urllib3.connectionpool: Starting new HTTPS connection (1): fastapic.stockai888.top:443
+2026-06-10 22:47:04,769 DEBUG urllib3.connectionpool: https://fastapic.stockai888.top:443 "POST /cashflow HTTP/1.1" 200 None
+2026-06-10 22:47:05,664 DEBUG data_fetcher: cashflow/report_type=1 deduped 90 -> 78 rows
+2026-06-10 22:47:05,667 DEBUG urllib3.connectionpool: Starting new HTTPS connection (1): fastapic.stockai888.top:443
+2026-06-10 22:47:15,053 DEBUG urllib3.connectionpool: https://fastapic.stockai888.top:443 "POST /cashflow HTTP/1.1" 200 None
+2026-06-10 22:47:16,015 DEBUG urllib3.connectionpool: Starting new HTTPS connection (1): fastapic.stockai888.top:443
+2026-06-10 22:47:24,083 DEBUG urllib3.connectionpool: https://fastapic.stockai888.top:443 "POST /daily_basic HTTP/1.1" 200 None
+2026-06-10 22:47:25,155 INFO data_fetcher: Fetched 000333.SZ: 30064 raw TuShare rows -> C:\Users\Sheld\Documents\GitHub\MKA\companies\美的集团_000333\data.db
+C:\Users\Sheld\Documents\GitHub\MKA\companies\美的集团_000333\data.db
