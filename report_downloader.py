@@ -199,21 +199,31 @@ def iter_company_category(
     raise RuntimeError(f"too many cninfo pages for {company.ticker}; stopped at {max_pages}")
 
 
+# Titles containing these keywords are not the body of a periodic report.
+EXCLUDED_TITLE_KEYWORDS: tuple[str, ...] = (
+    "摘要",
+    "审计报告",
+    "内部控制",
+    "提示性公告",
+    "鉴证报告",
+    "披露",
+    "更新",
+    "取消",
+    "英文",
+)
+
+
 def parse_report(item: dict, allowed_kinds: set[str]) -> Report | None:
     raw_title = clean_title(item.get("announcementTitle"))
-    if "摘要" in raw_title:
+    if any(kw in raw_title for kw in EXCLUDED_TITLE_KEYWORDS):
         return None
 
     for kind in allowed_kinds:
         tail = KIND_TO_TITLE_TAIL.get(kind)
         if not tail:
             continue
-        # Exclude audit/internal-control related attachments that happen to match tail
-        excluded_keywords = ("审计报告", "内部控制", "提示性公告", "鉴证报告", "披露")
-        if any(kw in raw_title for kw in excluded_keywords):
-            return None
 
-        pattern = rf"(?P<year>\d{{4}}){re.escape(tail)}(?P<revision>（修订版）|\(修订版\))?$"
+        pattern = rf"(?P<year>\d{{4}}){re.escape(tail)}(?P<body_suffix>全文|正文)?(?P<revision>（修订版）|\(修订版\))?$"
         match = re.search(pattern, raw_title)
         if match:
             adjunct_url = item.get("adjunctUrl") or ""
@@ -257,6 +267,14 @@ def _fetch_category_items(
     )
 
 
+def _looks_like_periodic_report(title: str) -> bool:
+    """Return True if title resembles a periodic report body (but not a non-body variant)."""
+    if any(kw in title for kw in EXCLUDED_TITLE_KEYWORDS):
+        return False
+    periodic_tails = ("年年度报告", "年第一季度报告", "年半年度报告", "年第三季度报告")
+    return any(tail in title for tail in periodic_tails)
+
+
 def collect_reports(
     company: CompanyInfo,
     allowed_kinds: set[str],
@@ -272,10 +290,15 @@ def collect_reports(
     reports: list[Report] = []
     seen: set[tuple[int, str, bool, str]] = set()
 
-    # Concurrent query across categories to save time
-    all_items: list[dict] = []
+    # Map category back to the primary kind we expect from it.
+    category_to_kind: dict[str, str] = {
+        cat: kind for kind, cat in KIND_TO_CATEGORY.items()
+    }
+
+    # Concurrent query across categories to save time; keep results per category.
+    category_items: dict[str, list[dict]] = {}
     if len(categories) <= 1:
-        all_items = _fetch_category_items(
+        category_items[categories[0]] = _fetch_category_items(
             categories[0], company, timeout, min_interval, max_interval
         ) if categories else []
     else:
@@ -294,36 +317,79 @@ def collect_reports(
             for future in as_completed(futures):
                 cat = futures[future]
                 try:
-                    items = future.result()
-                    all_items.extend(items)
+                    category_items[cat] = future.result()
                 except Exception as exc:  # noqa: BLE001
                     print(f"warn  category query failed {cat}: {exc}", file=sys.stderr)
 
-    for item in all_items:
-        if item.get("secCode") != company.code:
-            continue
-        report = parse_report(item, allowed_kinds)
-        if report is None:
-            continue
+    # Match reports per category and detect likely missed periodic reports.
+    for cat, items in category_items.items():
+        cat_matched = 0
+        unmatched_titles: list[str] = []
+        for item in items:
+            if item.get("secCode") != company.code:
+                continue
+            report = parse_report(item, allowed_kinds)
+            if report is None:
+                title = clean_title(item.get("announcementTitle") or "")
+                if _looks_like_periodic_report(title):
+                    unmatched_titles.append(title)
+                continue
 
-        key = (report.year, report.kind, report.is_revision, report.ann_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        reports.append(report)
+            cat_matched += 1
+            key = (report.year, report.kind, report.is_revision, report.ann_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            reports.append(report)
 
-    # Sort: newest year first, then kind order (annual > q3 > h1 > q1), revision last
+        expected_kind = category_to_kind.get(cat)
+        if expected_kind and expected_kind in allowed_kinds:
+            if items and cat_matched == 0:
+                print(
+                    f"warn  category {cat}: {len(items)} items returned but 0 matched",
+                    file=sys.stderr,
+                )
+            if unmatched_titles:
+                print(
+                    f"warn  category {cat}: {len(unmatched_titles)} items look like periodic reports but were not matched",
+                    file=sys.stderr,
+                )
+                for title in unmatched_titles[:5]:
+                    print(f"  unmatched: {title}", file=sys.stderr)
+
+    def _body_preference(title: str) -> int:
+        """Prefer full text over body-only reports."""
+        if "全文" in title:
+            return 0
+        if "正文" in title:
+            return 2
+        return 1
+
+    # Sort: newest year first, then kind order (annual > q3 > h1 > q1), revision last,
+    # full-text before body-only so deduplication keeps the fuller document.
     kind_order = {"annual": 0, "q3": 1, "h1": 2, "q1": 3}
-    return sorted(
+    reports = sorted(
         reports,
         key=lambda r: (
             -r.year,
             kind_order.get(r.kind, 99),
             r.is_revision,
+            _body_preference(r.title),
             r.ann_date,
             r.ann_id,
         ),
     )
+
+    # Deduplicate by (year, kind, is_revision), keeping the first (full text preferred).
+    deduped: list[Report] = []
+    seen_periodic: set[tuple[int, str, bool]] = set()
+    for report in reports:
+        key = (report.year, report.kind, report.is_revision)
+        if key in seen_periodic:
+            continue
+        seen_periodic.add(key)
+        deduped.append(report)
+    return deduped
 
 
 def safe_path_component(value: str) -> str:

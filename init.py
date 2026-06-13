@@ -1,13 +1,15 @@
-"""init.py - 一键编排 MKA 全流程（取数 → 年报 → 清洗校验 → 年报补全重跑）。
+"""init.py - 一键编排 MKA 全流程（取数 → 年报 → 清洗校验 → 年报补全重跑 → 年报萃取）。
 
 给 Agent / 人用的单一入口：输入公司名 / 裸代码 / 完整 ticker，自动完成
-data_fetcher → report_downloader → clean 的确定性编排，并保证幂等（增量跳过、
-重跑只应用补数），最后输出一份"数据拉取报告"。
+data_fetcher → report_downloader → clean → annual_report_extractor 的确定性编排，
+并保证幂等（增量跳过、重跑只应用补数），最后输出一份"数据拉取报告"。
 
 设计边界（与 CLAUDE.md 纪律一致）：
 - 失败的那次年度硬校验运行不会被改判成功；override 只在下一次 clean 运行被应用。
 - raw_tushare 永不被本脚本修改。
 - 重跑应用 override 后仍年度硬校验失败 = 真问题 → 退出码 3，如实上报，绝不静默放行。
+- 年报萃取是最后一步，失败不阻塞主流程，也不改退出码；萃取结果写入
+  companies/{公司}_{代码}/Extraction/，供下游研究使用。
 
 退出码语义（Agent 据此决定下一步）：
     0  全链路成功（纯 TuShare 通过，或经年报确认补全后通过）
@@ -26,12 +28,15 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as dt
 import logging
+import os
 import re
 import sqlite3
 import subprocess
 import sys
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -232,7 +237,7 @@ def stage_clean(ticker: str, db_path: Path, *, mode: str, verbose: bool) -> tupl
     override_path = default_overrides_path(db_path)
     approved_before = approved_override_count(override_path)
 
-    LOGGER.info("[3/3] clean 配平校验 %s (mode=%s) ...", ticker, mode)
+    LOGGER.info("[3/4] clean 配平校验 %s (mode=%s) ...", ticker, mode)
     rc = _run_clean(ticker, db_path, mode=mode, no_auto_reconcile=False, verbose=verbose)
     if rc == 0:
         # 首跑即通过：可能是纯 TuShare 配平，也可能是已存在的 approved override 被自动应用。
@@ -259,26 +264,135 @@ def stage_clean(ticker: str, db_path: Path, *, mode: str, verbose: bool) -> tupl
     )
 
 
+def _discover_annual_years(company_dir: Path) -> list[int]:
+    """Find all years for which a markdown annual report exists."""
+    annuals_dir = company_dir / "annuals"
+    if not annuals_dir.exists():
+        return []
+    years: list[int] = []
+    for path in sorted(annuals_dir.glob("*_年度报告.md")):
+        # Filename pattern: YYYY_年度报告.md
+        stem = path.stem  # e.g. "2025_年度报告"
+        year_part = stem.split("_", 1)[0]
+        if year_part.isdigit():
+            years.append(int(year_part))
+    return years
+
+
+def _extract_one_year(ticker: str, year: int, company_dir: Path, force: bool) -> tuple[int, str]:
+    """Extract a single year. Returns (year, status_message)."""
+    company_name = company_dir.name.rsplit("_", 1)[0]
+    out_path = company_dir / "Extraction" / f"{company_name}-{year}-年报萃取.md"
+
+    if not force and out_path.exists() and out_path.stat().st_size > 0:
+        return year, f"{year}: 已存在，跳过"
+
+    cmd = [
+        sys.executable,
+        str(BASE_DIR / "annual_report_extractor.py"),
+        "--ticker", ticker,
+        "--year", str(year),
+    ]
+    LOGGER.info("    萃取 %s %s 年报 ...", ticker, year)
+    start = time.monotonic()
+    # Force UTF-8 in child process to avoid Windows console GBK decode errors.
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    result = subprocess.run(
+        cmd,
+        cwd=BASE_DIR,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+    elapsed = time.monotonic() - start
+
+    if result.returncode == 0:
+        return year, f"{year}: ✅ 完成 ({elapsed:.0f}s)"
+    # Don't fail silently: surface stderr briefly.
+    err = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"
+    return year, f"{year}: ❌ 失败 ({elapsed:.0f}s) — {err}"
+
+
+def stage_extract(
+    ticker: str,
+    db_path: Path,
+    *,
+    no_extract: bool,
+    force_extract: bool,
+    extract_workers: int,
+) -> str:
+    """阶段④年报萃取：遍历 annuals/ 下所有年份，并发调用 annual_report_extractor.py。
+
+    默认开启；幂等跳过已存在的萃取档案；失败不阻塞主流程。
+    """
+    if no_extract:
+        return "⏭️  未启用（--no-extract）"
+
+    company_dir = db_path.parent
+    years = _discover_annual_years(company_dir)
+    if not years:
+        return "⏭️  未发现年报 Markdown，无内容可萃取"
+
+    LOGGER.info("[4/4] 年报萃取 %s（%s 个年份，并发=%s）...", ticker, len(years), extract_workers)
+    statuses: list[str] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=extract_workers) as executor:
+        futures = {
+            executor.submit(_extract_one_year, ticker, year, company_dir, force_extract): year
+            for year in years
+        }
+        for future in concurrent.futures.as_completed(futures):
+            year = futures[future]
+            try:
+                _, status = future.result()
+            except Exception as exc:  # noqa: BLE001
+                status = f"{year}: ❌ 异常 — {exc}"
+            statuses.append(status)
+            LOGGER.info("    %s", status)
+
+    failed = [s for s in statuses if "❌" in s]
+    skipped = [s for s in statuses if "跳过" in s]
+    done = [s for s in statuses if "✅" in s]
+
+    parts: list[str] = []
+    if done:
+        parts.append(f"完成 {len(done)} 年")
+    if skipped:
+        parts.append(f"跳过 {len(skipped)} 年")
+    if failed:
+        parts.append(f"失败 {len(failed)} 年")
+    return "；".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # 数据拉取报告
 # ---------------------------------------------------------------------------
 
-def build_report(ticker: str, db_path: Path, fetch_status: str, report_status: str,
-                 clean_status: str) -> str:
+def build_report(
+    ticker: str,
+    db_path: Path,
+    fetch_status: str,
+    report_status: str,
+    clean_status: str,
+    extract_status: str,
+) -> str:
     meta = read_meta(db_path)
     name = meta.get("name", "?")
     lines: list[str] = []
     lines.append("=" * 64)
     lines.append(f"  init 数据拉取报告: {name} ({ticker})")
     lines.append("=" * 64)
-    lines.append(f"  [1/3] TuShare 拉取      : {fetch_status}")
+    lines.append(f"  [1/4] TuShare 拉取      : {fetch_status}")
     if meta:
         lines.append(
             f"          latest_trade_date={meta.get('latest_trade_date','?')} "
             f"last_report_period={meta.get('last_report_period','?')}"
         )
-    lines.append(f"  [2/3] 年报 PDF/Markdown : {report_status}")
-    lines.append(f"  [3/3] clean 配平校验    : {clean_status}")
+    lines.append(f"  [2/4] 年报 PDF/Markdown : {report_status}")
+    lines.append(f"  [3/4] clean 配平校验    : {clean_status}")
+    lines.append(f"  [4/4] 年报萃取          : {extract_status}")
 
     with closing(sqlite3.connect(db_path)) as conn:
         def _count(table: str) -> int:
@@ -337,6 +451,9 @@ def run_one(
     no_quarterly: bool,
     mode: str,
     verbose: bool,
+    no_extract: bool,
+    force_extract: bool,
+    extract_workers: int,
 ) -> int:
     try:
         ticker = resolve_ticker(raw_input)
@@ -363,14 +480,25 @@ def run_one(
     )
     ok, clean_status = stage_clean(ticker, db_path, mode=mode, verbose=verbose)
 
-    print("\n" + build_report(ticker, db_path, fetch_status, report_status, clean_status))
+    # 年报萃取是最后一步，失败不阻塞主流程，也不改退出码。
+    extract_status = stage_extract(
+        ticker,
+        db_path,
+        no_extract=no_extract,
+        force_extract=force_extract,
+        extract_workers=extract_workers,
+    )
+
+    print("\n" + build_report(
+        ticker, db_path, fetch_status, report_status, clean_status, extract_status
+    ))
 
     return 0 if ok else 3
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="一键编排 MKA 全流程：取数 → 年报 → 清洗校验 → 年报补全重跑（幂等）。"
+        description="一键编排 MKA 全流程：取数 → 年报 → 清洗校验 → 年报补全重跑 → 年报萃取（幂等）。"
     )
     parser.add_argument("inputs", nargs="+", help="公司名 / 裸代码 / 完整 ticker（可多个）")
     parser.add_argument("--force", action="store_true",
@@ -382,6 +510,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=["annual", "quarterly", "all"], default="all",
                         help="clean 生成哪些表，默认 all")
     parser.add_argument("--verbose", action="store_true", help="调试日志")
+    parser.add_argument("--no-extract", action="store_true",
+                        help="跳过年报萃取阶段（默认开启）")
+    parser.add_argument("--force-extract", action="store_true",
+                        help="即使萃取档案已存在也强制重萃")
+    parser.add_argument("--extract-workers", type=int, default=3,
+                        help="年报萃取并发数，默认 3")
     args = parser.parse_args(argv)
 
     # Windows 控制台默认 GBK，报告里的 ✅/❌ 等会崩溃；强制 UTF-8 输出。
@@ -407,6 +541,9 @@ def main(argv: list[str] | None = None) -> int:
                 no_quarterly=args.no_quarterly,
                 mode=args.mode,
                 verbose=args.verbose,
+                no_extract=args.no_extract,
+                force_extract=args.force_extract,
+                extract_workers=args.extract_workers,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"\n❌ {raw}: 处理异常: {exc}", file=sys.stderr)

@@ -215,8 +215,8 @@ clean("path/to/data.db", "300866.SZ") -> pd.DataFrame
 | `parse_ticker()` | 校验并解析 `000333.SZ` / `600519.SH` / `430047.BJ` |
 | `fetch_company_info()` | 调用 cninfo `topSearch/query` 获取公司简称与 `orgId` |
 | `iter_company_category()` | 复用 vendored `cninfo.api.query_page()` 翻页查询指定 category 的公告 |
-| `parse_report()` | 标题过滤，匹配年报/一季报/半年报/三季报本体与修订版 |
-| `collect_reports()` | 对多个 cninfo category 分别查询，合并去重，按年份从新到旧排序 |
+| `parse_report()` | 标题过滤，匹配年报/一季报/半年报/三季报本体；支持 `全文` / `正文` 后缀与修订版；排除摘要、更新、取消、英文、审计/内控/鉴证/提示性公告等非中文定期报告本体 |
+| `collect_reports()` | 对多个 cninfo category 分别查询；按 category 检测漏匹配（若某 category 返回了公告但 0 条匹配成功，或存在疑似定期报告本体却未被匹配，则输出 warning）；合并去重时优先保留 `全文` 而非 `正文`，按年份从新到旧排序 |
 | `render_markdown()` | 复用 vendored `cninfo.parser` 的 PyMuPDF 能力，从 PDF 提取全文 Markdown |
 | `download_reports()` | 下载 PDF 并生成 Markdown；年报放 `annuals/`，季报放 `quarterlyreports/{year}/`；目标文件已存在则跳过 |
 
@@ -251,11 +251,14 @@ companies/{公司名}_{代码}/
 ```
 
 **过滤规则**：
-- **年报**：保留 `YYYY年年度报告`、`YYYY年年度报告（修订版）`
-- **一季报**：保留 `YYYY年第一季度报告` 及修订版
-- **半年报**：保留 `YYYY年半年度报告` 及修订版
-- **三季报**：保留 `YYYY年第三季度报告` 及修订版
-- **统一排除**：`摘要`、`审计报告`、`内部控制`、`提示性公告`、`鉴证报告`、英文版、摘要更新/取消等非中文定期报告本体
+- **年报**：保留 `YYYY年年度报告`、`YYYY年年度报告（修订版）`；允许 `全文` / `正文` 后缀，存在两者时优先保留 `全文`
+- **一季报**：保留 `YYYY年第一季度报告` 及修订版；允许 `全文` / `正文` 后缀，存在两者时优先保留 `全文`
+- **半年报**：保留 `YYYY年半年度报告` 及修订版；允许 `全文` / `正文` 后缀，存在两者时优先保留 `全文`
+- **三季报**：保留 `YYYY年第三季度报告` 及修订版；允许 `全文` / `正文` 后缀，存在两者时优先保留 `全文`
+- **统一排除**：`摘要`、`审计报告`、`内部控制`、`提示性公告`、`鉴证报告`、英文版、摘要/报告更新或取消、披露提示等非中文定期报告本体
+
+**漏匹配检测**：
+`collect_reports()` 按 category 统计匹配情况。若某个 category 返回了公告但 0 条通过 `parse_report()` 匹配，或存在标题明显是定期报告本体（含 `年年度报告` / `年第一季度报告` / `年半年度报告` / `年第三季度报告`）却未被匹配的条目，终端会输出 warning 并列出前 5 个未匹配标题。该机制用于及时发现标题后缀/格式变化导致的季报漏下。
 
 **cninfo category 映射**（复用 vendored `cninfo.api` 常量）：
 | 报告类型 | category |
@@ -916,3 +919,5 @@ companies/美的集团_000333/
 | 2026-06-11 | 修正 SQLite clean 表输出契约：`clean.py` 写入 `data.db` 的 `clean_annual` / `clean_quarterly` 必须保留完整 clean 宽表（`period` + 325 个官方字段 + 6 个 QA plug 字段），QA plug 是 clean 阶段的显式审计/防呆字段，供 defaults_gen 等下游从 SQLite 主库直接读取 |
 | 2026-06-11 | 新增 YAML2 默认 DCF 层：`yaml2_schema.py` 定义 YAML2 读写/校验，`defaults_gen.py` 从最新 `clean_annual` + `meta` 生成带 `value/source` 的 `defaults.yaml`，`calc.py` 按 IS→BS→CF→DCF 顺序生成默认预测三表和估值 summary；财务费用拆为利息支出、利息收入、其他财务费用，每个预测年循环求解 IS→BS plug→平均现金/债务→财务费用直到收敛；会计恒等式不配平即失败，cash plug 产生负现金只写 `review_flags.negative_cash_from_plug` warning，不阻断计算。5 家现有公司均已跑通，BS/CF 残差为浮点误差级 |
 | 2026-06-13 | 审计修复与测试补全：修复 `apply_quarterly_bs_plugs`/`apply_quarterly_cf_cash_plugs` 的 NaN plug 累积 bug；季度模式 income `report_type=2` 缺失时回退到 `report_type=1` 累计值并 warning，不再静默丢弃整期；`data_fetcher._call_api` 新增 `is_permanent_error` 快速区分参数/字段/ts_code 永久错误与限流/超时可重试错误；`_fetch_daily_basic` 15 天回退仍为空时明确抛错；`report_downloader` 并发下载 PDF 的 worker 内增加 `--min-interval`/`--max-interval` sleep；`treasury_share` 符号异常从硬错误改为软 warning；`pivot_to_wide` 季度窗口通过 `--max-quarters` 可配置并记录被丢弃 period；`annual_report_reconciler` prompt 移除美的集团硬编码，改为从 `known_tushare_defects.json` 动态注入，并增加 LLM 响应 schema 校验；重命名 `_v`/`_vi`/`_vc` 为 `get_value`/`get_income_value`/`get_cashflow_value`；修复 `auto_reconcile_annual_failure` 的硬编码 reconciler 路径；提取 `_build_adjustment_record` 统一 override 记录构造；完成比亚迪 `estimated_liab` 端到端验证（年度 10 期 + 季度 48 期全部通过）；新增核心模块单元测试 `tests/test_clean.py`、`tests/test_data_fetcher.py`、`tests/test_report_downloader.py`（42 例全部通过）；新增 `.gitignore` 忽略 `.env`、`companies/`、`__pycache__`、日志、worktree 等 |
+| 2026-06-13 | 修复 `report_downloader.py` 季报漏下载 bug：cninfo 季报标题常带 `全文` / `正文` 后缀（如 `2021年第一季度报告全文`），原正则要求严格结尾导致一季报/三季报被漏掉；现正则允许可选 `全文`/`正文` 后缀，并在同一年同类型存在多个版本时优先保留 `全文` |
+| 2026-06-13 | 新增 `report_downloader.py` 漏匹配检测机制：`collect_reports()` 按 category 统计匹配数，若某 category 返回公告但 0 条匹配，或存在疑似定期报告本体却未匹配，则输出 warning 并列出未匹配标题；用于及时发现标题格式变化导致的季报漏下 |
