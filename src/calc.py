@@ -78,6 +78,38 @@ def value_map(section: dict[str, Any] | None) -> dict[str, float]:
     return {str(k): as_float(v) for k, v in section.items()}
 
 
+def year_value(value: Any, idx: int, path: str) -> Any:
+    value = plain_value(value)
+    if not isinstance(value, list):
+        raise CalcError(f"{path} must be a yearly array")
+    pos = idx - 1
+    if pos < 0 or pos >= len(value):
+        raise CalcError(f"{path} missing value for forecast index {idx}")
+    return plain_value(value[pos])
+
+
+def get_year_float(yaml2: dict[str, Any], path: str, idx: int, default: float = 0.0) -> float:
+    value = get_path(yaml2, path)
+    if value is None:
+        return default
+    return as_float(year_value(value, idx, path), default)
+
+
+def value_map_at(section: dict[str, Any] | None, idx: int, section_path: str) -> dict[str, float]:
+    if not isinstance(section, dict):
+        return {}
+    return {
+        str(k): as_float(year_value(v, idx, f"{section_path}.{k}"))
+        for k, v in section.items()
+    }
+
+
+def cfg_year_float(section: dict[str, Any], key: str, idx: int, default: float = 0.0) -> float:
+    if key not in section:
+        return default
+    return as_float(year_value(section[key], idx, key), default)
+
+
 def base_bs(yaml2: dict[str, Any]) -> dict[str, float]:
     raw = get_path(yaml2, "balance_sheet.base")
     if not isinstance(raw, dict):
@@ -92,25 +124,30 @@ def interest_bearing_debt(row: dict[str, float]) -> float:
     return sum(row.get(field, 0.0) for field in INTEREST_BEARING_DEBT_FIELDS)
 
 
-def financial_expense_from_balances(yaml2: dict[str, Any], prev_bs: dict[str, float], bs_row: dict[str, float]) -> dict[str, float]:
+def financial_expense_from_balances(
+    yaml2: dict[str, Any],
+    prev_bs: dict[str, float],
+    bs_row: dict[str, float],
+    idx: int,
+) -> dict[str, float]:
     fin_cfg = get_path(yaml2, "income.financial_expense", {})
     if not isinstance(fin_cfg, dict):
         fin_cfg = {}
     mode = plain_value(fin_cfg.get("interest_mode", "circular_average_balance"))
     if mode == "historical_abs":
-        fin_exp = as_float(fin_cfg.get("base_fin_exp"), as_float(get_path(yaml2, "income.cost_abs.fin_exp")))
+        fin_exp = cfg_year_float(fin_cfg, "base_fin_exp", idx, get_year_float(yaml2, "income.cost_abs.fin_exp", idx))
         return {
             "fin_exp": fin_exp,
-            "fin_exp_int_exp": as_float(fin_cfg.get("base_interest_expense")),
-            "fin_exp_int_inc": as_float(fin_cfg.get("base_interest_income")),
+            "fin_exp_int_exp": cfg_year_float(fin_cfg, "base_interest_expense", idx),
+            "fin_exp_int_inc": cfg_year_float(fin_cfg, "base_interest_income", idx),
             "other_fin_exp": fin_exp,
         }
     if mode != "circular_average_balance":
         raise CalcError(f"Unsupported financial expense mode: {mode}")
 
-    debt_rate = as_float(fin_cfg.get("interest_expense_rate"))
-    cash_rate = as_float(fin_cfg.get("cash_interest_rate"))
-    other_fin_exp = as_float(fin_cfg.get("other_fin_exp_abs"))
+    debt_rate = cfg_year_float(fin_cfg, "interest_expense_rate", idx)
+    cash_rate = cfg_year_float(fin_cfg, "cash_interest_rate", idx)
+    other_fin_exp = cfg_year_float(fin_cfg, "other_fin_exp_abs", idx)
     avg_debt = max((interest_bearing_debt(prev_bs) + interest_bearing_debt(bs_row)) / 2.0, 0.0)
     avg_cash = max((prev_bs.get("money_cap", 0.0) + bs_row.get("money_cap", 0.0)) / 2.0, 0.0)
     interest_expense = avg_debt * debt_rate
@@ -123,17 +160,22 @@ def financial_expense_from_balances(yaml2: dict[str, Any], prev_bs: dict[str, fl
     }
 
 
-def build_income_statement(yaml2: dict[str, Any], revenue: float, financial_expense: dict[str, float]) -> dict[str, float]:
+def build_income_statement(
+    yaml2: dict[str, Any],
+    revenue: float,
+    financial_expense: dict[str, float],
+    idx: int,
+) -> dict[str, float]:
     income = yaml2.get("income", {})
-    gpm = as_float(get_path(yaml2, "income.gpm"))
-    tax_rate = as_float(get_path(yaml2, "income.effective_tax_rate"))
-    minority_ratio = as_float(get_path(yaml2, "income.minority_ratio"))
+    gpm = get_year_float(yaml2, "income.gpm", idx)
+    tax_rate = get_year_float(yaml2, "income.effective_tax_rate", idx)
+    minority_ratio = get_year_float(yaml2, "income.minority_ratio", idx)
 
-    revenue_items = value_map(income.get("revenue_items_abs") if isinstance(income, dict) else None)
-    cost_rates = value_map(income.get("cost_rates") if isinstance(income, dict) else None)
-    cost_abs = value_map(income.get("cost_abs") if isinstance(income, dict) else None)
-    op_adj = value_map(income.get("operating_adjustments_abs") if isinstance(income, dict) else None)
-    below_line = value_map(income.get("below_line_abs") if isinstance(income, dict) else None)
+    revenue_items = value_map_at(income.get("revenue_items_abs") if isinstance(income, dict) else None, idx, "income.revenue_items_abs")
+    cost_rates = value_map_at(income.get("cost_rates") if isinstance(income, dict) else None, idx, "income.cost_rates")
+    cost_abs = value_map_at(income.get("cost_abs") if isinstance(income, dict) else None, idx, "income.cost_abs")
+    op_adj = value_map_at(income.get("operating_adjustments_abs") if isinstance(income, dict) else None, idx, "income.operating_adjustments_abs")
+    below_line = value_map_at(income.get("below_line_abs") if isinstance(income, dict) else None, idx, "income.below_line_abs")
 
     row: dict[str, float] = {}
     row["revenue"] = revenue
@@ -199,17 +241,18 @@ def build_balance_sheet(
     yaml2: dict[str, Any],
     prev_bs: dict[str, float],
     income_row: dict[str, float],
+    idx: int,
     review_flags: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, float], dict[str, float]]:
     row = prev_bs.copy()
     revenue = income_row["revenue"]
     oper_cost = income_row["oper_cost"]
     bs_cfg = yaml2.get("balance_sheet", {})
-    revenue_pct = value_map(bs_cfg.get("revenue_pct") if isinstance(bs_cfg, dict) else None)
-    cogs_days = value_map(bs_cfg.get("cogs_days") if isinstance(bs_cfg, dict) else None)
-    capex_pct = as_float(get_path(yaml2, "balance_sheet.capex_pct"))
-    depr_rate = as_float(get_path(yaml2, "balance_sheet.depr_rate"))
-    dividend_payout = as_float(get_path(yaml2, "balance_sheet.dividend_payout"))
+    revenue_pct = value_map_at(bs_cfg.get("revenue_pct") if isinstance(bs_cfg, dict) else None, idx, "balance_sheet.revenue_pct")
+    cogs_days = value_map_at(bs_cfg.get("cogs_days") if isinstance(bs_cfg, dict) else None, idx, "balance_sheet.cogs_days")
+    capex_pct = get_year_float(yaml2, "balance_sheet.capex_pct", idx)
+    depr_rate = get_year_float(yaml2, "balance_sheet.depr_rate", idx)
+    dividend_payout = get_year_float(yaml2, "balance_sheet.dividend_payout", idx)
     plug = str(get_path(yaml2, "model.plug", "cash"))
 
     for field in REVENUE_DRIVER_FIELDS:
@@ -272,6 +315,7 @@ def solve_forecast_year(
     prev_bs: dict[str, float],
     revenue: float,
     review_flags: list[dict[str, Any]],
+    idx: int,
 ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
     """Solve one forecast year with circular interest and plug feedback.
 
@@ -283,12 +327,12 @@ def solve_forecast_year(
     fin_cfg = get_path(yaml2, "income.financial_expense", {})
     base_fin_exp = 0.0
     if isinstance(fin_cfg, dict):
-        base_fin_exp = as_float(fin_cfg.get("base_fin_exp"))
+        base_fin_exp = cfg_year_float(fin_cfg, "base_fin_exp", idx)
     financial_expense = {
         "fin_exp": base_fin_exp,
-        "fin_exp_int_exp": as_float(fin_cfg.get("base_interest_expense")) if isinstance(fin_cfg, dict) else 0.0,
-        "fin_exp_int_inc": as_float(fin_cfg.get("base_interest_income")) if isinstance(fin_cfg, dict) else 0.0,
-        "other_fin_exp": as_float(fin_cfg.get("other_fin_exp_abs")) if isinstance(fin_cfg, dict) else 0.0,
+        "fin_exp_int_exp": cfg_year_float(fin_cfg, "base_interest_expense", idx) if isinstance(fin_cfg, dict) else 0.0,
+        "fin_exp_int_inc": cfg_year_float(fin_cfg, "base_interest_income", idx) if isinstance(fin_cfg, dict) else 0.0,
+        "other_fin_exp": cfg_year_float(fin_cfg, "other_fin_exp_abs", idx) if isinstance(fin_cfg, dict) else 0.0,
     }
     last_key: tuple[float, float] | None = None
     income_row: dict[str, float] = {}
@@ -296,9 +340,9 @@ def solve_forecast_year(
     metrics: dict[str, float] = {}
 
     for _ in range(MAX_ITERATIONS):
-        income_row = build_income_statement(yaml2, revenue, financial_expense)
-        bs_row, metrics = build_balance_sheet(yaml2, prev_bs, income_row, None)
-        next_financial_expense = financial_expense_from_balances(yaml2, prev_bs, bs_row)
+        income_row = build_income_statement(yaml2, revenue, financial_expense, idx)
+        bs_row, metrics = build_balance_sheet(yaml2, prev_bs, income_row, idx, None)
+        next_financial_expense = financial_expense_from_balances(yaml2, prev_bs, bs_row, idx)
         key = (next_financial_expense["fin_exp"], bs_row.get("money_cap", 0.0) + bs_row.get("st_borr", 0.0))
         if last_key is not None and max(abs(key[0] - last_key[0]), abs(key[1] - last_key[1])) < CONVERGENCE_TOLERANCE:
             financial_expense = next_financial_expense
@@ -308,8 +352,8 @@ def solve_forecast_year(
     else:
         raise CalcError(f"{period} circular interest/plug calculation did not converge")
 
-    income_row = build_income_statement(yaml2, revenue, financial_expense)
-    bs_row, metrics = build_balance_sheet(yaml2, prev_bs, income_row, review_flags)
+    income_row = build_income_statement(yaml2, revenue, financial_expense, idx)
+    bs_row, metrics = build_balance_sheet(yaml2, prev_bs, income_row, idx, review_flags)
     return income_row, bs_row, metrics
 
 
@@ -320,10 +364,11 @@ def build_cash_flow(
     income_row: dict[str, float],
     metrics: dict[str, float],
     prev_nwc: float,
+    idx: int,
 ) -> dict[str, float]:
-    amort_intang = as_float(get_path(yaml2, "balance_sheet.amort_intang_assets"))
-    lt_amort = as_float(get_path(yaml2, "balance_sheet.lt_amort_deferred_exp"))
-    use_right_dep = as_float(get_path(yaml2, "balance_sheet.use_right_asset_dep"))
+    amort_intang = get_year_float(yaml2, "balance_sheet.amort_intang_assets", idx)
+    lt_amort = get_year_float(yaml2, "balance_sheet.lt_amort_deferred_exp", idx)
+    use_right_dep = get_year_float(yaml2, "balance_sheet.use_right_asset_dep", idx)
     da = metrics["depreciation"] + amort_intang + lt_amort + use_right_dep
     delta_nwc = metrics["nwc"] - prev_nwc
     cfo = income_row["n_income"] + da - delta_nwc
@@ -370,10 +415,8 @@ def run_forecast(yaml2: dict[str, Any]) -> dict[str, Any]:
     base_period = str(get_path(yaml2, "base_period"))
     base_year = int(base_period[:4])
     years = as_int(get_path(yaml2, "model.forecast_years"))
-    revenue_yoy = as_float(get_path(yaml2, "model.revenue_yoy"))
     wacc = as_float(get_path(yaml2, "model.wacc"))
     terminal_growth = as_float(get_path(yaml2, "model.terminal_growth"))
-    tax_rate = as_float(get_path(yaml2, "income.effective_tax_rate"))
     net_debt = as_float(get_path(yaml2, "market.net_debt"))
     total_shares = as_float(get_path(yaml2, "market.total_shares"))
 
@@ -389,6 +432,7 @@ def run_forecast(yaml2: dict[str, Any]) -> dict[str, Any]:
 
     for idx in range(1, years + 1):
         period = str(base_year + idx)
+        revenue_yoy = get_year_float(yaml2, "model.revenue_yoy", idx)
         revenue *= 1.0 + revenue_yoy
         income_row, bs_row, metrics = solve_forecast_year(
             yaml2,
@@ -396,8 +440,9 @@ def run_forecast(yaml2: dict[str, Any]) -> dict[str, Any]:
             prev_bs,
             revenue,
             review_flags,
+            idx,
         )
-        cf_row = build_cash_flow(yaml2, prev_bs, bs_row, income_row, metrics, prev_nwc)
+        cf_row = build_cash_flow(yaml2, prev_bs, bs_row, income_row, metrics, prev_nwc, idx)
         validate_accounting(period, bs_row, cf_row)
 
         for flag in review_flags:
@@ -405,6 +450,7 @@ def run_forecast(yaml2: dict[str, Any]) -> dict[str, Any]:
                 flag["period"] = period
 
         ebit = income_row["operate_profit"] + income_row.get("fin_exp", 0.0)
+        tax_rate = get_year_float(yaml2, "income.effective_tax_rate", idx)
         nopat = ebit * (1.0 - tax_rate)
         da = (
             cf_row["depr_fa_coga_dpba"]
@@ -511,6 +557,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     defaults_path = Path(args.defaults) if args.defaults else find_defaults_path(args.ticker)
     yaml2 = read_yaml2(defaults_path)
+    if not isinstance(get_path(yaml2, "model.revenue_yoy"), list):
+        from src.yaml1_cleaner import broadcast_yaml2_defaults
+
+        yaml2 = broadcast_yaml2_defaults(yaml2)
     result = run_forecast(yaml2)
     output_dir = Path(args.output_dir) if args.output_dir else default_output_dir(defaults_path)
     write_outputs(result, output_dir)
