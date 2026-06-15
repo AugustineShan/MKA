@@ -38,7 +38,6 @@ from src.yaml2_schema import (
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-COMPANIES_DIR = BASE_DIR / "companies"
 TOLERANCE = 1e-4
 MAX_ITERATIONS = 100
 CONVERGENCE_TOLERANCE = 1e-7
@@ -54,14 +53,6 @@ IMPACT_ADJUSTMENT_FIELDS = {
 
 class CalcError(RuntimeError):
     """Raised when the forecast violates accounting identities."""
-
-
-def find_defaults_path(ticker: str) -> Path:
-    code = ticker.split(".")[0]
-    candidates = sorted(COMPANIES_DIR.glob(f"*_{code}/defaults.yaml"))
-    if not candidates:
-        raise FileNotFoundError(f"No defaults.yaml found for {ticker} under {COMPANIES_DIR}")
-    return candidates[0]
 
 
 def as_float(value: Any, default: float = 0.0) -> float:
@@ -636,40 +627,20 @@ def write_outputs(result: dict[str, Any], output_dir: Path) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run YAML2 default DCF forecast.")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--defaults", help="Path to defaults.yaml")
-    group.add_argument("--ticker", help="A-share ticker; defaults.yaml is located under companies/*_{code}/")
+    parser = argparse.ArgumentParser(description="Run DCF from cleaned forecast parameters.")
+    parser.add_argument("--forecast-params", required=True, help="Path to forecast_params.yaml (yearly YAML2)")
     parser.add_argument("--output-dir", help="Output forecast directory; must be named forecast")
-    parser.add_argument(
-        "--allow-baseline",
-        action="store_true",
-        help="Allow defaults.yaml baseline to overwrite forecast/ even when yaml1 exists",
-    )
     return parser.parse_args(argv)
-
-
-def _refuse_baseline_over_yaml1(defaults_path: Path, allow_baseline: bool) -> None:
-    if allow_baseline or defaults_path.name != "defaults.yaml":
-        return
-    if any(defaults_path.parent.glob("yaml1*.yaml")):
-        raise SystemExit(
-            "yaml1 exists for this company. Use `py -m src.forecast --ticker ...` for the official "
-            "DCF run, or pass --allow-baseline to intentionally overwrite forecast/ with YAML2 baseline."
-        )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    defaults_path = Path(args.defaults) if args.defaults else find_defaults_path(args.ticker)
-    _refuse_baseline_over_yaml1(defaults_path, args.allow_baseline)
-    yaml2 = read_yaml2(defaults_path)
-    if not isinstance(get_path(yaml2, "model.revenue_yoy"), list):
-        from src.yaml1_cleaner import broadcast_yaml2_defaults
-
-        yaml2 = broadcast_yaml2_defaults(yaml2)
+    params_path = Path(args.forecast_params)
+    if not params_path.exists():
+        raise FileNotFoundError(f"forecast params not found: {params_path}")
+    yaml2 = read_yaml2(params_path)
     result = run_forecast(yaml2)
-    output_dir = Path(args.output_dir) if args.output_dir else default_output_dir(defaults_path)
+    output_dir = Path(args.output_dir) if args.output_dir else default_output_dir(params_path)
     write_outputs(result, output_dir)
     summary = result["summary"]
     print(f"Written forecast: {output_dir}")

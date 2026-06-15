@@ -1,4 +1,10 @@
-"""Regression gate for yearly-shaped calc inputs."""
+"""Regression gate for yearly-shaped calc inputs.
+
+The legacy scalar-flat defaults.yaml path no longer exists; calc.py only accepts
+a pre-cleaned ``forecast_params.yaml``. This test ensures that the identity clean
+pass (defaults.yaml with no yaml1 overlay) produces the same DCF as the previous
+scalar baseline.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.calc import run_forecast
-from src.yaml1_cleaner import broadcast_yaml2_defaults
+from src.yaml1_cleaner import clean_yaml1
 from src.yaml2_schema import read_yaml2
 
 
@@ -86,19 +92,19 @@ def _assert_json_equivalent(actual, expected, label: str) -> None:
         assert actual == expected, f"{label} changed"
 
 
-def test_broadcast_defaults_are_numerically_equivalent_to_scalar_baseline():
+def test_identity_clean_defaults_are_numerically_equivalent_to_baseline():
     baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
     assert baseline, "baseline fixture must contain at least one company"
 
     missing: list[str] = []
     for ticker, expected in sorted(baseline.items()):
         defaults_path = Path(expected["defaults_path"])
+        clean_annual_path = defaults_path.parent / "data.db"
         if not defaults_path.exists():
             missing.append(f"{ticker}: {defaults_path}")
             continue
-        yaml2 = read_yaml2(defaults_path)
-        yearly = broadcast_yaml2_defaults(yaml2)
-        actual = _result_payload(run_forecast(yearly))
+        cleaned = clean_yaml1(None, defaults_path, clean_annual_path)
+        actual = _result_payload(run_forecast(cleaned.forecast_params))
         for table in ["income_statement", "balance_sheet", "cash_flow", "dcf"]:
             _assert_frame_equivalent(actual[table], expected[table], ticker, table)
         _assert_summary_equivalent(actual["summary_json"], expected["summary_json"], ticker)
