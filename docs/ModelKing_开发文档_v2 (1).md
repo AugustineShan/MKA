@@ -4,9 +4,11 @@
 >
 > 本文档**不定义任何数据格式的字段细节**。所有格式契约由各自的"活文档"拥有(见第六章契约注册表),本文档只引用、不复制。
 >
+> 实现细节、文件路径、代码现状与完整契约注册表以 [`ARCHITECTURE.md`](ARCHITECTURE.md) 为准;本文档锁定设计意图、职责边界与验收行为。
+>
 > 教训来源:上一版产品文档把 YAML1 schema 写死在文档里,Omnivore 实战第一天就全面脱节(嵌套树 vs 实际的 flat node 长表)。规格必须跟着实战走;开发文档只锁需求、职责边界和验收行为,把"长什么样"留给拥有它的活文档和代码。
 >
-> **v2 更新(2025-06,主干通电后):** 主干已端到端跑通——`核心假设.md → DCF` 第一次从头到尾出估值(新乳:yaml1 15.71 vs yaml2 平推 12.23)。架构较 v1 细化出两件 v1 没有的东西:**一份 markdown 核心文件(核心假设.md)** 和 **一个独立 compiler**;并把"calc 直接消费 YAML1"细化成"**`清洗yaml1.py` 清洗层 + `calc.py`(永远看不到 yaml1)**"。v1 的需求、场景、设计原则大部分仍然成立,本版只改实战推翻的部分。
+> **v2 更新(2025-06,主干通电后):** 主干已端到端跑通——`核心假设.md → DCF` 第一次从头到尾出估值(新乳:yaml1 15.71 vs yaml2 平推 12.23)。架构较 v1 细化出两件 v1 没有的东西:**一份 markdown 核心文件(核心假设.md)** 和 **一个独立 compiler**;并把"calc 直接消费 YAML1"细化成"**`清洗yaml1.py` 清洗层 + `forecast.py` 编排器 + `calc.py`(永远看不到 yaml1)**"。v1 的需求、场景、设计原则大部分仍然成立,本版只改实战推翻的部分。
 
 ---
 
@@ -43,6 +45,8 @@
    / 尊重再参数化 / resolve⊕yaml2 / 历史回测硬闸          (decomposition、B 类收纳区)
             │
    逐年标准参数表 ⊕ yaml2(defaults.yaml 平推基线)
+            │
+   [forecast.py·编排器]✅ 调用 calc 并写 forecast/ 与内部产物
             │
    [calc.py·纯 DCF 算账核·已逐年化]✅(看不到 yaml1)─> 三表 + DCF
 ```
@@ -184,6 +188,8 @@
 
 **验收行为**:季度实际数据到位后自动覆写、Q4 自动重算;Q4 隐含值异常时显式告警;pin 某季度后其余季度正确联动。
 
+**Q4 倒挤约束**:Q4 复用与历史回测同一套约束-反推-诊断设施;具体实现留到任务 E 开工时再建,本次不预建。
+
 ### 任务 F:工作台前端
 
 **目标**:核心文件的编辑器 + 计算结果查看器 + commit 界面 + B 类 stash 展示。原地改值、写理由、实时重算、提交/恢复。
@@ -219,13 +225,17 @@
 
 | 契约 | 拥有者 | 状态 |
 |------|--------|------|
-| 核心假设.md(markdown 核心文件) | `核心假设生成修改器_skill_v10.md`(协议) | v10,实战参照 = 新乳 |
-| 核心假设参考.md(中间态) | `核心假设生成修改器_skill_v10.md`(协议) | 稳定 |
-| YAML1(drivers) | **`yaml1compiler.md`(compiler 协议)** | 定稿(四 kind / A 类稀疏 + B 类完整 / unit_factor) |
-| 逐年标准参数表(清洗输出) | **`清洗yaml1.py`(代码即规格)** | 已实现 |
-| YAML2(defaults) | `yaml2_schema.py`(代码即规格) | 稳定 |
-| clean 宽表(annual/quarterly) | `MKA ARCHITECTURE.md` + `clean.py` | 稳定 |
-| raw 数据镜像 | `MKA ARCHITECTURE.md` + `data_fetcher.py` | 稳定 |
+| 核心假设.md(markdown 核心文件) | `skills/核心假设生成修改器_skill_v14.md`(协议) | v14,实战参照 = 新乳 |
+| 核心假设参考.md(中间态) | `skills/核心假设生成修改器_skill_v14.md`(协议) | 稳定 |
+| YAML1(drivers) | `skills/yaml1compiler_v3 (2).md`(compiler 协议) | 定稿(四 kind / A 类稀疏 + B 类完整 / unit_factor) |
+| 逐年标准参数表(清洗输出) | `src/yaml1_cleaner.py`(代码即规格) | 已实现 |
+| YAML2(defaults) | `src/yaml2_schema.py`(代码即规格) | 稳定 |
+| clean 宽表(annual/quarterly) | `docs/ARCHITECTURE.md` + `src/clean.py` | 稳定 |
+| raw 数据镜像 | `docs/ARCHITECTURE.md` + `src/data_fetcher.py` | 稳定 |
+| DCF build 快照 | `src/forecast.py`(代码即规格) | 已实现 |
+| DCF 运行清单 | `src/forecast.py`(代码即规格) | 已实现 |
+| 财务费用档案 | `src/financial_expense_analyzer.py`(代码即规格) | 已实现 |
+| 年报补数 override | `src/annual_report_reconciler.py`(代码即规格) | 已实现 |
 | 季度格式 | 待定(任务 E 设计时确立拥有者) | 未设计 |
 | commit 存储格式 | 待定(任务 D 设计时确立拥有者) | 未设计 |
 
