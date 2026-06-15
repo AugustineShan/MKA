@@ -1,7 +1,7 @@
-"""init.py - 一键编排 MKA 核心流程（取数 → 年报 → 清洗校验 → 年报补全重跑）。
+"""init.py - 一键编排 MKA 核心流程（取数 → 年报 → 清洗校验 → 年报补全重跑 → 财务费用细则）。
 
 给 Agent / 人用的单一入口：输入公司名 / 裸代码 / 完整 ticker，自动完成
-data_fetcher → report_downloader → clean 的确定性编排，
+data_fetcher → report_downloader → clean → financial_expense_analyzer 的确定性编排，
 并保证幂等（增量跳过、重跑只应用补数），最后输出一份"数据拉取报告"。
 
 设计边界（与 CLAUDE.md 纪律一致）：
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import logging
 import os
 import re
@@ -35,9 +36,14 @@ import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import src.data_fetcher as df_mod
 from src.clean import approved_override_count, default_overrides_path
+from src.financial_expense_analyzer import (
+    analyze_all_periods,
+    default_yaml_path,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 COMPANIES_DIR = BASE_DIR / "companies"
@@ -144,7 +150,7 @@ def stage_fetch(ticker: str, *, force: bool) -> tuple[Path, str]:
         if last_updated[:10] == today:
             return db_path, f"跳过（当日已拉取 last_updated={last_updated}）"
 
-    LOGGER.info("[1/3] TuShare 拉取 %s ...", ticker)
+    LOGGER.info("[1/4] TuShare 拉取 %s ...", ticker)
     new_path = Path(df_mod.fetch_company(ticker, force_refresh=force, output_root=BASE_DIR))
     return new_path, "已更新" + ("（force 全量重拉）" if force else "（UPSERT 增量）")
 
@@ -188,7 +194,7 @@ def stage_reports(
     if force_markdown:
         cmd.append("--force-markdown")
 
-    LOGGER.info("[2/3] 年报/季报 PDF/Markdown 下载 %s ...", ticker)
+    LOGGER.info("[2/4] 年报/季报 PDF/Markdown 下载 %s ...", ticker)
     result = subprocess.run(cmd, cwd=BASE_DIR)
 
     pdf_after, md_after = _count_reports(annuals_dir)
@@ -260,12 +266,42 @@ def stage_clean(ticker: str, db_path: Path, *, mode: str, verbose: bool) -> tupl
     )
 
 
+def stage_financial_expense(
+    ticker: str,
+    db_path: Path,
+    *,
+    force: bool,
+    verbose: bool,
+) -> tuple[str, dict[str, Any] | None]:
+    """阶段③：财务费用细则分析（clean 之后、defaults 之前）。
+
+    生成 companies/{公司}/financial_expense.yaml 多年档案；失败仅 warning，不阻塞管线。
+    返回 (状态描述, archive dict 或 None)。
+    """
+    LOGGER.info("[4/4] 财务费用细则分析 %s ...", ticker)
+    try:
+        yaml_path = analyze_all_periods(ticker, db_path=db_path, force=force)
+        import yaml  # type: ignore
+        archive = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        periods = archive.get("periods", {}) if isinstance(archive, dict) else {}
+        approved = sum(
+            1 for rec in periods.values()
+            if isinstance(rec, dict) and rec.get("status") == "approved" and rec.get("confidence") == "high"
+        )
+        total = len(periods)
+        return f"✅ 已生成 {yaml_path.name}（{approved}/{total} 年 approved）", archive
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("财务费用细则分析失败（不影响后续流程）: %s", exc)
+        return f"⚠️ 分析失败: {exc}", None
+
+
 def build_report(
     ticker: str,
     db_path: Path,
     fetch_status: str,
     report_status: str,
     clean_status: str,
+    fin_exp_status: str,
 ) -> str:
     meta = read_meta(db_path)
     name = meta.get("name", "?")
@@ -273,14 +309,15 @@ def build_report(
     lines.append("=" * 64)
     lines.append(f"  init 数据拉取报告: {name} ({ticker})")
     lines.append("=" * 64)
-    lines.append(f"  [1/3] TuShare 拉取      : {fetch_status}")
+    lines.append(f"  [1/4] TuShare 拉取      : {fetch_status}")
     if meta:
         lines.append(
             f"          latest_trade_date={meta.get('latest_trade_date','?')} "
             f"last_report_period={meta.get('last_report_period','?')}"
         )
-    lines.append(f"  [2/3] 年报 PDF/Markdown : {report_status}")
-    lines.append(f"  [3/3] clean 配平校验    : {clean_status}")
+    lines.append(f"  [2/4] 年报 PDF/Markdown : {report_status}")
+    lines.append(f"  [3/4] clean 配平校验    : {clean_status}")
+    lines.append(f"  [4/4] 财务费用细则      : {fin_exp_status}")
 
     with closing(sqlite3.connect(db_path)) as conn:
         def _count(table: str) -> int:
@@ -364,9 +401,12 @@ def run_one(
         no_quarterly=no_quarterly,
     )
     ok, clean_status = stage_clean(ticker, db_path, mode=mode, verbose=verbose)
+    fin_exp_status, _evidence = stage_financial_expense(
+        ticker, db_path, force=force, verbose=verbose
+    )
 
     print("\n" + build_report(
-        ticker, db_path, fetch_status, report_status, clean_status
+        ticker, db_path, fetch_status, report_status, clean_status, fin_exp_status
     ))
 
     return 0 if ok else 3
@@ -374,11 +414,11 @@ def run_one(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="一键编排 MKA 核心流程：取数 → 年报 → 清洗校验 → 年报补全重跑（幂等）。"
+        description="一键编排 MKA 核心流程：取数 → 年报 → 清洗校验 → 年报补全重跑 → 财务费用细则（幂等）。"
     )
     parser.add_argument("inputs", nargs="+", help="公司名 / 裸代码 / 完整 ticker（可多个）")
     parser.add_argument("--force", action="store_true",
-                        help="全量重拉（清空旧 raw_tushare 后重拉）")
+                        help="全量重拉并重跑财务费用分析")
     parser.add_argument("--no-markdown", action="store_true", help="年报仅下载 PDF，不抽 Markdown")
     parser.add_argument("--force-markdown", action="store_true", help="即使已存在也重抽 Markdown")
     parser.add_argument("--no-quarterly", action="store_true",

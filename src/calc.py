@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -526,8 +527,19 @@ def default_output_dir(defaults_path: Path) -> Path:
     return defaults_path.parent / "forecast"
 
 
-def write_outputs(result: dict[str, Any], output_dir: Path) -> None:
+def reset_forecast_dir(output_dir: Path) -> None:
+    output_dir = output_dir.resolve()
+    if output_dir.name != "forecast":
+        raise CalcError(f"Official forecast output directory must be named forecast: {output_dir}")
+    if output_dir.exists() and not output_dir.is_dir():
+        raise CalcError(f"Forecast output path exists and is not a directory: {output_dir}")
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+
+def write_outputs(result: dict[str, Any], output_dir: Path) -> None:
+    reset_forecast_dir(output_dir)
     result["income_statement"].to_csv(output_dir / "forecast_is.csv", index=False, encoding="utf-8-sig")
     result["balance_sheet"].to_csv(output_dir / "forecast_bs.csv", index=False, encoding="utf-8-sig")
     result["cash_flow"].to_csv(output_dir / "forecast_cf.csv", index=False, encoding="utf-8-sig")
@@ -549,13 +561,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--defaults", help="Path to defaults.yaml")
     group.add_argument("--ticker", help="A-share ticker; defaults.yaml is located under companies/*_{code}/")
-    parser.add_argument("--output-dir", help="Output forecast directory; defaults to company/forecast")
+    parser.add_argument("--output-dir", help="Output forecast directory; must be named forecast")
+    parser.add_argument(
+        "--allow-baseline",
+        action="store_true",
+        help="Allow defaults.yaml baseline to overwrite forecast/ even when yaml1 exists",
+    )
     return parser.parse_args(argv)
+
+
+def _refuse_baseline_over_yaml1(defaults_path: Path, allow_baseline: bool) -> None:
+    if allow_baseline or defaults_path.name != "defaults.yaml":
+        return
+    if any(defaults_path.parent.glob("yaml1*.yaml")):
+        raise SystemExit(
+            "yaml1 exists for this company. Use `py -m src.forecast --ticker ...` for the official "
+            "DCF run, or pass --allow-baseline to intentionally overwrite forecast/ with YAML2 baseline."
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     defaults_path = Path(args.defaults) if args.defaults else find_defaults_path(args.ticker)
+    _refuse_baseline_over_yaml1(defaults_path, args.allow_baseline)
     yaml2 = read_yaml2(defaults_path)
     if not isinstance(get_path(yaml2, "model.revenue_yoy"), list):
         from src.yaml1_cleaner import broadcast_yaml2_defaults

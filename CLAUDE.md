@@ -1,6 +1,6 @@
 # MKA - A股财务数据拉取与校验系统
 
-两阶段流水线：① 从 TuShare Pro API 拉取三表数据 → 标准化 → 入库 SQLite；② 从 SQLite 读取原始数据 → 透视宽表 → 严格配平校验 → 输出清洗后 CSV。
+两阶段流水线：① 从 TuShare Pro API 拉取三表数据 → 标准化 → 入库 SQLite；② 从 SQLite 读取原始数据 → 透视宽表 → 严格配平校验 → 写入 SQLite clean 表。
 
 ## 🔴 项目第一原则（理解项目必须先懂这条）
 
@@ -28,12 +28,16 @@ MKA/
 │   ├── __init__.py
 │   ├── init.py               # 一键编排入口
 │   ├── data_fetcher.py       # 阶段①：TuShare拉取+标准化+入库（~1250行）
-│   ├── clean.py              # 阶段②：EAV→宽表+配平校验+CSV输出（~820行）
+│   ├── clean.py              # 阶段②：EAV→宽表+配平校验+SQLite clean表写入
 │   ├── report_downloader.py  # 巨潮资讯网年报 PDF + Markdown 批量下载
+│   ├── annual_report_utils.py     # 年报 Markdown/LLM 公共工具（reconciler / analyzer 共用）
 │   ├── annual_report_reconciler.py # clean.py 年度硬校验失败后的年报 Markdown 智能核对
 │   ├── annual_report_extractor.py  # 年报 Markdown LLM 萃取
+│   ├── financial_expense_analyzer.py # 财务费用附注细则分析 → financial_expense.yaml（多年档案）
 │   ├── defaults_gen.py       # clean_annual/meta → defaults.yaml
-│   ├── calc.py               # defaults.yaml → 默认预测三表 + DCF
+│   ├── yaml1_cleaner.py      # yaml1 + defaults.yaml → 内部 forecast params + report
+│   ├── forecast.py           # 正式入口：defaults.yaml + yaml1*.yaml → forecast/
+│   ├── calc.py               # 标准参数表 → 预测三表 + DCF
 │   └── yaml2_schema.py       # YAML2 读写与校验
 ├── docs/                     # 项目文档
 │   ├── ARCHITECTURE.md       # 系统架构文档（每次开发完必须更新）
@@ -44,8 +48,11 @@ MKA/
 ├── companies/                # 输出目录，每公司一个子目录
 │   └── {公司名}_{代码}/
 │       ├── data.db           # SQLite（raw_tushare/meta/clean_annual/clean_quarterly）
-│       ├── clean_annual_{code}.csv
-│       ├── clean_quarterly_{code}.csv
+│       ├── defaults.yaml     # 唯一 YAML2：机器平推底座
+│       ├── financial_expense.yaml  # 年报财务费用附注多年明细档案
+│       ├── yaml1*.yaml      # compiler 输出：人的判断覆盖层
+│       ├── .modelking/       # 内部编译产物，不作为人工维护界面
+│       ├── forecast/         # 唯一正式 DCF 输出，每次重算先清空再生成
 │       ├── annuals/          # 年度报告 PDF + Markdown
 │       └── recon/            # 年报核对 evidence JSON
 ├── vendor/
@@ -68,10 +75,64 @@ companies/{公司名}_{代码}/data.db
   ├── clean_adjustments
   └── clean_warnings
     ↓ clean.py（阶段②）
-companies/{公司名}_{代码}/clean_annual_{code}.csv
-companies/{公司名}_{代码}/clean_quarterly_{code}.csv
+SQLite data.db: clean_annual / clean_quarterly
   （宽表：行=period，列=统一 331 数据字段，严格配平并保留 warning）
+    ↓ financial_expense_analyzer.py（可选增强）
+companies/{公司名}_{代码}/financial_expense.yaml
+  （按年份归档的年报财务费用附注拆解：components / derived / checks / status）
+    ↓ defaults_gen.py
+companies/{公司名}_{代码}/defaults.yaml
+  （唯一 YAML2：完整、配平、无判断的机器平推底座；financial_expense 可能来自 annual_report.fin_exp_note）
+    ↓ forecast.py：yaml1*.yaml + defaults.yaml
+companies/{公司名}_{代码}/forecast/
+  （唯一正式 DCF 输出；中间参数/报告写入 .modelking/）
 ```
+
+## DCF 运行规则（必须遵守）
+
+用户视角只需要维护两类输入：`defaults.yaml`（YAML2，机器平推底座）和 `yaml1*.yaml`（compiler 输出，人的判断覆盖层）。正式运行命令：
+
+```bash
+py -m src.forecast --ticker 002946.SZ
+```
+
+这条命令内部执行 `yaml1_cleaner.py` 的 fold / expand / resolve / backtest，再把标准参数交给 `calc.py`。默认只在公司目录顶层暴露最终结果：
+
+```text
+companies/{公司名}_{代码}/forecast/
+```
+
+中间产物是内部编译缓存，默认写入：
+
+```text
+companies/{公司名}_{代码}/.modelking/forecast_params.yaml
+companies/{公司名}_{代码}/.modelking/yaml1_clean_report.json
+```
+
+不要在公司目录顶层生成或维护 `yaml2_yearly.yaml`、`forecast_params.yaml`、`yaml1_clean_report.json`。`defaults.yaml` 是唯一 YAML2；清洗后的逐年标准参数表不是 YAML2。正式输出目录只能是 `forecast/`，每次重算必须先清空旧 `forecast/` 再生成，禁止用 `forecast_current/forecast_fixed/forecast_yaml1` 这类目录承载正式结果。
+
+`calc.py` 是低层算账核/回归工具，不是有 yaml1 公司的一键入口。若公司目录已有 `yaml1*.yaml`，直接用 `calc.py` 跑 `defaults.yaml` 会被拒绝，除非显式传 `--allow-baseline` 表示要用 YAML2 baseline 覆盖 `forecast/`。
+
+## 本地 Web 工作台（FastAPI + React）
+
+ModelKing 前端是本地文件工作台：把 `companies/{公司名}_{代码}/` 映射为一家公司的一页。第一版只读展示 + 一键重算，不直接改写核心假设或 yaml1。工作台不是新的建模入口，重算按钮必须调用 `src.forecast`，仍遵守 `defaults.yaml + yaml1*.yaml -> forecast/`。
+
+```bash
+npm install
+npm run build          # 验证 React/Vite 前端
+py -m src.workbench    # 启动 FastAPI，并打开 http://127.0.0.1:8765
+```
+
+Windows 双击入口是 `run_workbench.cmd`。开发前端时可单独跑 `npm run dev`，但正式预览/日常使用走 `py -m src.workbench`。
+
+前端目录：
+
+```text
+app/                   # React + Vite UI
+src/workbench.py       # FastAPI 本地壳，读 companies/ 并调用 src.forecast
+```
+
+工作台必须保持 Apple HIG / SF Pro 风格：白与 #F5F5F7 灰底、#1D1D1F 主文字、#0071E3 只用于交互、无渐变、无装饰图标。表格是高风险区域：数字右对齐、SF Mono、负数 #FF3B30、轻 zebra、表头 11px all-caps。YAML 面板是唯一允许多语法色的区域，按 Xcode source editor 处理。
 
 ## 年报 PDF + Markdown 下载 report_downloader.py
 
@@ -108,7 +169,7 @@ python -m src.report_downloader --ticker 000333.SZ
 
 ## 年报 Markdown 智能核对 annual_report_reconciler.py
 
-这是 `clean.py` 的外置补全/诊断能力，只在年度硬校验失败且本地已有年报 Markdown 时使用。脚本复用 `clean.py` 的年度透视、字段分类、combo resolve 与 `check_*()` 校验函数收集失败，再切出对应年报片段，必要时调用配置好的 LLM（默认 GLM `glm-5-turbo`）输出结构化 evidence。它不修改 `data.db`、`raw_tushare`、`clean_annual` 或 CSV。
+这是 `clean.py` 的外置补全/诊断能力，只在年度硬校验失败且本地已有年报 Markdown 时使用。脚本复用 `clean.py` 的年度透视、字段分类、combo resolve 与 `check_*()` 校验函数收集失败，再切出对应年报片段，必要时调用配置好的 LLM（默认 GLM `glm-5-turbo`）输出结构化 evidence。它不修改 `data.db`、`raw_tushare`、`clean_annual` 或 `clean_quarterly`。
 
 ### CLI
 
@@ -354,3 +415,40 @@ py -m src.report_downloader --ticker 000333.SZ --list-only
 - Python 路径：确认 `which python` 不指向 WindowsApps，若指向则 `source ~/.bashrc` 或使用完整路径 `/c/Users/Sheld/AppData/Local/Programs/Python/Python311/python.exe`
 - `.env` 中 `TUSHARE_TOKEN` 为敏感信息，不可提交至版本控制
 - 输出目录 `companies/` 为运行时生成，不纳入版本控制
+
+## Windows + 中文环境约定（踩坑固化）
+
+### 编码：永远别让中文走 stdout
+
+Git Bash 终端默认非 UTF-8，Python `print()` 中文会乱码（`����ҵ`）。内存里的数据是对的，只有终端显示被污染。所以：
+
+- **默认协议：数据落盘再用 Read 工具看，不要 print 调试。** 中间产物一律 `to_csv(encoding='utf-8-sig')` 或 `json.dump(..., ensure_ascii=False)`。
+- 确需直接 print 时，脚本顶部加：
+
+```python
+import sys, io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+```
+
+  或运行前 `export PYTHONIOENCODING=utf-8`（有效）。
+- `chcp 65001` 在 Git Bash 里无效（那是 cmd 命令），别用。
+
+### 路径：中文读、英文写
+
+中文路径 + 反斜杠 + heredoc 多层转义会打坏路径（`\active` → `ctive`，导致 OSError）。所以：
+
+- 读取走中文原路径，但**字符串一律用 raw**：`r"D:\MKA\companies\新乳业_002946\..."`。
+- **中间产物全部写英文临时目录**（如 `C:\temp\xlsm_csv\`），不要往中文目录里写。
+
+### Excel/xlsm 解析标准流程
+
+读券商模型时按此走，避免重复踩坑：
+
+1. raw 字符串读中文路径
+2. 逐 sheet `to_csv` 到英文临时目录，UTF-8-sig
+3. 用 Read 工具读 CSV（分段读，大 sheet 别全量）
+4. 落盘产物可审计，天然适配五层确认协议
+
+### pip
+
+安装包统一加 `-i https://pypi.tuna.tsinghua.edu.cn/simple`

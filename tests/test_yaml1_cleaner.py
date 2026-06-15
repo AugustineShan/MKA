@@ -16,9 +16,9 @@ def company_dir() -> Path:
 def paths() -> tuple[Path, Path, Path]:
     base = company_dir()
     return (
-        base / "yaml1_002946 (4).yaml",
+        yaml1_cleaner.default_yaml1_path(base),
         base / "defaults.yaml",
-        base / "clean_annual_002946.csv",
+        base / "data.db",
     )
 
 
@@ -57,7 +57,7 @@ def test_clean_yaml1_expands_fade_hold_default_hold_and_alias_warning():
         clean_path,
     )
 
-    y = result.yaml2_yearly
+    y = result.forecast_params
     warnings = [item["message"] for item in result.report["warnings"]]
 
     assert y["model"]["forecast_years"]["value"] == 12
@@ -100,7 +100,7 @@ def test_resolve_yearly_shape_keeps_base_and_constants_scalar():
         defaults_path,
         clean_path,
     )
-    y = result.yaml2_yearly
+    y = result.forecast_params
 
     assert y["base_period"] == "2024"
     assert y["income"]["revenue"]["value"] == pytest.approx(10665.42345785)

@@ -30,6 +30,7 @@ from src.yaml2_schema import (
     param,
     write_yaml2,
 )
+from src.financial_expense_analyzer import load_financial_expense_yaml
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -303,6 +304,63 @@ def build_defaults(db_path: Path, ticker: str | None = None) -> dict[str, Any]:
         },
         "review_flags": [],
     }
+    data = _apply_financial_expense_evidence(data, db_path)
+    return data
+
+
+def _apply_financial_expense_evidence(data: dict[str, Any], db_path: Path) -> dict[str, Any]:
+    """Override mechanical financial_expense params with approved annual-report evidence.
+
+    Reads ``financial_expense.yaml`` and picks the latest approved+high period
+    whose checks pass and whose base_period matches the YAML2 base_period.
+    """
+    company_dir = db_path.parent
+    archive = load_financial_expense_yaml(company_dir)
+    if archive is None:
+        return data
+
+    periods = archive.get("periods") or {}
+    if not isinstance(periods, dict):
+        return data
+
+    # Pick the latest (lexicographically last) approved+high period.
+    candidate: tuple[str, dict[str, Any]] | None = None
+    for base_period in sorted(periods):
+        record = periods[base_period]
+        if not isinstance(record, dict):
+            continue
+        if record.get("status") != "approved" or record.get("confidence") != "high":
+            continue
+        checks = record.get("checks") or {}
+        if not checks.get("total_check", {}).get("ok"):
+            continue
+        if not checks.get("basis_check", {}).get("ok"):
+            continue
+        candidate = (base_period, record)
+
+    if candidate is None:
+        return data
+
+    base_period, record = candidate
+    if base_period != str(data.get("base_period")):
+        return data
+
+    derived = record.get("derived")
+    if not isinstance(derived, dict):
+        return data
+
+    fin_exp = data["income"]["financial_expense"]
+    source = "annual_report.fin_exp_note"
+    fin_exp["interest_expense_rate"]["value"] = float(derived["interest_expense_rate"])
+    fin_exp["interest_expense_rate"]["source"] = source
+    fin_exp["cash_interest_rate"]["value"] = float(derived["cash_interest_rate"])
+    fin_exp["cash_interest_rate"]["source"] = source
+    fin_exp["other_fin_exp_abs"]["value"] = float(derived["other_fin_exp_abs"])
+    fin_exp["other_fin_exp_abs"]["source"] = source
+    fin_exp["base_interest_expense"]["value"] = float(derived["interest_expense"])
+    fin_exp["base_interest_expense"]["source"] = source
+    fin_exp["base_interest_income"]["value"] = float(derived["interest_income"])
+    fin_exp["base_interest_income"]["source"] = source
     return data
 
 

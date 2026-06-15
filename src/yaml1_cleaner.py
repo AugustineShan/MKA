@@ -8,11 +8,13 @@ and emits a report. It does not call LLMs, plug residuals, or run valuation.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import copy
 import csv
 import json
 import math
 import re
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,8 +68,13 @@ class FoldResult:
 
 @dataclass
 class CleanResult:
-    yaml2_yearly: dict[str, Any]
+    forecast_params: dict[str, Any]
     report: dict[str, Any]
+
+    @property
+    def yaml2_yearly(self) -> dict[str, Any]:
+        """Backward-compatible alias for the resolved forecast parameters."""
+        return self.forecast_params
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:
@@ -84,6 +91,12 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
 
 def load_clean_annual(path: str | Path) -> dict[int, dict[str, float]]:
     path = Path(path)
+    if path.suffix.lower() == ".db":
+        return _load_clean_annual_db(path)
+    if not path.exists():
+        db_path = path.parent / "data.db"
+        if db_path.exists():
+            return _load_clean_annual_db(db_path)
     rows: dict[int, dict[str, float]] = {}
     with path.open(encoding="utf-8-sig", newline="") as fh:
         for row in csv.DictReader(fh):
@@ -99,6 +112,24 @@ def load_clean_annual(path: str | Path) -> dict[int, dict[str, float]]:
     return rows
 
 
+def _load_clean_annual_db(path: Path) -> dict[int, dict[str, float]]:
+    rows: dict[int, dict[str, float]] = {}
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute("select * from clean_annual order by period")
+        for row in cursor:
+            period = int(str(row["period"])[:4])
+            values: dict[str, float] = {}
+            for key in row.keys():
+                if key == "period":
+                    continue
+                values[key] = _to_float(row[key])
+            rows[period] = values
+    if not rows:
+        raise Yaml1CleanError(f"clean_annual is empty in database: {path}")
+    return rows
+
+
 def find_company_dir(ticker: str) -> Path:
     code = ticker.split(".")[0]
     candidates = sorted(COMPANIES_DIR.glob(f"*_{code}"))
@@ -109,12 +140,12 @@ def find_company_dir(ticker: str) -> Path:
 
 def default_yaml1_path(company_dir: Path) -> Path:
     candidates = sorted(
-        company_dir.glob("yaml1_*.yaml"),
+        company_dir.glob("yaml1*.yaml"),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
     if not candidates:
-        raise FileNotFoundError(f"No yaml1_*.yaml found under {company_dir}")
+        raise FileNotFoundError(f"No yaml1*.yaml found under {company_dir}")
     return candidates[0]
 
 
@@ -319,18 +350,18 @@ def clean_yaml1(
     overlay = _collect_explicit_overlay(yaml1, fold, report)
     full_horizon = _full_horizon(yaml1, fold.explicit_horizon)
     expanded = _expand_overlay(overlay, yaml1, fold.explicit_horizon, full_horizon, report)
-    yaml2_yearly, yearly_paths = _resolve_yaml2_yearly(yaml2, expanded, len(full_horizon))
-    yaml2_yearly.setdefault("meta", {})["horizon"] = full_horizon
+    forecast_params, yearly_paths = _resolve_yaml2_yearly(yaml2, expanded, len(full_horizon))
+    forecast_params.setdefault("meta", {})["horizon"] = full_horizon
     report["yearly_paths"] = yearly_paths
 
     backtest = _run_backtests(yaml1, clean_annual, fold, report)
     report["backtest"] = backtest
     _add_growth_diagnostics(fold, yaml1, report)
-    validate_yaml2_yearly(yaml2_yearly, yearly_paths, report)
+    validate_yaml2_yearly(forecast_params, yearly_paths, report)
     if report["errors"]:
         first = report["errors"][0]
         raise Yaml1CleanError(first["message"])
-    return CleanResult(yaml2_yearly=yaml2_yearly, report=report)
+    return CleanResult(forecast_params=forecast_params, report=report)
 
 
 def _initial_report(
@@ -690,13 +721,28 @@ def write_json(path: str | Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def mark_hidden(path: str | Path) -> None:
+    if not hasattr(ctypes, "windll"):
+        return
+    path = Path(path)
+    if not path.exists():
+        return
+    try:
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+        if attrs == -1:
+            return
+        ctypes.windll.kernel32.SetFileAttributesW(str(path), attrs | 0x02)
+    except OSError:
+        return
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Clean yaml1 into yearly YAML2.")
-    parser.add_argument("--yaml1", help="Path to yaml1; defaults to latest company yaml1_*.yaml")
+    parser = argparse.ArgumentParser(description="Clean yaml1 into forecast parameters.")
+    parser.add_argument("--yaml1", help="Path to yaml1; defaults to latest company yaml1*.yaml")
     parser.add_argument("--defaults", help="Path to defaults.yaml")
-    parser.add_argument("--clean-annual", help="Path to clean_annual CSV")
+    parser.add_argument("--clean-annual", help="Path to clean_annual data source; defaults to company/data.db")
     parser.add_argument("--ticker", help="Ticker used to infer paths")
-    parser.add_argument("--output", help="Output yaml2_yearly.yaml path")
+    parser.add_argument("--output", help="Output forecast_params.yaml path")
     parser.add_argument("--report", help="Output report JSON path")
     return parser.parse_args(argv)
 
@@ -713,14 +759,17 @@ def main(argv: list[str] | None = None) -> int:
     yaml1_path = Path(args.yaml1) if args.yaml1 else default_yaml1_path(company_dir)
     defaults_path = Path(args.defaults) if args.defaults else company_dir / "defaults.yaml"
     code = args.ticker.split(".")[0] if args.ticker else company_dir.name.rsplit("_", 1)[-1]
-    clean_annual_path = Path(args.clean_annual) if args.clean_annual else company_dir / f"clean_annual_{code}.csv"
-    output_path = Path(args.output) if args.output else company_dir / "yaml2_yearly.yaml"
-    report_path = Path(args.report) if args.report else company_dir / "yaml1_clean_report.json"
+    clean_annual_path = Path(args.clean_annual) if args.clean_annual else company_dir / "data.db"
+    internal_dir = company_dir / ".modelking"
+    output_path = Path(args.output) if args.output else internal_dir / "forecast_params.yaml"
+    report_path = Path(args.report) if args.report else internal_dir / "yaml1_clean_report.json"
 
     result = clean_yaml1(yaml1_path, defaults_path, clean_annual_path)
-    write_yaml2(output_path, result.yaml2_yearly)
+    write_yaml2(output_path, result.forecast_params)
     write_json(report_path, result.report)
-    print(f"Written yearly YAML2: {output_path}")
+    if output_path.parent == internal_dir or report_path.parent == internal_dir:
+        mark_hidden(internal_dir)
+    print(f"Written forecast params: {output_path}")
     print(f"Written yaml1 clean report: {report_path}")
     if result.report["warnings"]:
         print(f"Warnings: {len(result.report['warnings'])}")

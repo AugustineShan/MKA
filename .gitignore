@@ -13,6 +13,11 @@ __pycache__/
 *$py.class
 *.so
 
+# Frontend
+node_modules/
+app/dist/
+dist/
+
 # Logs
 *.log
 

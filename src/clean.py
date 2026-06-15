@@ -1,4 +1,4 @@
-"""Clean raw TuShare EAV data into validated wide-table CSV.
+"""Clean raw TuShare EAV data into validated wide tables in SQLite.
 
 Public API:
     clean("D:\\MKA\\companies\\安克创新_300866\\data.db", "300866.SZ") -> pd.DataFrame
@@ -2214,7 +2214,7 @@ def clean_all(
     mode: str = "all",
     max_quarters: int = 48,
 ) -> dict[str, pd.DataFrame]:
-    """Clean annual and quarterly data, write SQLite tables, and export debug CSVs."""
+    """Clean annual and quarterly data and write SQLite tables."""
     db_path = Path(db_path)
     if not db_path.exists():
         raise FileNotFoundError(f"Database not found: {db_path}")
@@ -2262,16 +2262,6 @@ def clean_all(
         write_audit_tables_for_mode(conn, applied_adjustments, warning_records, mode=mode)
         conn.commit()
 
-    code = ticker.split(".")[0]
-    if "annual" in outputs:
-        annual_csv_path = db_path.parent / f"clean_annual_{code}.csv"
-        outputs["annual"].to_csv(annual_csv_path, encoding="utf-8-sig")
-        LOGGER.info("Written debug CSV %s", annual_csv_path)
-    if "quarterly" in outputs:
-        quarterly_csv_path = db_path.parent / f"clean_quarterly_{code}.csv"
-        outputs["quarterly"].to_csv(quarterly_csv_path, encoding="utf-8-sig")
-        LOGGER.info("Written debug CSV %s", quarterly_csv_path)
-
     return outputs
 
 
@@ -2283,7 +2273,7 @@ def clean(db_path: str | Path, ticker: str) -> pd.DataFrame:
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Clean TuShare raw data into validated wide-table CSV.")
+    parser = argparse.ArgumentParser(description="Clean TuShare raw data into validated wide tables in SQLite.")
     parser.add_argument("--ticker", required=True, help="A-share ticker, e.g. 300866.SZ")
     parser.add_argument("--db", default=None, help="Path to data.db (auto-detected if omitted)")
     parser.add_argument("--overrides", default=None, help="Approved annual-report override JSON (default: company/recon/annual_report_overrides.json)")
