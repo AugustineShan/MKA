@@ -335,28 +335,89 @@ def _year_values(values: Any, horizon: list[int], path: str) -> list[float]:
     return [_to_float(value) for value in values]
 
 
+def _empty_fold_from_yaml2(yaml2: dict[str, Any]) -> FoldResult:
+    """Build a degenerate FoldResult for a defaults-only (no yaml1) clean pass.
+
+    The horizon is taken from YAML2's ``base_period`` + ``model.forecast_years``.
+    ``model.revenue_yoy`` is broadcast from its scalar default so the same
+    resolve/validate pipeline can be used unchanged.
+    """
+    base_period = str(_path_get(yaml2, "base_period"))
+    base_year = int(base_period[:4])
+    years = int(_to_float(_path_get(yaml2, "model.forecast_years")))
+    explicit_horizon = list(range(base_year + 1, base_year + 1 + years))
+    base_revenue = _to_float(_path_get(yaml2, "income.revenue"))
+    revenue_yoy = [_to_float(_path_get(yaml2, "model.revenue_yoy"))] * years
+    return FoldResult(
+        base_year=base_year,
+        explicit_horizon=explicit_horizon,
+        base_revenue=base_revenue,
+        revenue_by_year={},
+        revenue_yoy=revenue_yoy,
+        segment_base_revenue={},
+        segment_revenue_by_year={},
+        unit_factors={},
+        warnings=[
+            {
+                "stage": "defaults_only",
+                "message": "No yaml1 provided; using YAML2 baseline as identity clean pass.",
+            }
+        ],
+    )
+
+
+def _empty_terminal_from_yaml2(yaml2: dict[str, Any], explicit_horizon: list[int]) -> dict[str, Any]:
+    """Return a terminal block with no fade for a defaults-only run."""
+    explicit_end = explicit_horizon[-1]
+    return {
+        "explicit_end": explicit_end,
+        "fade": {"kind": "linear", "fade_paths": [], "hold_paths": [], "to_year": explicit_end},
+        "perpetual_growth": _to_float(_path_get(yaml2, "model.terminal_growth")),
+    }
+
+
 def clean_yaml1(
-    yaml1_path: str | Path,
+    yaml1_path: str | Path | None,
     defaults_path: str | Path,
     clean_annual_path: str | Path,
 ) -> CleanResult:
-    yaml1 = load_yaml(yaml1_path)
     yaml2 = read_yaml2(defaults_path)
     clean_annual = load_clean_annual(clean_annual_path)
-    fold = fold_revenue(yaml1, clean_annual)
-    report = _initial_report(yaml1_path, defaults_path, clean_annual_path, fold)
+
+    if yaml1_path is None:
+        yaml1: dict[str, Any] = {}
+        fold = _empty_fold_from_yaml2(yaml2)
+        defaults_only = True
+    else:
+        yaml1 = load_yaml(yaml1_path)
+        fold = fold_revenue(yaml1, clean_annual)
+        defaults_only = False
+
+    report = _initial_report(
+        str(yaml1_path) if yaml1_path else "<defaults-only>",
+        defaults_path,
+        clean_annual_path,
+        fold,
+    )
+    report["defaults_only"] = defaults_only
     report["warnings"].extend(fold.warnings)
 
     overlay = _collect_explicit_overlay(yaml1, fold, report)
-    full_horizon = _full_horizon(yaml1, fold.explicit_horizon)
-    expanded = _expand_overlay(overlay, yaml1, fold.explicit_horizon, full_horizon, report)
+    terminal = yaml1.get("terminal") if yaml1 else _empty_terminal_from_yaml2(yaml2, fold.explicit_horizon)
+    full_horizon = _full_horizon(terminal, fold.explicit_horizon)
+    expanded = _expand_overlay(overlay, terminal, fold.explicit_horizon, full_horizon, report)
     forecast_params, yearly_paths = _resolve_yaml2_yearly(yaml2, expanded, len(full_horizon))
     forecast_params.setdefault("meta", {})["horizon"] = full_horizon
     report["yearly_paths"] = yearly_paths
 
-    backtest = _run_backtests(yaml1, clean_annual, fold, report)
+    if defaults_only:
+        _collect_sign_warnings(clean_annual, report)
+        backtest = {"status": "skipped", "reason": "defaults_only"}
+    else:
+        backtest = _run_backtests(yaml1, clean_annual, fold, report)
     report["backtest"] = backtest
-    _add_growth_diagnostics(fold, yaml1, report)
+    if not defaults_only:
+        _add_growth_diagnostics(fold, yaml1, report)
     validate_yaml2_yearly(forecast_params, yearly_paths, report)
     if report["errors"]:
         first = report["errors"][0]
@@ -393,11 +454,22 @@ def _collect_explicit_overlay(
     fold: FoldResult,
     report: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
+    defaults_only = not yaml1
+    revenue_node = yaml1.get("income.revenue") if yaml1 else {}
     overlay: dict[str, dict[str, Any]] = {
         MODEL_REVENUE_YOY: {
             "values": fold.revenue_yoy,
-            "source": yaml1.get("income.revenue", {}).get("src", "yaml1.income.revenue"),
-            "note": "Folded from yaml1 income.revenue decomposition.",
+            "source": (
+                "yaml2.baseline"
+                if defaults_only
+                else (revenue_node.get("src") if isinstance(revenue_node, dict) else None)
+                or "yaml1.income.revenue"
+            ),
+            "note": (
+                "Broadcast from YAML2 baseline (no yaml1 decomposition)."
+                if defaults_only
+                else "Folded from yaml1 income.revenue decomposition."
+            ),
         }
     }
     horizon = fold.explicit_horizon
@@ -415,15 +487,14 @@ def _collect_explicit_overlay(
     return overlay
 
 
-def _full_horizon(yaml1: dict[str, Any], explicit_horizon: list[int]) -> list[int]:
-    terminal = _require_mapping(yaml1.get("terminal"), "terminal")
+def _full_horizon(terminal: dict[str, Any], explicit_horizon: list[int]) -> list[int]:
     fade = _require_mapping(terminal.get("fade"), "terminal.fade")
     explicit_end = int(terminal.get("explicit_end"))
     to_year = int(fade.get("to_year"))
     if explicit_end != explicit_horizon[-1]:
         raise Yaml1CleanError("terminal.explicit_end must equal the last explicit horizon year")
-    if to_year <= explicit_end:
-        raise Yaml1CleanError("terminal.fade.to_year must be greater than explicit_end")
+    if to_year < explicit_end:
+        raise Yaml1CleanError("terminal.fade.to_year must not be less than explicit_end")
     return list(range(explicit_horizon[0], to_year + 1))
 
 
@@ -443,12 +514,11 @@ def _canonical_fade_path(path: str, report: dict[str, Any]) -> str:
 
 def _expand_overlay(
     overlay: dict[str, dict[str, Any]],
-    yaml1: dict[str, Any],
+    terminal: dict[str, Any],
     explicit_horizon: list[int],
     full_horizon: list[int],
     report: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
-    terminal = _require_mapping(yaml1.get("terminal"), "terminal")
     fade = _require_mapping(terminal.get("fade"), "terminal.fade")
     if fade.get("kind") != "linear":
         raise Yaml1CleanError(f"Unsupported fade kind: {fade.get('kind')}")
@@ -744,21 +814,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ticker", help="Ticker used to infer paths")
     parser.add_argument("--output", help="Output forecast_params.yaml path")
     parser.add_argument("--report", help="Output report JSON path")
+    parser.add_argument(
+        "--defaults-only",
+        action="store_true",
+        help="Do not require yaml1; run an identity clean pass over YAML2 defaults only",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.defaults_only and args.yaml1:
+        raise SystemExit("--defaults-only and --yaml1 are mutually exclusive")
     if args.ticker:
         company_dir = find_company_dir(args.ticker)
     elif args.yaml1:
         company_dir = Path(args.yaml1).resolve().parent
+    elif args.defaults:
+        company_dir = Path(args.defaults).resolve().parent
     else:
-        raise SystemExit("--ticker or --yaml1 is required")
+        raise SystemExit("--ticker, --yaml1, or --defaults is required")
 
-    yaml1_path = Path(args.yaml1) if args.yaml1 else default_yaml1_path(company_dir)
+    yaml1_path = None if args.defaults_only else (Path(args.yaml1) if args.yaml1 else default_yaml1_path(company_dir))
     defaults_path = Path(args.defaults) if args.defaults else company_dir / "defaults.yaml"
-    code = args.ticker.split(".")[0] if args.ticker else company_dir.name.rsplit("_", 1)[-1]
     clean_annual_path = Path(args.clean_annual) if args.clean_annual else company_dir / "data.db"
     internal_dir = company_dir / ".modelking"
     output_path = Path(args.output) if args.output else internal_dir / "forecast_params.yaml"

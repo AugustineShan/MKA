@@ -130,3 +130,33 @@ def test_backtest_hard_gate_passes_for_new_hope_dairy():
     assert backtest["status"] == "passed"
     assert backtest["anchor"]["residual"] < 1.0
     assert not result.report["errors"]
+
+
+def test_defaults_only_identity_clean_matches_yaml2_broadcast():
+    _, defaults_path, clean_path = paths()
+
+    result = yaml1_cleaner.clean_yaml1(None, defaults_path, clean_path)
+
+    assert result.report.get("defaults_only") is True
+    assert result.report["backtest"]["status"] == "skipped"
+    forecast_params = result.forecast_params
+
+    # Horizon comes from YAML2 base_period + forecast_years, no fade.
+    base_period = forecast_params["base_period"]
+    base_year = int(str(base_period)[:4])
+    years = int(forecast_params["model"]["forecast_years"]["value"])
+    assert forecast_params["meta"]["horizon"] == list(range(base_year + 1, base_year + 1 + years))
+
+    # model.revenue_yoy is broadcast from scalar YAML2 default.
+    revenue_yoy = forecast_params["model"]["revenue_yoy"]["value"]
+    assert isinstance(revenue_yoy, list)
+    assert len(revenue_yoy) == years
+    assert revenue_yoy == pytest.approx([revenue_yoy[0]] * years)
+
+    # Numerically identical to the legacy broadcast helper.
+    yaml2 = yaml1_cleaner.read_yaml2(defaults_path)
+    broadcast = yaml1_cleaner.broadcast_yaml2_defaults(yaml2)
+    assert (
+        forecast_params["model"]["revenue_yoy"]["value"]
+        == broadcast["model"]["revenue_yoy"]["value"]
+    )
