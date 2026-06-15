@@ -111,7 +111,7 @@ companies/{公司名}_{代码}/.modelking/yaml1_clean_report.json
 
 不要在公司目录顶层生成或维护 `yaml2_yearly.yaml`、`forecast_params.yaml`、`yaml1_clean_report.json`。`defaults.yaml` 是唯一 YAML2；清洗后的逐年标准参数表不是 YAML2。正式输出目录只能是 `forecast/`，每次重算必须先清空旧 `forecast/` 再生成，禁止用 `forecast_current/forecast_fixed/forecast_yaml1` 这类目录承载正式结果。
 
-`calc.py` 是低层算账核/回归工具，不是有 yaml1 公司的一键入口。若公司目录已有 `yaml1*.yaml`，直接用 `calc.py` 跑 `defaults.yaml` 会被拒绝，除非显式传 `--allow-baseline` 表示要用 YAML2 baseline 覆盖 `forecast/`。
+`calc.py` 是纯算账核/回归工具，只接受 `--forecast-params` 参数（清洗后的逐年标准参数表，如 `.modelking/forecast_params.yaml`），永远看不到 yaml1，也不直接读取 `defaults.yaml`。`defaults.yaml` 进入 `calc.py` 的唯一合法路径是先经过 `yaml1_cleaner.py`（无 yaml1 时用 `--defaults-only` 做恒等清洗）。有 yaml1 的公司请走正式入口 `py -m src.forecast --ticker ...`。
 
 ## 本地 Web 工作台（FastAPI + React）
 
