@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from src import yaml1_cleaner
-from src.calc import _refuse_baseline_over_yaml1
 from src.forecast import run_company_forecast
 
 
@@ -72,12 +71,3 @@ def test_run_company_forecast_rejects_noncanonical_output_dir(tmp_path, monkeypa
 
     with pytest.raises(Exception, match="must be named forecast"):
         run_company_forecast(ticker="002946.SZ", output_dir=company_dir / "forecast_yaml1")
-
-
-def test_calc_cli_refuses_baseline_when_yaml1_exists(tmp_path):
-    company_dir = _copy_new_hope_dairy(tmp_path)
-
-    with pytest.raises(SystemExit, match="yaml1 exists"):
-        _refuse_baseline_over_yaml1(company_dir / "defaults.yaml", allow_baseline=False)
-
-    _refuse_baseline_over_yaml1(company_dir / "defaults.yaml", allow_baseline=True)

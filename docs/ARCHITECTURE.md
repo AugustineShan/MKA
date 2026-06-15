@@ -1,7 +1,9 @@
 # MKA 系统架构文档
 
-> 本文档描述 MKA 系统的整体架构、模块职责、数据模型与关键决策。
+> 本文档描述 MKA 系统的**代码现状**：整体架构、模块职责、数据模型、契约注册表与关键决策。
 > **每次开发完成后必须同步更新本文档。**
+>
+> 设计意图与职责边界见 [`ModelKing 开发文档 v2`](ModelKing_开发文档_v2%20(1).md) 与 [`理解层设计决策`](理解层_设计决策与开发方向%20(6).md)；命名双语对照见本文档附录 A。
 
 ---
 
@@ -284,18 +286,20 @@ companies/{公司名}_{代码}/
 |------|------|
 | `yaml2_schema.py` | YAML2 读写、必填路径校验、默认模型参数、review flag 常量 |
 | `defaults_gen.py` | 从 `data.db` 的 `clean_annual` + `meta` 抽取 `defaults.yaml`；每个参数保留 `value/source` 便于审计 |
-| `yaml1_cleaner.py` | 读取 `yaml1*.yaml + defaults.yaml`，折叠 decomposition、展开 fade、resolve 到标准参数并做历史回测硬闸；中间产物默认写入 `.modelking/` |
-| `calc.py` | 读取标准参数表，按 IS→BS→CF→DCF 顺序生成预测；纯算账核，永远看不到 yaml1 |
-| `forecast.py` | 用户正式入口：一条命令从 `defaults.yaml + yaml1*.yaml` 生成 `forecast/` |
+| `yaml1_cleaner.py` | 理解层 clean.py：读取 `yaml1*.yaml + defaults.yaml`，折叠 decomposition、展开 fade、resolve 到标准参数并做历史回测硬闸；支持无 yaml1 的恒等清洗（`--defaults-only`），中间产物默认写入 `.modelking/` |
+| `forecast.py` | **编排器**：读取 `yaml1*.yaml + defaults.yaml`，调用 `yaml1_cleaner.py` 生成逐年标准参数，再调用 `calc.py` 生成 `forecast/` 与内部产物；用户正式入口 |
+| `calc.py` | 纯算账核：只吃清洗后的逐年标准参数表（`--forecast-params`），按 IS→BS→CF→DCF 顺序生成预测；永远看不到 yaml1，也不直接读取 `defaults.yaml` |
 
 **CLI**：
 ```bash
 python -m src.defaults_gen --ticker 300866.SZ
 python -m src.defaults_gen --db companies/安克创新_300866/data.db --output companies/安克创新_300866/defaults.yaml
-py -m src.forecast --ticker 002946.SZ
+py -m src.yaml1_cleaner --defaults-only --ticker 002946.SZ   # YAML2 baseline 恒等清洗
+py -m src.forecast --ticker 002946.SZ                        # 正式入口（有 yaml1）
+py -m src.calc --forecast-params companies/新乳业_002946/.modelking/forecast_params.yaml
 ```
 
-`calc.py` 仍可用于开发/回归 baseline，但正式链路不要让用户直接维护清洗后的参数文件。若公司目录已有 `yaml1*.yaml`，`calc.py` CLI 直接读取 `defaults.yaml` 会拒绝覆盖正式 `forecast/`；需要刻意跑 YAML2 baseline 时必须显式加 `--allow-baseline`。
+`calc.py` 只接受 `--forecast-params` 一个输入，是纯粹的低层算账核/回归工具。`defaults.yaml` 进入 `calc.py` 的唯一合法路径是先经过 `yaml1_cleaner.py`（无 yaml1 时为恒等清洗），生成 `.modelking/forecast_params.yaml`。
 
 **公司目录契约**：
 ```
@@ -303,8 +307,9 @@ companies/{公司名}_{代码}/
 ├── defaults.yaml
 ├── yaml1*.yaml
 ├── .modelking/
-│   ├── forecast_params.yaml
-│   └── yaml1_clean_report.json
+│   ├── forecast_params.yaml     # 逐年标准参数表（yaml1_cleaner 输出）
+│   ├── yaml1_clean_report.json  # 清洗报告
+│   └── forecast_build.json      # DCF 三表/FCFF 快照，供 sensitivity 复用
 └── forecast/
     ├── forecast_is.csv
     ├── forecast_bs.csv
@@ -733,6 +738,31 @@ python -m src.financial_expense_analyzer --ticker 002946.SZ --latest-only  # 只
 
 ---
 
+## 6.5 契约注册表
+
+> **规则**：每种数据格式有且只有一个拥有者（协议文档或代码），其他文档只链接、不复制字段。格式变更只发生在拥有者处。
+
+| 契约 | 拥有者 | 消费者 | 状态 | 路径 |
+|---|---|---|---|---|
+| 核心假设.md | `skills/核心假设生成修改器_skill_v14.md` | compiler skill | v14 | `skills/...` |
+| YAML1 (drivers) | `skills/yaml1compiler_v3 (2).md` | `src/yaml1_cleaner.py` | 定稿 | `companies/{公司}/yaml1*.yaml` |
+| YAML2 / defaults.yaml | `src/yaml2_schema.py` | `src/yaml1_cleaner.py`, `src/defaults_gen.py` | 稳定 | `companies/{公司}/defaults.yaml` |
+| 逐年标准参数表 | `src/yaml1_cleaner.py` | `src/calc.py` | 稳定 | `companies/{公司}/.modelking/forecast_params.yaml` |
+| yaml1 清洗报告 | `src/yaml1_cleaner.py` | 工作台 / 人 | 稳定 | `companies/{公司}/.modelking/yaml1_clean_report.json` |
+| DCF build 快照 | `src/forecast.py` | `src/workbench.py`（sensitivity） | 稳定 | `companies/{公司}/.modelking/forecast_build.json` |
+| DCF 运行清单 | `src/forecast.py` | 工作台 / 人 | 稳定 | `companies/{公司}/forecast/run_manifest.json` |
+| 财务费用档案 | `src/financial_expense_analyzer.py` | `src/defaults_gen.py` | 稳定 | `companies/{公司}/financial_expense.yaml` |
+| 年报补数 override | `src/annual_report_reconciler.py` | `src/clean.py` | 稳定 | `companies/{公司}/recon/annual_report_overrides.json` |
+| 年报核对 evidence | `src/annual_report_reconciler.py` | 人 / 审计 | 稳定 | `companies/{公司}/recon/*_reconciliation.json` |
+| clean 宽表 | `src/clean.py` | `src/defaults_gen.py` | 稳定 | `data.db: clean_annual / clean_quarterly` |
+| clean 补数审计 | `src/clean.py` | 审计 | 稳定 | `data.db: clean_adjustments` |
+| clean 警告 | `src/clean.py` | 审计 | 稳定 | `data.db: clean_warnings` |
+| raw 数据镜像 | `src/data_fetcher.py` | `src/clean.py` | 稳定 | `data.db: raw_tushare` |
+| 季度预测格式 | 待定（任务 E） | — | 未设计 | — |
+| commit 存储格式 | 待定（任务 D） | — | 未设计 | — |
+
+---
+
 ## 7. 配置与依赖
 
 ### 7.1 环境配置（.env）
@@ -1015,3 +1045,19 @@ companies/美的集团_000333/
 | 2026-06-14 | 规范理解层到 DCF 的正式运行入口：新增 `forecast.py` 作为用户入口，固定 `defaults.yaml + yaml1*.yaml → forecast/`；`yaml1_cleaner.py` 的清洗参数与报告默认写入 `.modelking/`，不再在公司目录顶层暴露 `yaml2_yearly.yaml`；`calc.py` 输出目录强制命名为 `forecast` 且每次重算先清空，避免 `forecast_current`/`forecast_fixed`/`forecast_yaml1` 等调试目录静默成为正式结果 |
 | 2026-06-14 | 新增 ModelKing 本地 Web 工作台第一版：`app/` 使用 React + Vite 实现 Apple HIG 风格 UI，包含公司列表、Overview、核心假设 Markdown、YAML1 source editor、DCF/三表和素材文件浏览；`src/workbench.py` 提供 FastAPI 本地壳，扫描 `companies/` 并调用 `src.forecast.run_company_forecast()` 一键重算；运行入口为 `py -m src.workbench` 或双击 `run_workbench.cmd`，当前已通过 `npm run build` |
 | 2026-06-14 | 新增财务费用细则分析器：`src/financial_expense_analyzer.py` 从年报「财务费用」附注拆出利息支出/资本化利息/财政贴息/利息收入/其他，按固定规则 derive 利率类参数，动态 detect `clean.fin_exp_int_exp` 口径，生成按年份归档的 `financial_expense.yaml`；`src/defaults_gen.py` 读取 YAML 档案、取最新 approved/high 且勾稽通过的年份覆盖 `income.financial_expense`；`src/init.py` 在 `stage_clean()` 后新增 `stage_financial_expense()` 全量生成档案，失败只 warning；抽出 `src/annual_report_utils.py` 供 reconciler 与 analyzer 共用；新增 `tests/test_financial_expense_analyzer.py` 以新乳业 2024 基期回归（subsidy≈3.82M、detected_basis=net_of_capitalized_and_subsidy）；同步更新 `tests/fixtures/calc_scalar_baseline.json` 以反映新默认财务费用结构；全量 55 例测试通过 |
+
+
+---
+
+## 附录 A：命名双语对照表
+
+| 设计文档/中文名 | 代码/文件名 | 说明 |
+|---|---|---|
+| 清洗yaml1.py | `src/yaml1_cleaner.py` | 理解层的 clean.py |
+| 逐年标准参数表 | `.modelking/forecast_params.yaml` | yaml1_cleaner 输出，calc.py 唯一输入 |
+| 核心假设.md | `skills/核心假设生成修改器_skill_v14.md` | 由 skill 拥有；设计文档版本号需同步 |
+| compiler / yaml1compiler | `skills/yaml1compiler_v3 (2).md` | 设计文档版本号需与磁盘一致 |
+| YAML2 | `defaults.yaml` | 同物两名 |
+| 三棒 pipeline | `src/forecast.py` 编排 `yaml1_cleaner.py` + `src/calc.py` | `forecast.py` 是实际编排器 |
+| 年报清洗器 | `src/report_downloader.py` + `src/annual_report_extractor.py` | 设计文档未精确对应，以代码为准 |
+| DCF build 快照 | `.modelking/forecast_build.json` | 供工作台 sensitivity 复用 |
