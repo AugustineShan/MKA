@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,13 @@ from src.defaults_gen import (
     REVENUE_DRIVER_FIELDS,
     operating_working_capital,
 )
-from src.yaml2_schema import REVIEW_FLAG_NEGATIVE_CASH, get_path, plain_value, read_yaml2
+from src.yaml2_schema import (
+    DEFAULT_TERMINAL_CAPEX_DA_RATIO,
+    REVIEW_FLAG_NEGATIVE_CASH,
+    get_path,
+    plain_value,
+    read_yaml2,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -412,12 +419,38 @@ def validate_accounting(period: str, bs_row: dict[str, float], cf_row: dict[str,
         raise CalcError(f"{period} CF cash bridge does not balance: residual={cf_residual:.6f}")
 
 
-def run_forecast(yaml2: dict[str, Any]) -> dict[str, Any]:
+@dataclass
+class ForecastBuildResult:
+    """Intermediate result after building the three statements and explicit FCFF.
+
+    This intentionally does not include any DCF-layer discounting or terminal
+    value, so WACC / terminal assumptions can be changed without rebuilding the
+    statements.
+    """
+
+    income_statement: pd.DataFrame
+    balance_sheet: pd.DataFrame
+    cash_flow: pd.DataFrame
+    dcf: pd.DataFrame
+    base_period: str
+    forecast_years: int
+    net_debt: float
+    total_shares: float
+    ticker: Any
+    name: Any
+    review_flags: list[dict[str, Any]]
+
+
+def build_forecast_statements(yaml2: dict[str, Any]) -> ForecastBuildResult:
+    """Build the three statements and explicit-period FCFF only.
+
+    Does not apply any DCF discounting or terminal value.  The returned object
+    can be passed to ``value_from_statements`` with different WACC / terminal
+    assumptions.
+    """
     base_period = str(get_path(yaml2, "base_period"))
     base_year = int(base_period[:4])
     years = as_int(get_path(yaml2, "model.forecast_years"))
-    wacc = as_float(get_path(yaml2, "model.wacc"))
-    terminal_growth = as_float(get_path(yaml2, "model.terminal_growth"))
     net_debt = as_float(get_path(yaml2, "market.net_debt"))
     total_shares = as_float(get_path(yaml2, "market.total_shares"))
 
@@ -461,13 +494,10 @@ def run_forecast(yaml2: dict[str, Any]) -> dict[str, Any]:
         )
         delta_nwc = metrics["nwc"] - prev_nwc
         fcff = nopat + da - metrics["capex"] - delta_nwc
-        discount_factor = 1.0 / ((1.0 + wacc) ** idx)
         dcf_rows.append(
             {
                 "period": period,
                 "fcff": fcff,
-                "discount_factor": discount_factor,
-                "pv_fcff": fcff * discount_factor,
                 "nopat": nopat,
                 "da": da,
                 "capex": metrics["capex"],
@@ -481,14 +511,6 @@ def run_forecast(yaml2: dict[str, Any]) -> dict[str, Any]:
         prev_bs = bs_row
         prev_nwc = metrics["nwc"]
 
-    last_fcff = dcf_rows[-1]["fcff"]
-    terminal_value = last_fcff * (1.0 + terminal_growth) / (wacc - terminal_growth)
-    terminal_pv = terminal_value / ((1.0 + wacc) ** years)
-    pv_fcff = sum(row["pv_fcff"] for row in dcf_rows)
-    enterprise_value = pv_fcff + terminal_pv
-    equity_value = enterprise_value - net_debt
-    per_share_value = equity_value / total_shares if total_shares else None
-
     # Deduplicate identical review flags from consecutive negative cash periods.
     deduped_flags: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
@@ -498,29 +520,86 @@ def run_forecast(yaml2: dict[str, Any]) -> dict[str, Any]:
             seen.add(key)
             deduped_flags.append(flag)
 
+    return ForecastBuildResult(
+        income_statement=pd.DataFrame(is_rows),
+        balance_sheet=pd.DataFrame(bs_rows),
+        cash_flow=pd.DataFrame(cf_rows),
+        dcf=pd.DataFrame(dcf_rows),
+        base_period=base_period,
+        forecast_years=years,
+        net_debt=net_debt,
+        total_shares=total_shares,
+        ticker=get_path(yaml2, "ticker"),
+        name=get_path(yaml2, "name"),
+        review_flags=deduped_flags,
+    )
+
+
+def value_from_statements(
+    build: ForecastBuildResult,
+    *,
+    wacc: float,
+    terminal_growth: float,
+    terminal_capex_da_ratio: float,
+) -> dict[str, Any]:
+    """Compute terminal value and DCF summary from a previously built forecast.
+
+    The three statements and explicit-period FCFF are taken as given; only the
+    discounting and terminal-value assumptions are applied here.
+    """
+    years = build.forecast_years
+    dcf = build.dcf.copy()
+    dcf["discount_factor"] = [1.0 / ((1.0 + wacc) ** idx) for idx in range(1, years + 1)]
+    dcf["pv_fcff"] = dcf["fcff"] * dcf["discount_factor"]
+    dcf = dcf[["period", "fcff", "discount_factor", "pv_fcff", "nopat", "da", "capex", "delta_nwc"]]
+
+    last = dcf.iloc[-1]
+    terminal_fcff = last["nopat"] + last["da"] * (1.0 - terminal_capex_da_ratio)
+    terminal_value = terminal_fcff * (1.0 + terminal_growth) / (wacc - terminal_growth)
+    terminal_pv = terminal_value / ((1.0 + wacc) ** years)
+    pv_fcff = dcf["pv_fcff"].sum()
+    enterprise_value = pv_fcff + terminal_pv
+    equity_value = enterprise_value - build.net_debt
+    per_share_value = equity_value / build.total_shares if build.total_shares else None
+
     return {
-        "income_statement": pd.DataFrame(is_rows),
-        "balance_sheet": pd.DataFrame(bs_rows),
-        "cash_flow": pd.DataFrame(cf_rows),
-        "dcf": pd.DataFrame(dcf_rows),
+        "income_statement": build.income_statement,
+        "balance_sheet": build.balance_sheet,
+        "cash_flow": build.cash_flow,
+        "dcf": dcf,
         "summary": {
-            "ticker": get_path(yaml2, "ticker"),
-            "name": get_path(yaml2, "name"),
-            "base_period": base_period,
+            "ticker": build.ticker,
+            "name": build.name,
+            "base_period": build.base_period,
             "forecast_years": years,
             "wacc": wacc,
             "terminal_growth": terminal_growth,
+            "terminal_capex_da_ratio": terminal_capex_da_ratio,
             "pv_fcff": pv_fcff,
             "terminal_value": terminal_value,
             "terminal_pv": terminal_pv,
             "enterprise_value": enterprise_value,
-            "net_debt": net_debt,
+            "net_debt": build.net_debt,
             "equity_value": equity_value,
-            "total_shares": total_shares,
+            "total_shares": build.total_shares,
             "per_share_value": per_share_value,
-            "review_flags": deduped_flags,
+            "review_flags": build.review_flags,
         },
     }
+
+
+def run_forecast(yaml2: dict[str, Any]) -> dict[str, Any]:
+    """Run a full forecast using the assumptions embedded in ``yaml2``."""
+    build = build_forecast_statements(yaml2)
+    return value_from_statements(
+        build,
+        wacc=as_float(get_path(yaml2, "model.wacc")),
+        terminal_growth=as_float(get_path(yaml2, "model.terminal_growth")),
+        terminal_capex_da_ratio=as_float(
+            get_path(yaml2, "model.terminal_capex_da_ratio"),
+            DEFAULT_TERMINAL_CAPEX_DA_RATIO,
+        ),
+    )
 
 
 def default_output_dir(defaults_path: Path) -> Path:

@@ -17,7 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.calc import run_forecast, write_outputs
+from src.calc import (
+    as_float,
+    build_forecast_statements,
+    value_from_statements,
+    write_outputs,
+)
 from src.yaml1_cleaner import (
     clean_yaml1,
     default_yaml1_path,
@@ -25,12 +30,13 @@ from src.yaml1_cleaner import (
     mark_hidden,
     write_json,
 )
-from src.yaml2_schema import write_yaml2
+from src.yaml2_schema import DEFAULT_TERMINAL_CAPEX_DA_RATIO, get_path, write_yaml2
 
 
 INTERNAL_DIR_NAME = ".modelking"
 FORECAST_PARAMS_FILENAME = "forecast_params.yaml"
 CLEAN_REPORT_FILENAME = "yaml1_clean_report.json"
+FORECAST_BUILD_FILENAME = "forecast_build.json"
 MANIFEST_FILENAME = "run_manifest.json"
 
 
@@ -111,8 +117,33 @@ def run_company_forecast(
     write_json(clean_report_path, cleaned.report)
     mark_hidden(internal)
 
-    result = run_forecast(cleaned.forecast_params)
+    build = build_forecast_statements(cleaned.forecast_params)
+    result = value_from_statements(
+        build,
+        wacc=as_float(get_path(cleaned.forecast_params, "model.wacc")),
+        terminal_growth=as_float(get_path(cleaned.forecast_params, "model.terminal_growth")),
+        terminal_capex_da_ratio=as_float(
+            get_path(cleaned.forecast_params, "model.terminal_capex_da_ratio"),
+            DEFAULT_TERMINAL_CAPEX_DA_RATIO,
+        ),
+    )
     warnings_count = len(cleaned.report.get("warnings", []))
+
+    build_payload = {
+        "dcf_rows": build.dcf.to_dict(orient="records"),
+        "base_period": build.base_period,
+        "forecast_years": build.forecast_years,
+        "net_debt": build.net_debt,
+        "total_shares": build.total_shares,
+        "ticker": build.ticker,
+        "name": build.name,
+        "review_flags": build.review_flags,
+    }
+    (internal / FORECAST_BUILD_FILENAME).write_text(
+        json.dumps(build_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
     run = ForecastRun(
         company_dir=company_dir,
         yaml1_path=yaml1,

@@ -10,11 +10,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import socket
 import sqlite3
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -22,10 +24,15 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+import requests
 import yaml
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 
+import pandas as pd
+from src.annual_report_utils import load_env, llm_api_key, llm_base_url, llm_model, llm_timeout_seconds
+from src.calc import ForecastBuildResult, value_from_statements
 from src.forecast import run_company_forecast
 
 
@@ -39,6 +46,7 @@ FORECAST_TABLES = (
     "forecast_cf.csv",
 )
 FIELD_REFERENCE_NAME = "\u6570\u636e\u683c\u5f0f\u53c2\u8003.md"
+PRESENTATION_SCHEMA_VERSION = 1
 
 STATEMENT_META = {
     "forecast_is.csv": {
@@ -398,6 +406,17 @@ def _series_value(values: Any, index: int, default: float = 0.0) -> float:
     return _as_float(values, default)
 
 
+def _numeric_year_series(values: Any) -> dict[str, float]:
+    if not isinstance(values, dict):
+        return {}
+    series: dict[str, float] = {}
+    for year, value in values.items():
+        year_text = str(year)
+        if re.fullmatch(r"\d{4}", year_text):
+            series[year_text] = _as_float(value)
+    return series
+
+
 def _display_source(payload: dict[str, Any], fallback: str) -> str:
     source = _cell(payload.get("src"))
     return source.lstrip("#") if source else fallback
@@ -430,6 +449,10 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
             continue
         base = payload.get("base", {}) if isinstance(payload.get("base"), dict) else {}
         knobs = payload.get("knobs", {}) if isinstance(payload.get("knobs"), dict) else {}
+        history = payload.get("history", {}) if isinstance(payload.get("history"), dict) else {}
+        history_series = history.get("series", {}) if isinstance(history.get("series"), dict) else {}
+        base_series = base.get("series", {}) if isinstance(base.get("series"), dict) else {}
+        payload_series = payload.get("series", {}) if isinstance(payload.get("series"), dict) else {}
         family = _cell(payload.get("revenue_family"))
         unit_factor = _as_float(base.get("unit_factor_to_million_cny"), 1.0) or 1.0
         segment_base_year = int(_as_float(base.get("base_year"), 0))
@@ -443,6 +466,7 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
 
         revenues: dict[str, float] = {}
         yoys: dict[str, float] = {}
+        volumes: dict[str, float] = {}
         previous_revenue = base_revenue
         current_volume = volume
         current_price = price
@@ -451,6 +475,7 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
                 current_volume *= 1.0 + _series_value(knobs.get("volume_yoy"), index)
                 current_price *= 1.0 + _series_value(knobs.get("price_yoy"), index)
                 current_revenue = current_volume * current_price / unit_factor
+                volumes[year] = current_volume
             else:
                 current_revenue = previous_revenue * (1.0 + _series_value(knobs.get("revenue_yoy"), index))
             revenues[year] = current_revenue
@@ -471,6 +496,17 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
                 "unit_factor": unit_factor,
                 "revenues": revenues,
                 "yoys": yoys,
+                "volumes": volumes,
+                "history_revenues": (
+                    _numeric_year_series(history_series.get("revenue"))
+                    or _numeric_year_series(base_series.get("revenue"))
+                    or _numeric_year_series(payload_series.get("revenue"))
+                ),
+                "history_volumes": (
+                    _numeric_year_series(history_series.get("volume"))
+                    or _numeric_year_series(base_series.get("volume"))
+                    or _numeric_year_series(payload_series.get("volume"))
+                ),
                 "note": _cell(payload.get("note")),
             }
         )
@@ -649,6 +685,227 @@ def _yaml1_sheets(path: Path | None) -> list[dict[str, Any]]:
     return [sheet for sheet in sheets if sheet["rows"]]
 
 
+def _presentation_cache_path(company_dir: Path) -> Path:
+    return company_dir / ".modelking" / "yaml1_presentation.json"
+
+
+def _yaml1_presentation_cache(company_dir: Path) -> dict[str, Any] | None:
+    path = _presentation_cache_path(company_dir)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(_read_text(path))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_yaml1_presentation_cache(company_dir: Path, presentation: dict[str, Any]) -> None:
+    path = _presentation_cache_path(company_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(presentation, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[truncated]"
+
+
+def _yaml1_presentation_context(company_dir: Path, yaml1_path: Path, revenue_view: dict[str, Any] | None, sheets: list[dict[str, Any]]) -> dict[str, Any]:
+    yaml1_data = _read_yaml(yaml1_path)
+    typed_paths: list[dict[str, Any]] = []
+    for path, payload in yaml1_data.items():
+        if isinstance(payload, dict):
+            typed_paths.append(
+                {
+                    "path": path,
+                    "kind": payload.get("kind") or payload.get("type") or payload.get("rollup"),
+                    "source": payload.get("src"),
+                    "note": _truncate_text(_cell(payload.get("note")), 600),
+                }
+            )
+
+    return {
+        "company": _company_summary(company_dir),
+        "yaml1_path": _relative(yaml1_path),
+        "yaml1_revenue_view": revenue_view,
+        "yaml1_sheets": [
+            {
+                "name": sheet.get("name"),
+                "description": sheet.get("description"),
+                "columns": sheet.get("columns"),
+                "sample_rows": sheet.get("rows", [])[:12],
+            }
+            for sheet in sheets
+        ],
+        "yaml1_typed_paths": typed_paths,
+        "yaml1_excerpt": _truncate_text(_read_text(yaml1_path), 20000),
+    }
+
+
+def _presentation_provider_order() -> list[str]:
+    load_env(BASE_DIR / ".env")
+    providers = []
+    if llm_api_key("glm"):
+        providers.append("glm")
+    if llm_api_key("kimi"):
+        providers.append("kimi")
+    return providers or ["glm", "kimi"]
+
+
+def _json_from_llm_text(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+        stripped = re.sub(r"\s*```$", "", stripped)
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", stripped, flags=re.S)
+        if not match:
+            raise
+        parsed = json.loads(match.group(0))
+    if not isinstance(parsed, dict):
+        raise ValueError("presentation response must be a JSON object")
+    return parsed
+
+
+def _fallback_presentation(context: dict[str, Any], reason: str) -> dict[str, Any]:
+    company = context.get("company", {})
+    revenue = context.get("yaml1_revenue_view") or {}
+    segments = revenue.get("segments") if isinstance(revenue, dict) else []
+    return {
+        "schema_version": PRESENTATION_SCHEMA_VERSION,
+        "mode": "fallback",
+        "provider": None,
+        "model": None,
+        "title": f"{company.get('name', '公司')}业务假设",
+        "subtitle": "未能调用大模型，暂按确定性收入拆分展示。",
+        "business_question": "这份 YAML1 主要覆盖哪些业务判断？",
+        "display_strategy": "按已结构化的收入 decomposition 展示业务线和驱动假设。",
+        "primary_dimension": "业务线",
+        "segment_order": [item.get("name") for item in segments if isinstance(item, dict) and item.get("name")],
+        "driver_labels": {
+            "volume_yoy": "销量增长",
+            "price_yoy": "价格变化",
+            "revenue_yoy": "收入增长",
+        },
+        "insights": [reason],
+        "risks": [],
+        "source_paths": ["income.revenue", "income.revenue.segments"],
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+
+def _validate_presentation_schema(parsed: dict[str, Any], provider: str, model: str) -> dict[str, Any]:
+    allowed_driver_labels = parsed.get("driver_labels")
+    if not isinstance(allowed_driver_labels, dict):
+        allowed_driver_labels = {}
+    segment_order = parsed.get("segment_order")
+    if not isinstance(segment_order, list):
+        segment_order = []
+    insights = parsed.get("insights")
+    if not isinstance(insights, list):
+        insights = []
+    risks = parsed.get("risks")
+    if not isinstance(risks, list):
+        risks = []
+    source_paths = parsed.get("source_paths")
+    if not isinstance(source_paths, list):
+        source_paths = []
+
+    return {
+        "schema_version": PRESENTATION_SCHEMA_VERSION,
+        "mode": "llm",
+        "provider": provider,
+        "model": model,
+        "title": str(parsed.get("title") or "业务假设"),
+        "subtitle": str(parsed.get("subtitle") or "由 YAML1 生成的业务展示方案。"),
+        "business_question": str(parsed.get("business_question") or "这份 YAML1 在表达什么业务判断？"),
+        "display_strategy": str(parsed.get("display_strategy") or "按业务驱动展示。"),
+        "primary_dimension": str(parsed.get("primary_dimension") or "业务线"),
+        "segment_order": [str(item) for item in segment_order if item],
+        "driver_labels": {str(key): str(value) for key, value in allowed_driver_labels.items()},
+        "insights": [str(item) for item in insights[:6] if item],
+        "risks": [str(item) for item in risks[:6] if item],
+        "source_paths": [str(item) for item in source_paths[:20] if item],
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+
+def _call_yaml1_presentation_llm(context: dict[str, Any]) -> dict[str, Any]:
+    system = (
+        "你是买方投研工作台 ModelKing 的展示编排器。你的任务不是算账、不是修改 YAML、不是补数，"
+        "而是阅读 yaml1 的结构，决定前端应该如何给不懂代码的投研负责人展示这家公司。"
+        "只能引用输入中已有的路径和事实；不得编造任何数值。输出必须是 JSON object。"
+    )
+    user = json.dumps(
+        {
+            "task": "为 YAML1 生成前端展示 schema。优先识别这家公司最自然的业务维度，例如产品线、区域、渠道、量价、产能、客户数、ARPU、息差等。",
+            "required_json_schema": {
+                "title": "短标题，例如 收入模型 / 产品线假设 / 生息资产模型",
+                "subtitle": "给业务读者看的说明，不出现 YAML jargon",
+                "business_question": "这一页回答的核心业务问题",
+                "display_strategy": "为什么这样组织展示",
+                "primary_dimension": "主展示维度",
+                "segment_order": ["建议前端展示的业务线名称顺序，必须来自输入名称"],
+                "driver_labels": {"volume_yoy": "销量增长", "price_yoy": "价格变化"},
+                "insights": ["2-6 条业务读法，不要编数，只能基于结构和方向"],
+                "risks": ["可选，展示层应提示的假设张力"],
+                "source_paths": ["本展示依赖的 yaml1 路径"],
+            },
+            "constraints": [
+                "不要输出 Markdown。",
+                "不要输出代码。",
+                "不要创造输入中不存在的业务线或数值。",
+                "不要改变 DCF 参数；这只是展示 schema。",
+                "如果无法泛化，就说明采用的 fallback 展示方式。",
+            ],
+            "context": context,
+        },
+        ensure_ascii=False,
+    )
+
+    errors: list[str] = []
+    for provider in _presentation_provider_order():
+        api_key = llm_api_key(provider)
+        if not api_key:
+            errors.append(f"{provider}: API key missing")
+            continue
+        base_url = llm_base_url(provider)
+        model = llm_model(provider)
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "max_tokens": int(os.environ.get("YAML1_PRESENTATION_MAX_TOKENS", os.environ.get("LLM_MAX_TOKENS", "4096"))),
+            "response_format": {"type": "json_object"},
+        }
+        if provider != "kimi":
+            body["temperature"] = float(os.environ.get("YAML1_PRESENTATION_TEMPERATURE", os.environ.get("LLM_TEMPERATURE", "0.2")))
+        try:
+            response = requests.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=body,
+                timeout=llm_timeout_seconds(provider),
+            )
+            response.raise_for_status()
+            data = response.json()
+            text = data["choices"][0]["message"]["content"]
+            parsed = _json_from_llm_text(text)
+            presentation = _validate_presentation_schema(parsed, provider, str(data.get("model") or model))
+            presentation["_usage"] = data.get("usage", {})
+            return presentation
+        except Exception as exc:  # noqa: BLE001 - surfaced in the UI as generation status
+            errors.append(f"{provider}: {type(exc).__name__}: {exc}")
+    return _fallback_presentation(context, "大模型展示编排失败：" + "；".join(errors))
+
+
+def _sse(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 def _material_files(company_dir: Path) -> list[dict[str, Any]]:
     roots = [company_dir / "active_vore", company_dir / "extractions", company_dir / "annuals"]
     files: list[dict[str, Any]] = []
@@ -733,6 +990,7 @@ def read_company(company_id: str) -> dict[str, Any]:
         "yaml1_text": _read_text(yaml1_path) if yaml1_path else None,
         "yaml1_revenue_view": _yaml1_revenue_view(yaml1_path),
         "yaml1_sheets": _yaml1_sheets(yaml1_path),
+        "yaml1_presentation": _yaml1_presentation_cache(company_dir),
         "dcf_summary": _forecast_summary(company_dir) or None,
         "manifest": _manifest(company_dir) or None,
         "tables": tables,
@@ -754,6 +1012,94 @@ def regenerate_forecast(company_id: str) -> dict[str, Any]:
         "stdout": f"Written forecast: {run.output_dir}\nPer-share value: {run.summary['per_share_value']}",
         "stderr": "",
     }
+
+
+class SensitivityPayload(BaseModel):
+    wacc: float
+    terminal_growth: float
+    terminal_capex_da_ratio: float
+
+
+def _load_forecast_build(path: Path) -> ForecastBuildResult:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return ForecastBuildResult(
+        income_statement=pd.DataFrame(),
+        balance_sheet=pd.DataFrame(),
+        cash_flow=pd.DataFrame(),
+        dcf=pd.DataFrame(data["dcf_rows"]),
+        base_period=data["base_period"],
+        forecast_years=data["forecast_years"],
+        net_debt=data["net_debt"],
+        total_shares=data["total_shares"],
+        ticker=data["ticker"],
+        name=data["name"],
+        review_flags=data["review_flags"],
+    )
+
+
+@app.post("/api/companies/{company_id}/dcf-sensitivity")
+def dcf_sensitivity(company_id: str, payload: SensitivityPayload) -> dict[str, Any]:
+    company_dir = _company_dir(company_id)
+    build_path = company_dir / ".modelking" / "forecast_build.json"
+    if not build_path.exists():
+        raise HTTPException(status_code=400, detail="Run forecast first")
+    if payload.wacc <= payload.terminal_growth:
+        raise HTTPException(
+            status_code=400,
+            detail="WACC must be greater than terminal growth",
+        )
+    build = _load_forecast_build(build_path)
+    result = value_from_statements(
+        build,
+        wacc=payload.wacc,
+        terminal_growth=payload.terminal_growth,
+        terminal_capex_da_ratio=payload.terminal_capex_da_ratio,
+    )
+    return {"summary": result["summary"]}
+
+
+@app.get("/api/companies/{company_id}/yaml1/presentation/stream")
+def yaml1_presentation_stream(company_id: str, refresh: bool = True) -> StreamingResponse:
+    company_dir = _company_dir(company_id)
+    yaml1_path = _latest_yaml1(company_dir)
+    if not yaml1_path:
+        raise HTTPException(status_code=404, detail="yaml1_*.yaml was not found")
+
+    def generate():
+        yield _sse("status", {"step": "start", "message": "开始读取 YAML1"})
+        cached = _yaml1_presentation_cache(company_dir)
+        if cached and not refresh:
+            yield _sse("status", {"step": "cache", "message": "已找到缓存展示方案"})
+            yield _sse("final", {"presentation": cached})
+            return
+
+        revenue_view = _yaml1_revenue_view(yaml1_path)
+        sheets = _yaml1_sheets(yaml1_path)
+        yield _sse("status", {"step": "parse", "message": "已抽取业务线、驱动和底稿结构"})
+        context = _yaml1_presentation_context(company_dir, yaml1_path, revenue_view, sheets)
+        provider_order = _presentation_provider_order()
+        yield _sse(
+            "status",
+            {
+                "step": "llm",
+                "message": f"正在调用展示编排模型（优先 {provider_order[0] if provider_order else 'glm'}）",
+            },
+        )
+        presentation = _call_yaml1_presentation_llm(context)
+        yield _sse(
+            "status",
+            {
+                "step": "validate",
+                "message": "正在校验展示 schema 与本地 YAML1 事实边界",
+                "provider": presentation.get("provider"),
+                "model": presentation.get("model"),
+            },
+        )
+        _write_yaml1_presentation_cache(company_dir, presentation)
+        yield _sse("status", {"step": "done", "message": "展示方案已生成并缓存"})
+        yield _sse("final", {"presentation": presentation})
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.get("/api/health")

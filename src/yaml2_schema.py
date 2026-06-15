@@ -22,6 +22,7 @@ YAML2_VERSION = 2
 DEFAULT_FORECAST_YEARS = 8
 DEFAULT_WACC = 0.08
 DEFAULT_TERMINAL_GROWTH = 0.025
+DEFAULT_TERMINAL_CAPEX_DA_RATIO = 1.0
 DEFAULT_PLUG = "cash"
 
 REVIEW_FLAG_NEGATIVE_CASH = "negative_cash_from_plug"
@@ -91,6 +92,9 @@ def validate_yaml2(data: dict[str, Any]) -> None:
     years = int(get_path(data, "model.forecast_years"))
     if years <= 0:
         raise YAML2Error("model.forecast_years must be positive")
+    capex_da_ratio = get_path(data, "model.terminal_capex_da_ratio")
+    if capex_da_ratio is not None and float(capex_da_ratio) < 0.0:
+        raise YAML2Error("model.terminal_capex_da_ratio must be non-negative")
 
 
 def read_yaml2(path: str | Path) -> dict[str, Any]:

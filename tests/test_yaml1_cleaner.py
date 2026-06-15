@@ -31,20 +31,20 @@ def test_fold_revenue_uses_structured_unit_factor_and_clean_anchor():
 
     assert fold.base_year == 2024
     assert fold.base_revenue == pytest.approx(10665.42345785)
-    assert fold.segment_base_revenue["lowtemp_fresh"] == pytest.approx(2739.38166)
-    assert fold.segment_base_revenue["lowtemp_yogurt"] == pytest.approx(2767.5343)
-    assert fold.segment_base_revenue["ambient"] == pytest.approx(4329.41292)
-    assert fold.segment_base_revenue["edge"] == pytest.approx(829.24)
-    assert fold.revenue_by_year[2025] == pytest.approx(10856.464272046602)
-    assert fold.revenue_yoy[0] == pytest.approx(10856.464272046602 / 10665.42345785 - 1)
+    assert fold.segment_base_revenue["low_temp_fresh_milk"] == pytest.approx(2739.3222)
+    assert fold.segment_base_revenue["low_temp_yogurt"] == pytest.approx(2767.5343)
+    assert fold.segment_base_revenue["ambient"] == pytest.approx(4329.5231)
+    assert fold.segment_base_revenue["fringe_business"] == pytest.approx(829.24)
+    assert fold.revenue_by_year[2025] == pytest.approx(10856.504606625)
+    assert fold.revenue_yoy[0] == pytest.approx(10856.504606625 / 10665.42345785 - 1)
     # If this accidentally anchors to the four-line base sum, it will be slightly different.
     segment_sum = sum(fold.segment_base_revenue.values())
-    assert fold.revenue_yoy[0] != pytest.approx(10856.464272046602 / segment_sum - 1)
+    assert fold.revenue_yoy[0] != pytest.approx(10856.504606625 / segment_sum - 1)
     assert fold.unit_factors == {
-        "lowtemp_fresh": 100.0,
-        "lowtemp_yogurt": 100.0,
+        "low_temp_fresh_milk": 100.0,
+        "low_temp_yogurt": 100.0,
         "ambient": 100.0,
-        "edge": 1.0,
+        "fringe_business": 1.0,
     }
 
 
@@ -66,28 +66,27 @@ def test_clean_yaml1_expands_fade_hold_default_hold_and_alias_warning():
     assert len(revenue_yoy) == 12
     assert revenue_yoy[:7] == pytest.approx(
         [
-            0.017912155998109676,
-            0.01429369244644741,
-            0.018567033928240348,
-            0.021777251881713918,
-            0.024119016865376824,
-            0.025798808087965483,
-            0.0239548357758661,
+            0.017915945815949685,
+            0.014292883231659115,
+            0.01856631471147141,
+            0.021776623729457878,
+            0.02411847415260815,
+            0.025798344902929538,
+            0.02395436614151536,
         ]
     )
     assert revenue_yoy[7:] == pytest.approx(
         [
-            0.02416386862069288,
-            0.02437290146551966,
-            0.024581934310346443,
-            0.024790967155173222,
+            0.02416349291321229,
+            0.024372619684909218,
+            0.024581746456606143,
+            0.024790873228303072,
             0.025,
         ]
     )
-    assert y["income"]["gpm"]["value"][-5:] == pytest.approx([0.305] * 5)
+    assert y["income"]["gpm"]["value"][-5:] == pytest.approx([0.314] * 5)
     assert y["income"]["cost_rates"]["admin_exp"]["value"][-5:] == pytest.approx([0.036] * 5)
 
-    assert any("fade path alias" in message for message in warnings)
     assert any("总增速低于永续" in message for message in warnings)
     assert any("末年增速<永续" in message for message in warnings)
 

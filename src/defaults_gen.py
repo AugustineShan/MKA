@@ -24,6 +24,7 @@ from src.clean import (
 from src.yaml2_schema import (
     DEFAULT_FORECAST_YEARS,
     DEFAULT_PLUG,
+    DEFAULT_TERMINAL_CAPEX_DA_RATIO,
     DEFAULT_TERMINAL_GROWTH,
     DEFAULT_WACC,
     YAML2_VERSION,
@@ -228,6 +229,7 @@ def build_defaults(db_path: Path, ticker: str | None = None) -> dict[str, Any]:
             "revenue_yoy": param(0.0, "default_flat_no_forecast"),
             "wacc": param(DEFAULT_WACC, "model_default"),
             "terminal_growth": param(DEFAULT_TERMINAL_GROWTH, "model_default"),
+            "terminal_capex_da_ratio": param(DEFAULT_TERMINAL_CAPEX_DA_RATIO, "model_default"),
             "plug": param(DEFAULT_PLUG, "model_default"),
         },
         "market": {
@@ -361,6 +363,15 @@ def _apply_financial_expense_evidence(data: dict[str, Any], db_path: Path) -> di
     fin_exp["base_interest_expense"]["source"] = source
     fin_exp["base_interest_income"]["value"] = float(derived["interest_income"])
     fin_exp["base_interest_income"]["source"] = source
+    # Reconcile base_fin_exp from the same derived components so the entire
+    # financial_expense block carries one consistent annual-report source.
+    # By construction this equals the original clean_annual.fin_exp total.
+    fin_exp["base_fin_exp"]["value"] = (
+        float(derived["interest_expense"])
+        - float(derived["interest_income"])
+        + float(derived["other_fin_exp_abs"])
+    )
+    fin_exp["base_fin_exp"]["source"] = source
     return data
 
 

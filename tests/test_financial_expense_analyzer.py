@@ -78,7 +78,8 @@ def test_defaults_gen_overrides_financial_expense_from_yaml_archive(tmp_path, mo
     assert fin_exp["other_fin_exp_abs"]["source"] == "annual_report.fin_exp_note"
     assert fin_exp["base_interest_expense"]["source"] == "annual_report.fin_exp_note"
     assert fin_exp["base_interest_income"]["source"] == "annual_report.fin_exp_note"
-    assert fin_exp["base_fin_exp"]["source"] == "clean_annual.fin_exp"
+    assert fin_exp["base_fin_exp"]["source"] == "annual_report.fin_exp_note"
+    assert fin_exp["base_fin_exp"]["value"] == pytest.approx(100.96, abs=0.01)
 
     assert fin_exp["interest_expense_rate"]["value"] == pytest.approx(0.03544, abs=1e-4)
     assert fin_exp["other_fin_exp_abs"]["value"] == pytest.approx(-1.47, abs=0.01)

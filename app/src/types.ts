@@ -39,8 +39,11 @@ export type Yaml1RevenueSegment = {
   base_price?: number | null;
   base_revenue: number;
   unit_factor: number;
+  history_revenues?: Record<string, number>;
+  history_volumes?: Record<string, number>;
   revenues: Record<string, number>;
   yoys: Record<string, number>;
+  volumes?: Record<string, number>;
   note?: string | null;
 };
 
@@ -60,6 +63,24 @@ export type Yaml1RevenueView = {
   drivers: Yaml1RevenueDriver[];
   source?: string | null;
   note?: string | null;
+};
+
+export type Yaml1Presentation = {
+  schema_version?: number;
+  mode?: "llm" | "fallback" | string;
+  provider?: string | null;
+  model?: string | null;
+  title?: string;
+  subtitle?: string;
+  business_question?: string;
+  display_strategy?: string;
+  primary_dimension?: string;
+  segment_order?: string[];
+  driver_labels?: Record<string, string>;
+  insights?: string[];
+  risks?: string[];
+  source_paths?: string[];
+  created_at?: string;
 };
 
 export type StatementRow = {
@@ -97,6 +118,7 @@ export type CompanyDetail = {
   yaml1_path?: string | null;
   yaml1_text?: string | null;
   yaml1_revenue_view?: Yaml1RevenueView | null;
+  yaml1_presentation?: Yaml1Presentation | null;
   yaml1_sheets?: WorkbookSheet[];
   dcf_summary?: Record<string, unknown> | null;
   manifest?: Record<string, unknown> | null;

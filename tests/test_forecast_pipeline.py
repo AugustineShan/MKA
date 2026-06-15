@@ -46,13 +46,14 @@ def test_run_company_forecast_hides_intermediates_and_rebuilds_forecast(tmp_path
 
     assert (company_dir / ".modelking" / "forecast_params.yaml").exists()
     assert (company_dir / ".modelking" / "yaml1_clean_report.json").exists()
+    assert (company_dir / ".modelking" / "forecast_build.json").exists()
     assert (company_dir / "forecast" / "forecast_is.csv").exists()
     assert (company_dir / "forecast" / "forecast_bs.csv").exists()
     assert (company_dir / "forecast" / "forecast_cf.csv").exists()
     assert (company_dir / "forecast" / "dcf_summary.json").exists()
 
     summary = json.loads((company_dir / "forecast" / "dcf_summary.json").read_text(encoding="utf-8"))
-    assert summary["per_share_value"] == pytest.approx(15.706784403648248)
+    assert summary["per_share_value"] == pytest.approx(16.808711166101325)
 
     manifest = json.loads((company_dir / "forecast" / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["contract"] == "defaults.yaml + yaml1*.yaml -> forecast/"
