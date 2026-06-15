@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from src.calc import (
     as_float,
     build_forecast_statements,
@@ -27,6 +29,7 @@ from src.yaml1_cleaner import (
     clean_yaml1,
     default_yaml1_path,
     find_company_dir,
+    load_clean_annual,
     mark_hidden,
     write_json,
 )
@@ -88,6 +91,59 @@ def _manifest(
         "errors_count": len(report.get("errors", [])),
         "summary": run.summary,
     }
+
+
+def _load_clean_annual_df(clean_annual_path: Path) -> pd.DataFrame:
+    """Load clean_annual as a DataFrame with string period column."""
+    rows = load_clean_annual(clean_annual_path)
+    df = pd.DataFrame.from_dict(rows, orient="index").reset_index().rename(columns={"index": "period"})
+    df["period"] = df["period"].astype(str)
+    return df
+
+
+def _write_full_tables(
+    output_dir: Path,
+    clean_annual_path: Path,
+    income_statement: pd.DataFrame,
+    balance_sheet: pd.DataFrame,
+    cash_flow: pd.DataFrame,
+    base_period: str,
+) -> None:
+    """Concatenate clean_annual history with forecast statements.
+
+    The only column rename is ``income.credit_impa_loss`` -> ``credit_impa_loss``,
+    matching the forecast engine's internal name. Historical ``total_opcost`` is
+    aligned to the forecast definition (``total_opcost = total_cogs``) so the
+    full series has a consistent meaning.
+    """
+    hist_df = _load_clean_annual_df(clean_annual_path)
+    base_year = int(base_period[:4])
+    hist_df = hist_df[hist_df["period"].astype(int) <= base_year]
+    forecast_periods = set(income_statement["period"])
+    hist_df = hist_df[~hist_df["period"].isin(forecast_periods)]
+    if hist_df.empty:
+        return
+
+    is_cols = list(income_statement.columns)
+    is_hist_cols = ["income.credit_impa_loss" if c == "credit_impa_loss" else c for c in is_cols]
+    is_hist = hist_df[is_hist_cols].rename(columns={"income.credit_impa_loss": "credit_impa_loss"})
+    if "total_opcost" in is_hist.columns and "total_cogs" in is_hist.columns:
+        is_hist = is_hist.copy()
+        is_hist["total_opcost"] = is_hist["total_cogs"]
+    is_hist = is_hist[is_cols]
+    full_is = pd.concat([is_hist, income_statement], ignore_index=True).sort_values("period")
+
+    bs_cols = list(balance_sheet.columns)
+    bs_hist = hist_df[bs_cols]
+    full_bs = pd.concat([bs_hist, balance_sheet], ignore_index=True).sort_values("period")
+
+    cf_cols = list(cash_flow.columns)
+    cf_hist = hist_df[cf_cols]
+    full_cf = pd.concat([cf_hist, cash_flow], ignore_index=True).sort_values("period")
+
+    full_is.to_csv(output_dir / "full_is.csv", index=False, encoding="utf-8-sig")
+    full_bs.to_csv(output_dir / "full_bs.csv", index=False, encoding="utf-8-sig")
+    full_cf.to_csv(output_dir / "full_cf.csv", index=False, encoding="utf-8-sig")
 
 
 def run_company_forecast(
@@ -157,6 +213,14 @@ def run_company_forecast(
         warnings_count=warnings_count,
     )
     write_outputs(result, out_dir)
+    _write_full_tables(
+        out_dir,
+        clean_annual,
+        result["income_statement"],
+        result["balance_sheet"],
+        result["cash_flow"],
+        build.base_period,
+    )
     manifest_path.write_text(
         json.dumps(_manifest(run, cleaned.report), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

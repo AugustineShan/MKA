@@ -309,6 +309,9 @@ companies/{公司名}_{代码}/
     ├── forecast_is.csv
     ├── forecast_bs.csv
     ├── forecast_cf.csv
+    ├── full_is.csv        # 2015-2036 历史 + 预测完整利润表
+    ├── full_bs.csv        # 2015-2036 历史 + 预测完整资产负债表
+    ├── full_cf.csv        # 2015-2036 历史 + 预测完整现金流量表
     ├── dcf_detail.csv
     ├── dcf_summary.csv
     ├── dcf_summary.json
@@ -316,6 +319,11 @@ companies/{公司名}_{代码}/
 ```
 
 `forecast/` 是唯一正式 DCF 输出目录，每次重算必须先清空再生成。`forecast_current/forecast_fixed/forecast_yaml1` 这类目录只能是历史调试产物，不能作为正式链路输出。`yaml2_yearly.yaml` 不是合法顶层产物：清洗后的逐年标准参数表不是 YAML2，默认只能作为内部编译缓存写入 `.modelking/forecast_params.yaml`。
+
+**完整三表拼接**：`forecast.py` 在生成预测三表后，自动从 `data.db/clean_annual` 读取 2015–2024 年历史，按预测表的列名投影并拼接为 `full_is.csv` / `full_bs.csv` / `full_cf.csv`。拼接规则：
+- BS / CF 列名与 `clean_annual` 完全同名，直接投影；
+- IS 需将 `clean_annual.income.credit_impa_loss` 重命名为 `credit_impa_loss`，以匹配预测引擎的内部列名；
+- 为保持口径一致，历史行的 `total_opcost` 被覆盖为 `total_cogs`（预测代码中 `total_opcost = total_cogs`），避免 2024→2025 年出现定义跳变。
 
 **会计顺序**：
 1. 利润表：收入默认 0% 增长；毛利率、费用率、below-OP 绝对值、税率、少数股东比例来自最新 clean 年报。财务费用不按历史绝对值硬平推，而是拆为 `利息支出 - 利息收入 + 其他财务费用`；默认利息支出率、现金收益率、其他财务费用由最新年报机械抽取。所得税按 `total_profit * effective_tax_rate` 计算，但亏损年 `total_profit ≤ 0` 时 `income_tax = 0`。
@@ -810,6 +818,9 @@ MKA/
 │       │   ├── forecast_is.csv
 │       │   ├── forecast_bs.csv
 │       │   ├── forecast_cf.csv
+│       │   ├── full_is.csv
+│       │   ├── full_bs.csv
+│       │   ├── full_cf.csv
 │       │   ├── dcf_detail.csv
 │       │   ├── dcf_summary.json
 │       │   └── run_manifest.json
@@ -971,6 +982,7 @@ companies/美的集团_000333/
 
 | 日期 | 变更 |
 |------|------|
+| 2026-06-15 | `forecast.py` 在生成预测三表后自动拼接历史数据：新增 `forecast/full_is.csv`、`full_bs.csv`、`full_cf.csv`，覆盖 2015–2036 完整年度序列。实现规则：BS/CF 直接按 `forecast_*.csv` 列名从 `clean_annual` 投影；IS 将 `income.credit_impa_loss` 重命名为 `credit_impa_loss` 以匹配预测引擎口径；历史行 `total_opcost` 统一覆盖为 `total_cogs`，保证与预测定义一致。同步更新 `docs/ARCHITECTURE.md` 目录契约与项目结构树，并在 `tests/test_forecast_pipeline.py` 中断言 `full_*.csv` 存在 |
 | 2026-06-15 | 重构 `calc.py` 终值计算：拆分为 `build_forecast_statements()`（三表 + 显式期 FCFF）与 `value_from_statements()`（贴现 + 终值 + 每股价值）；终值改用稳态 terminal FCFF，`ΔNWC = 0`、`CAPEX = D&A × terminal_capex_da_ratio`（默认 1.0）；DCF 层三个参数（WACC、terminal growth、terminal capex/D&A ratio）可在不重跑三表的情况下实时调节。`forecast.py` 跑完后将最小 build 状态写入 `.modelking/forecast_build.json`，工作台新增 `POST /api/companies/{id}/dcf-sensitivity` 端点；前端 DCF tab 增加三个 sensitivity 滑块。`yaml2_schema.py` 与 `defaults_gen.py` 支持 `model.terminal_capex_da_ratio`（默认 1.0），旧 `defaults.yaml` 缺失该字段时向后兼容。更新回归基线 `tests/fixtures/calc_scalar_baseline.json` 与 `tests/test_forecast_pipeline.py` |
 | 2026-06-10 | 初始版本：从已有代码和规格书提炼 |
 | 2026-06-10 | 新增第9章「运行时数据实例」：补充安克创新(300866)和新乳业(002946)的完整数据画像、对比要点、meta 字段清单、季度数据时间范围 |

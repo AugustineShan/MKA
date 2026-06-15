@@ -50,6 +50,9 @@ def test_run_company_forecast_hides_intermediates_and_rebuilds_forecast(tmp_path
     assert (company_dir / "forecast" / "forecast_is.csv").exists()
     assert (company_dir / "forecast" / "forecast_bs.csv").exists()
     assert (company_dir / "forecast" / "forecast_cf.csv").exists()
+    assert (company_dir / "forecast" / "full_is.csv").exists()
+    assert (company_dir / "forecast" / "full_bs.csv").exists()
+    assert (company_dir / "forecast" / "full_cf.csv").exists()
     assert (company_dir / "forecast" / "dcf_summary.json").exists()
 
     summary = json.loads((company_dir / "forecast" / "dcf_summary.json").read_text(encoding="utf-8"))
