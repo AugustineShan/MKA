@@ -867,7 +867,7 @@ python -m src.financial_expense_analyzer --ticker 002946.SZ --latest-only  # 只
 |---|---|---|---|---|
 | 核心假设.md | `skills/核心假设生成修改器_skill_v14.md` | compiler skill | v14 | `skills/...` |
 | YAML1 (drivers) | `skills/yaml1compiler_v3 (2).md` | `src/yaml1_cleaner.py` | 定稿 | `companies/{公司}/yaml1*.yaml` |
-| YAML1 formula/DAG 开发契约 | `docs/formula_DAG开发文档.md` | `src/yaml1_cleaner.py`, compiler/core-assumption skills, tests | 稳定 | `docs/formula_DAG开发文档.md` |
+| YAML1 formula/DAG 开发契约 | `docs/formula_DAG开发文档.md` | `src/yaml1_cleaner.py`, compiler/core-assumption skills, tests | 实验性·受限（仅合成 fixture 验证） | `docs/formula_DAG开发文档.md` |
 | YAML2 / defaults.yaml | `src/yaml2_schema.py` | `src/yaml1_cleaner.py`, `src/defaults_gen.py` | 稳定 | `companies/{公司}/defaults.yaml` |
 | 逐年标准参数表 | `src/yaml1_cleaner.py` | `src/calc.py` | 稳定 | `companies/{公司}/.modelking/forecast_params.yaml` |
 | yaml1 清洗报告 | `src/yaml1_cleaner.py` | 工作台 / 人 | 稳定 | `companies/{公司}/.modelking/yaml1_clean_report.json` |
@@ -1136,7 +1136,8 @@ companies/美的集团_000333/
 
 | 日期 | 变更 |
 |------|------|
-| 2026-06-16 | 上线 YAML1 formula/DAG 受限执行器：formula 只允许在 `yaml1_cleaner.py` 内求值并压平成标准参数，`calc.py` 仍保持纯算账核；新增 `src/yaml1_formula.py`、`tests/test_yaml1_formula.py`，`yaml1_cleaner.py` 支持 revenue formula leaf 和标准路径 formula overlay；同步 `docs/formula_DAG开发文档.md`、`docs/yaml1算法模板契约.md`、`docs/数据流水线.md`、compiler skill 与核心假设 skill |
+| 2026-06-16 | 回绿测试基线 + 校正 formula 状态声明：(1) 全套测试 77/6 → 83 passed/0，根因是 forecast/cleaner/financial_expense 测试直接 glob 活的运行时 `companies/*_002946` 数据（yaml1 重编译 + data.db 刷新后漂移），非引擎回归；修法为新增 committed 冻结快照 `tests/fixtures/company_002946/` + `conftest.copy_fixture_company()`，并把 forecast 的脆弱点断言改为不变式（配平恒等式 + 区间 + backtest passed）。(2) formula/DAG 状态从"已上线/稳定"**降级为"实验性·受限"**——代码闭环 + 单元测试绿已达成，但仅合成 fixture 验证，真实异构公司未跑通；升"稳定"需第二家异构公司从 compiler→cleaner→calc→回测全程通过。同步 `docs/formula_DAG开发文档.md`、本文契约表、`理解层_设计决策与开发方向 (6).md` |
+| 2026-06-16 | 落地 YAML1 formula/DAG 受限执行器（实验性，仅合成 fixture 验证）：formula 只允许在 `yaml1_cleaner.py` 内求值并压平成标准参数，`calc.py` 仍保持纯算账核；新增 `src/yaml1_formula.py`、`tests/test_yaml1_formula.py`，`yaml1_cleaner.py` 支持 revenue formula leaf 和标准路径 formula overlay；同步 `docs/formula_DAG开发文档.md`、`docs/yaml1算法模板契约.md`、`docs/数据流水线.md`、compiler skill 与核心假设 skill |
 | 2026-06-16 | 新增 `src/webcomp.py` 及配套 `/webcomp` skill：一键打包网页端编译 yaml1 所需输入材料到 `companies/{公司}/WEBCLAUDE/yaml1编译部分/`。复制清单：`00_核心假设.md`（`*核心假设*.md` 最新一份，必须）、`01_defaults.yaml`（必须）、`02_数据格式参考.md`、`03_yaml1算法模板契约.md`、`04_yaml1compiler_skill_vN.md`。所有 skill 均不读取 PDF。skill 文件同时部署于项目 `.claude/skills/webcomp/` 与全局 `C:\Users\Sheld\.claude\skills\webcomp/` |
 | 2026-06-16 | 新增 `/comp` skill：启动 yaml1 compiler，先动态加载 `D:\MKA\skills\yaml1compiler_v*.md` 最新版，再读取 `*核心假设*.md`、`defaults.yaml`、`docs/数据格式参考.md`、`docs/yaml1算法模板契约.md` 四份输入，编译输出 `yaml1_公司名_YYYYMMDD.yaml`。skill 文件同时部署于项目 `.claude/skills/comp/` 与全局 `C:\Users\Sheld\.claude\skills\comp/`。所有 skill 均不读取 PDF |
 | 2026-06-16 | 新增 `src/webka.py` 及配套 `/webka` skill：一键打包网页端生成 `核心假设.md` 所需源文件到 `companies/{公司}/WEBCLAUDE/核心假设部分/`。每次执行先清空旧文件夹，再按阅读顺序复制 `00_核心观点.md`、`01_核心假设_现有底稿.md`、`02_活跃素材`、`03_最新年报.md`、`04_核心假设生成修改器_skill_vN.md`；年报仅打包 Markdown，**所有 skill 均不读取 PDF**。skill 文件同时部署于项目 `.claude/skills/webka/` 与全局 `C:\Users\Sheld\.claude\skills\webka/`，供 Claude Code 与网页端两端调用 |

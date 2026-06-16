@@ -1,9 +1,11 @@
 # YAML1 Formula/DAG 开发文档
 
-状态：已上线，受限执行器可用。  
+状态：**实验性 · 受限可执行**。代码闭环已达成（`src/yaml1_formula.py` 求值器 + cleaner 接入 + 8 个 formula 单元测试绿），但**仅在合成 fixture 上验证过，尚无真实异构公司跑通**。在第二家异构公司（如茅台基酒链/产能滞后类）实跑通过前，不应视为"稳定/生产可用"。  
 日期：2026-06-16  
 拥有者：`src/yaml1_cleaner.py`  
 相关契约：`docs/yaml1算法模板契约.md`、`skills/yaml1compiler_v4 (2).md`
+
+> **收口标准（升"稳定"的硬条件）**：① 全套测试绿（已达成，83 passed）；② 至少一家真实异构公司从 compiler 生成 `formulas` → cleaner 求值 → calc 跑通 → 回测过（**未达成**）。达成 ② 之前，本文与 ARCHITECTURE/设计文档一律以"实验性·受限"口径记录。
 
 ## 一句话定位
 
@@ -422,7 +424,7 @@ Warning：
 
 - `docs/yaml1算法模板契约.md`：formula 从“禁止生成”改为“可执行，但受限”。
 - `docs/数据流水线.md`：第六层 yaml1 cleaner 增加 formula 求值步骤。
-- `docs/ARCHITECTURE.md`：状态从设计中改为稳定。
+- `docs/ARCHITECTURE.md`：状态记为"实验性/受限"，变更日志记录代码闭环。
 - `skills/yaml1compiler_v4 (2).md`：允许 compiler 在触发条件下生成 `formulas`，并写清优先级：模板优先，formula 只接长尾。
 - `skills/核心假设生成修改器_skill_v17.md`：formula 可用但需停下与分析师共探算法，不能把能用模板表达的线升级成 formula。
 
@@ -457,7 +459,7 @@ formula 节点如下：...
 
 ## 上线判定
 
-本轮上线已满足：
+**代码闭环已满足（≠ 生产稳定）：**
 
 - `tests/test_yaml1_formula.py` 与新增 formula cleaner 路径测试通过。
 - `docs/yaml1算法模板契约.md` 已改为允许受限 formula。
@@ -466,5 +468,9 @@ formula 节点如下：...
 - `docs/数据流水线.md` 已同步。
 - synthetic yaml1 已从 formula -> cleaner -> calc 跑通。
 - clean report 能展示 formula 求值、依赖、targets 和回测状态。
+
+**尚未满足"稳定"判定（明确未达成）：**
+
+- 真实异构公司（非合成 fixture）从 compiler 生成 `formulas` → cleaner → calc → 回测过：**未做**。formula 的泛化能力（lag 链、分段、跨线 driver 复用在真实口径下是否成立）仍未被现实检验。在此之前 formula 维持"实验性·受限"，compiler 触发它时必须举旗共探、人工确认。
 
 仍需长期遵守：模板能表达时禁止升级 formula；formula 只能通过 `formulas.nodes` + `formula_ref` 进入 cleaner，不得自创族名。
