@@ -346,6 +346,108 @@ def coverage_reverse(y1_srcs, sections, findings):
                              ".md 含预测但无 yaml1 src 认领(漏译候选,需人工核)"))
 
 
+# ───────────────────────── Gate C 无损版:knobs 块结构 diff ─────────────────────────
+# 上游生成器若在 .md 吐 ```knobs 块(锚点=生成器自己的上挂科目,与 yaml1 的 src 同源),
+# Gate C 从"正则抠人话"退化成"两个结构对象逐条 diff",零脆性、真双射。
+# 完全由块内容驱动,不含任何公司特定假设(兼容任意公司)。
+
+_SUB_ALIAS = {"revenue_yoy": ["收入", "revenue_yoy"],
+              "revenue_abs": ["收入", "revenue_abs"]}
+
+
+def extract_knobs_block(md_text):
+    """抓出 ```knobs fenced 块并 yaml.safe_load。无块返回 None;解析失败返回 {'_err': ...}。
+    唯一保留的正则就是'抓这个块',极稳,不碰人话。"""
+    m = re.search(r"```knobs[ \t]*\n(.*?)```", md_text, re.S)
+    if not m:
+        return None
+    try:
+        return yaml.safe_load(m.group(1)) or {}
+    except Exception as e:
+        return {"_err": str(e)}
+
+
+def _norm_unit(v, unit):
+    if isinstance(v, (int, float)) and unit == "pct":
+        return v / 100.0
+    return v
+
+
+def gate_c_diff(std_knobs, leaves, block, findings):
+    """yaml1 旋钮 ←(src/锚点+sub)→ knobs 块条目,逐条结构 diff + 双向兜底。"""
+    entries = block.get("knobs", []) if isinstance(block, dict) else []
+    index = {}
+    for e in entries:
+        if not isinstance(e, dict) or "anchor" not in e:
+            findings.append(("C-DIFF", "FAIL", "knobs块", "条目缺 anchor 或非映射:{}".format(e)))
+            continue
+        anchor = core_term(str(e.get("anchor", "")))
+        sub = e.get("sub")
+        index[(anchor, str(sub) if sub is not None else None)] = {"e": e, "hit": False}
+
+    def block_vals(e):
+        vs = e.get("values")
+        return [_norm_unit(v, e.get("unit", "")) for v in vs] if isinstance(vs, list) else None
+
+    def cmp_vals(yv, bv):
+        if not isinstance(yv, list) or bv is None:
+            return "无法比较(values 缺失)"
+        if len(yv) != len(bv):
+            return "数组长度不符:yaml1={} block={}".format(len(yv), len(bv))
+        bad = []
+        for i, (a, b) in enumerate(zip(yv, bv)):
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                if not near(a, b):
+                    bad.append(i)
+            elif a != b:
+                bad.append(i)
+        return bad  # 空 list = 一致
+
+    def lookup(anchor_core, sub=None):
+        if sub is None:
+            return index.get((anchor_core, None))
+        for s in [str(sub)] + _SUB_ALIAS.get(sub, []):
+            hit = index.get((anchor_core, s))
+            if hit:
+                return hit
+        return None
+
+    def check(tag, vals, hit):
+        hit["hit"] = True
+        res = cmp_vals(vals, block_vals(hit["e"]))
+        if isinstance(res, str):
+            findings.append(("C-DIFF", "FAIL", tag, res))
+        elif res:
+            findings.append(("C-DIFF", "FAIL", tag,
+                             "值与生成器自报不符 @年索引{}:yaml1={} block={}".format(
+                                 res, vals, block_vals(hit["e"]))))
+        else:
+            findings.append(("C-DIFF", "PASS", tag, "值与生成器自报一致"))
+
+    for path, vals, src in std_knobs:
+        hit = lookup(core_term(src) if src else "", None)
+        if not hit:
+            findings.append(("C-DIFF", "FAIL", path,
+                             "yaml1 旋钮在 knobs 块无对应(幻觉/src错):src='{}'".format(src)))
+        else:
+            check(path, vals, hit)
+
+    for spath, label, vals, src, fam, depth in leaves:
+        hit = lookup(core_term(src) if src else "", label)
+        tag = spath + "/" + label
+        if not hit:
+            findings.append(("C-DIFF", "FAIL", tag,
+                             "yaml1 因子在 knobs 块无对应:anchor='{}' sub='{}'".format(
+                                 core_term(src or ""), label)))
+        else:
+            check(tag, vals, hit)
+
+    for (anchor, sub), rec in index.items():
+        if not rec["hit"]:
+            findings.append(("C-DIFF", "FAIL", "knobs:{}|{}".format(anchor, sub),
+                             "生成器自报但 yaml1 无对应(漏译):{}".format(rec["e"])))
+
+
 # ───────────────────────── 主流程 ─────────────────────────
 def main():
     if len(sys.argv) < 4:
@@ -369,20 +471,30 @@ def main():
     findings = []
     gate_a(y1, H, findings)
     gate_b(std_knobs, defaults_flat, findings)
-    # 统计每个 .md 小节被几条标准 src 认领 → 多旋钮共享小节才做关键词收窄
-    head_count = {}
-    for _, _, src in std_knobs:
-        h = resolve_section(src, sections)[0] if src else None
-        if h:
-            head_count[h] = head_count.get(h, 0) + 1
-    for path, vals, src in std_knobs:
-        h = resolve_section(src, sections)[0] if src else None
-        multi = bool(h) and head_count.get(h, 0) > 1
-        gate_c_knob(path, vals, src, sections, multi, findings)
-    for spath, label, vals, src, fam, depth in leaves:
-        gate_c_leaf(spath, label, vals, src, sections, findings)
-    all_srcs = [s for _, _, s in std_knobs] + [s for _, _, _, s, _, _ in leaves]
-    coverage_reverse(all_srcs, sections, findings)
+
+    # Gate C 路由:有 ```knobs 块走无损结构 diff;无块(或解析失败)回退正则版
+    block = extract_knobs_block(md_text)
+    if isinstance(block, dict) and "_err" in block:
+        findings.append(("C", "WARN", "knobs块", "解析失败,回退正则:{}".format(block["_err"])))
+        block = None
+    if isinstance(block, dict) and block.get("knobs"):
+        gate_c_mode = "block-diff(无损)"
+        gate_c_diff(std_knobs, leaves, block, findings)
+    else:
+        gate_c_mode = "regex(脆性·回退)"
+        head_count = {}
+        for _, _, src in std_knobs:
+            h = resolve_section(src, sections)[0] if src else None
+            if h:
+                head_count[h] = head_count.get(h, 0) + 1
+        for path, vals, src in std_knobs:
+            h = resolve_section(src, sections)[0] if src else None
+            multi = bool(h) and head_count.get(h, 0) > 1
+            gate_c_knob(path, vals, src, sections, multi, findings)
+        for spath, label, vals, src, fam, depth in leaves:
+            gate_c_leaf(spath, label, vals, src, sections, findings)
+        all_srcs = [s for _, _, s in std_knobs] + [s for _, _, _, s, _, _ in leaves]
+        coverage_reverse(all_srcs, sections, findings)
 
     # 汇总
     counts = {}
@@ -394,6 +506,7 @@ def main():
     report = {
         "yaml1": yaml1_path,
         "horizon_len": H,
+        "gate_c_mode": gate_c_mode,
         "knob_count": len(std_knobs),
         "leaf_factor_count": len(leaves),
         "summary": counts,

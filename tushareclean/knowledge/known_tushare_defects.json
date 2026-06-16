@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "description": "Lightweight hints for annual_report_reconciler.py. These records guide LLM lookup only; they never approve or apply overrides by themselves.",
+  "defects": [
+    {
+      "id": "balancesheet.bs_2_1.current_asset.lending_funds.missing_or_zero",
+      "status": "active",
+      "endpoint": "balancesheet",
+      "check_code": "BS 2.1",
+      "bucket_or_scope": "current_asset",
+      "field": "lending_funds",
+      "field_cn": "发放贷款和垫款",
+      "trigger": {
+        "direction": "target_gt_calc",
+        "target_field": "total_cur_assets",
+        "field_value_pattern": "missing_or_zero",
+        "residual_should_match_annual_report_item": true
+      },
+      "llm_hint": {
+        "annual_report_statement": "合并资产负债表",
+        "search_aliases": [
+          "发放贷款和垫款",
+          "发放贷款",
+          "垫款",
+          "贷款"
+        ],
+        "unit_conversion": "年报通常为千元；除以1000后与 clean.py 的百万元残差比较。",
+        "diagnosis_hint": "若 total_cur_assets 大于流动资产明细和，且 TuShare balancesheet.lending_funds 为空或为 0，应优先检查年报流动资产段的“发放贷款和垫款”。如该科目金额换算后等于残差，通常说明 TuShare 漏披露 lending_funds。"
+      },
+      "confirmed_examples": [
+        {
+          "ticker": "000333.SZ",
+          "company": "美的集团",
+          "periods": "2016-2025",
+          "note": "TuShare lending_funds 全为空；年报流动资产段“发放贷款和垫款”逐年解释 BS 2.1 残差。"
+        }
+      ]
+    },
+    {
+      "id": "balancesheet.bs_3_1.current_liab.estimated_liab.missing_or_zero",
+      "status": "active",
+      "endpoint": "balancesheet",
+      "check_code": "BS 3.1",
+      "bucket_or_scope": "current_liab",
+      "field": "estimated_liab",
+      "field_cn": "预计负债",
+      "clean_category": "current_liab",
+      "trigger": {
+        "direction": "target_gt_calc",
+        "target_field": "total_cur_liab",
+        "field_value_pattern": "missing_or_zero",
+        "residual_should_match_annual_report_item": true
+      },
+      "llm_hint": {
+        "annual_report_statement": "合并资产负债表",
+        "search_aliases": [
+          "预计负债-流动",
+          "预计负债--流动",
+          "预计负债（流动）",
+          "预计负债"
+        ],
+        "clean_category": "current_liab",
+        "unit_conversion": "年报通常为元或千元；换算为百万元后与 clean.py 残差比较。",
+        "diagnosis_hint": "若 total_cur_liab 大于流动负债明细和，且 TuShare balancesheet.estimated_liab 为空或为 0，应检查年报流动负债段的“预计负债”。TuShare 只有一个 estimated_liab 字段并默认按非流动归类；当公司把预计负债列在流动负债时，需用 clean_category=current_liab 把补数计入流动负债 bucket。注意：仅当年报确认该科目位于流动负债段时才适用，否则不要重分类。"
+      },
+      "confirmed_examples": [
+        {
+          "ticker": "002594.SZ",
+          "company": "比亚迪",
+          "periods": "2016-2025",
+          "note": "TuShare estimated_liab 全为空；年报流动负债段“预计负债-流动”逐年解释 BS 3.1 残差，需计入 current_liab。"
+        }
+      ]
+    }
+  ]
+}
