@@ -1,6 +1,6 @@
 # YAML1 Formula/DAG 开发文档
 
-状态：**实验性 · 受限可执行**。代码闭环已达成（`src/yaml1_formula.py` 求值器 + cleaner 接入 + 8 个 formula 单元测试绿），但**仅在合成 fixture 上验证过，尚无真实异构公司跑通**。在第二家异构公司（如茅台基酒链/产能滞后类）实跑通过前，不应视为"稳定/生产可用"。  
+状态：**实验性 · 受限可执行**。代码闭环已达成（`src/yaml1_formula.py` 求值器 + cleaner 接入 + 7 个 formula 单元测试绿），但**仅在合成 fixture 上验证过，尚无真实异构公司跑通**。在第二家异构公司（如茅台基酒链/产能滞后类）实跑通过前，不应视为"稳定/生产可用"。  
 日期：2026-06-16  
 拥有者：`src/yaml1_cleaner.py`  
 相关契约：`docs/yaml1算法模板契约.md`、`skills/yaml1compiler_v4 (2).md`
@@ -264,16 +264,14 @@ backtest revenue + formula
 validate
 ```
 
-建议新增模块 `src/yaml1_formula.py`，让 `yaml1_cleaner.py` 只负责调度：
+模块 `src/yaml1_formula.py`，`yaml1_cleaner.py` 只负责调度。实际公开接口：
 
 ```text
 src/yaml1_formula.py
   FormulaError
   FormulaNode
-  FormulaResult
-  parse_formula_nodes(yaml1, horizon)
-  evaluate_formula_graph(nodes, horizon)
-  build_formula_report(result)
+  FormulaResult                          # 含 .values(node_id) 与 .report() 方法
+  evaluate_formula_graph(yaml1, horizon) # 读 yaml1.get("formulas")；内部 _parse_node 解析、报告走 FormulaResult.report()
 ```
 
 `yaml1_cleaner.py` 改动点：
@@ -282,7 +280,7 @@ src/yaml1_formula.py
 - `_fold_revenue_leaf()` 支持 `kind: formula`，从 `formula_values[formula_ref]` 取收入序列。
 - `_collect_explicit_overlay()` 支持 path-level `kind: formula`，从 `formula_values[formula_ref]` 取 values。
 - `_initial_report()` 增加 `formula` 区块。
-- `_run_backtests()` 增加 formula node 历史回测结果。
+- formula node 历史回测在 `evaluate_formula_graph()` 内完成（`backtest_all`），结果经 `FormulaResult.report()` 写入 `report["formula"]`、warning 进 `report["warnings"]`；`_run_backtests()` 仍只管 revenue/stash 回测。
 - 顶层 skip keys 增加 `formulas`。
 
 ## 回测和审计输出
@@ -348,7 +346,7 @@ Formula 上线后必须继续遵守“一个事实只能有一个来源”：
 - 缺少 lag seed。
 - 当前年循环或跨节点循环。
 - formula output path 不存在于 `defaults.yaml`。
-- formula 与 knob / revenue_family / gpm / leaf margin over-determined。
+- formula 收入叶子与 `revenue_family` / `factors` / 收入 knob（`revenue_yoy/revenue_abs/volume_yoy/price_yoy`）over-determined；leaf margin 与顶层 `income.gpm` over-determined。（path-level formula 与 knob 不构成独立检查——路径是单值 `kind`，结构上不可能并存。）
 - formula node 回测失败。
 
 Warning：
@@ -366,9 +364,9 @@ Warning：
 
 ## 测试矩阵
 
-必须补齐以下测试后才能把 compiler/core skill 改成“允许生成 formula”。
+下列是 formula 的**目标**测试矩阵。**当前为部分实现**：`test_yaml1_formula.py` 7 个、`test_yaml1_cleaner.py` 2 个 formula 测试已绿，标 ⬜ 的为待补。注意：compiler/core skill 已先行改为"允许受限 formula"，**早于矩阵补齐**——这正是 formula 维持"实验性·受限"的原因之一，补齐前不应升"稳定"。
 
-### `tests/test_yaml1_formula.py`
+### `tests/test_yaml1_formula.py`（已实现 7 个，覆盖下列多数项）
 
 - input node values 长度必须等于 horizon。
 - 安全表达式支持四则运算、括号、`min/max/abs/clip/if_else`。
@@ -382,18 +380,18 @@ Warning：
 - 分段函数 `if_else` 正确。
 - history 回测通过 / 失败分别覆盖。
 
-### `tests/test_yaml1_cleaner.py`
+### `tests/test_yaml1_cleaner.py`（已实现 2 个 formula 测试，余为待补）
 
-- revenue formula leaf 折成 `model.revenue_yoy`。
-- formula revenue leaf 与 `revenue_family` 混用硬失败。
-- formula leaf 参与嵌套 decomposition sum。
-- formula leaf 与 leaf margin 共同折出 `income.gpm`。
-- path-level formula 覆盖已存在 YAML2 路径。
-- path-level formula 指向不存在路径硬失败。
-- path-level formula 与 knob over-determined 硬失败。
-- `formulas` 顶层不会被当成普通 knob path。
-- clean report 包含 formula values、dependencies、targets、backtest。
-- 从 `clean_yaml1()` 跑到 `calc.build_forecast_statements()`。
+- ✅ revenue formula leaf 折成 `model.revenue_yoy`（`test_fold_revenue_supports_formula_leaf`）。
+- ⬜ formula revenue leaf 与 `revenue_family` 混用硬失败。
+- ⬜ formula leaf 参与嵌套 decomposition sum。
+- ⬜ formula leaf 与 leaf margin 共同折出 `income.gpm`。
+- ✅ path-level formula 覆盖已存在 YAML2 路径（`test_clean_yaml1_formula_leaf_and_formula_overlay_reach_calc`）。
+- ⬜ path-level formula 指向不存在路径硬失败。
+- ⬜ path-level formula 与 knob over-determined 硬失败（注：路径单值 `kind`，结构上不可能并存，此项实为冗余）。
+- ⬜ `formulas` 顶层不会被当成普通 knob path。
+- ⬜ clean report 包含 formula values、dependencies、targets、backtest（reach-calc 已校验 status/targets，dependencies/backtest 尚未断言）。
+- ✅ 从 `clean_yaml1()` 跑到 `calc.build_forecast_statements()`（同上 reach-calc 测试）。
 
 ### 回归用例
 
