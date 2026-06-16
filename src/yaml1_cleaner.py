@@ -64,6 +64,17 @@ class FoldResult:
     segment_revenue_by_year: dict[str, dict[int, float]]
     unit_factors: dict[str, float]
     warnings: list[dict[str, Any]]
+    gpm_values: list[float] | None = None
+
+
+@dataclass
+class _RevenueFold:
+    base_revenue: float
+    revenue_by_year: dict[int, float]
+    segment_base_revenue: dict[str, float]
+    segment_revenue_by_year: dict[str, dict[int, float]]
+    unit_factors: dict[str, float]
+    margin_by_leaf: dict[str, list[float]]
 
 
 @dataclass
@@ -235,6 +246,233 @@ def _unit_factor(segment: dict[str, Any], inherited_note: str, path: str, warnin
     raise Yaml1CleanError(f"{path} missing structured unit_factor_to_million_cny")
 
 
+def _sum_revenue_folds(folds: list[_RevenueFold], horizon: list[int]) -> _RevenueFold:
+    revenue_by_year = {year: 0.0 for year in horizon}
+    segment_base_revenue: dict[str, float] = {}
+    segment_revenue_by_year: dict[str, dict[int, float]] = {}
+    unit_factors: dict[str, float] = {}
+    margin_by_leaf: dict[str, list[float]] = {}
+    base_revenue = 0.0
+
+    for fold in folds:
+        base_revenue += fold.base_revenue
+        for year, value in fold.revenue_by_year.items():
+            revenue_by_year[year] += value
+        segment_base_revenue.update(fold.segment_base_revenue)
+        segment_revenue_by_year.update(fold.segment_revenue_by_year)
+        unit_factors.update(fold.unit_factors)
+        margin_by_leaf.update(fold.margin_by_leaf)
+
+    return _RevenueFold(
+        base_revenue=base_revenue,
+        revenue_by_year=revenue_by_year,
+        segment_base_revenue=segment_base_revenue,
+        segment_revenue_by_year=segment_revenue_by_year,
+        unit_factors=unit_factors,
+        margin_by_leaf=margin_by_leaf,
+    )
+
+
+def _product(values: list[float]) -> float:
+    out = 1.0
+    for value in values:
+        out *= value
+    return out
+
+
+def _projection_values(factor: dict[str, Any], horizon: list[int], path: str) -> list[float]:
+    base = _to_float(factor.get("base"))
+    projection_any = factor.get("projection", {"kind": "constant"})
+    projection = _require_mapping(projection_any, f"{path}.projection")
+    kind = str(projection.get("kind", "constant"))
+
+    if kind == "yoy":
+        yoy = _year_values(projection.get("values"), horizon, f"{path}.projection.values")
+        current = base
+        values: list[float] = []
+        for value in yoy:
+            current *= 1.0 + value
+            values.append(current)
+        return values
+    if kind == "abs":
+        return _year_values(projection.get("values"), horizon, f"{path}.projection.values")
+    if kind in {"constant", "hold"}:
+        return [base for _ in horizon]
+    raise Yaml1CleanError(
+        f"Unsupported factor projection at {path}: {kind}. "
+        "Supported projection kinds: yoy, abs, constant."
+    )
+
+
+def _margin_values(
+    segment: dict[str, Any],
+    horizon: list[int],
+    path: str,
+    *,
+    required: bool = False,
+) -> list[float] | None:
+    knobs = segment.get("knobs")
+    margin_any: Any = None
+    if isinstance(knobs, dict) and "margin" in knobs:
+        margin_any = knobs["margin"]
+    elif "margin" in segment:
+        margin_any = segment["margin"]
+
+    if margin_any is None:
+        if required:
+            raise Yaml1CleanError(f"{path} uses a margin family but is missing knobs.margin")
+        return None
+    if isinstance(margin_any, dict):
+        if "values" in margin_any:
+            margin_any = margin_any["values"]
+        else:
+            raise Yaml1CleanError(f"{path}.margin must be a list or a mapping with values")
+    return _year_values(margin_any, horizon, f"{path}.margin")
+
+
+def _unsupported_revenue_family(path: str, family: Any) -> Yaml1CleanError:
+    if family == "formula":
+        return Yaml1CleanError(
+            f"formula revenue node at {path} is not implemented in yaml1_cleaner. "
+            "Use factor_product/growth/abs, or raise the case to a human."
+        )
+    return Yaml1CleanError(
+        f"Unsupported revenue_family at {path}: {family}. "
+        "Supported families: factor_product, vol_price, vol_price_margin, growth, abs. "
+        "Formula/DAG families are not implemented."
+    )
+
+
+def _fold_revenue_leaf(
+    name: str,
+    segment: dict[str, Any],
+    path: str,
+    inherited_note: str,
+    horizon: list[int],
+    warnings: list[dict[str, Any]],
+) -> _RevenueFold:
+    kind = segment.get("kind")
+    if kind == "formula":
+        raise _unsupported_revenue_family(path, "formula")
+    if kind in {"mix_allocation", "allocation"}:
+        raise Yaml1CleanError(
+            f"{path} uses {kind}, but mix/allocation nodes are not implemented. "
+            "Use decomposition sum leaves for now."
+        )
+
+    family = segment.get("revenue_family")
+    factor = _unit_factor(segment, inherited_note, path, warnings)
+    base = _require_mapping(segment.get("base"), f"{path}.base")
+    series: dict[int, float] = {}
+    margin_required = False
+
+    if family == "vol_price" or family == "vol_price_margin":
+        margin_required = family == "vol_price_margin"
+        volume = _to_float(base.get("volume"))
+        price = _to_float(base.get("price"))
+        base_revenue = volume * price / factor
+        knobs = _require_mapping(segment.get("knobs"), f"{path}.knobs")
+        volume_yoy = _year_values(knobs.get("volume_yoy"), horizon, f"{path}.knobs.volume_yoy")
+        price_yoy = _year_values(knobs.get("price_yoy"), horizon, f"{path}.knobs.price_yoy")
+        for idx, year in enumerate(horizon):
+            volume *= 1.0 + volume_yoy[idx]
+            price *= 1.0 + price_yoy[idx]
+            series[year] = volume * price / factor
+    elif family in {"factor_product", "driver_rate"}:
+        factors_any = segment.get("factors")
+        if not isinstance(factors_any, list) or not factors_any:
+            raise Yaml1CleanError(f"{path}.factors must be a non-empty list")
+        factor_bases: list[float] = []
+        factor_series: list[list[float]] = []
+        for index, factor_any in enumerate(factors_any):
+            factor_path = f"{path}.factors[{index}]"
+            factor_node = _require_mapping(factor_any, factor_path)
+            factor_bases.append(_to_float(factor_node.get("base")))
+            factor_series.append(_projection_values(factor_node, horizon, factor_path))
+        base_revenue = _product(factor_bases) / factor
+        for idx, year in enumerate(horizon):
+            series[year] = _product([values[idx] for values in factor_series]) / factor
+    elif family == "growth":
+        revenue = _to_float(base.get("revenue"))
+        base_revenue = revenue / factor
+        knobs = _require_mapping(segment.get("knobs"), f"{path}.knobs")
+        revenue_yoy = _year_values(knobs.get("revenue_yoy"), horizon, f"{path}.knobs.revenue_yoy")
+        for idx, year in enumerate(horizon):
+            revenue *= 1.0 + revenue_yoy[idx]
+            series[year] = revenue / factor
+    elif family == "abs":
+        revenue = _to_float(base.get("revenue"))
+        base_revenue = revenue / factor
+        knobs = _require_mapping(segment.get("knobs"), f"{path}.knobs")
+        revenue_abs = _year_values(knobs.get("revenue_abs"), horizon, f"{path}.knobs.revenue_abs")
+        for idx, year in enumerate(horizon):
+            series[year] = revenue_abs[idx] / factor
+    else:
+        raise _unsupported_revenue_family(path, family)
+
+    margin = _margin_values(segment, horizon, path, required=margin_required)
+    leaf_key = name
+    return _RevenueFold(
+        base_revenue=base_revenue,
+        revenue_by_year=series,
+        segment_base_revenue={leaf_key: base_revenue},
+        segment_revenue_by_year={leaf_key: series},
+        unit_factors={leaf_key: factor},
+        margin_by_leaf={leaf_key: margin} if margin is not None else {},
+    )
+
+
+def _fold_revenue_node(
+    name: str,
+    node: dict[str, Any],
+    path: str,
+    inherited_note: str,
+    horizon: list[int],
+    warnings: list[dict[str, Any]],
+    depth: int,
+) -> _RevenueFold:
+    kind = node.get("kind")
+    if kind == "formula":
+        raise _unsupported_revenue_family(path, "formula")
+    if kind in {"mix_allocation", "allocation"}:
+        raise Yaml1CleanError(
+            f"{path} uses {kind}, but mix_allocation is not implemented and cannot be mixed with decomposition_sum."
+        )
+
+    if kind == "decomposition" or (kind is None and "segments" in node and "revenue_family" not in node):
+        if depth >= 2:
+            raise Yaml1CleanError(f"{path} exceeds supported decomposition depth <= 2")
+        fold_direction = str(node.get("fold_direction", "sum"))
+        if fold_direction not in {"sum", "decomposition_sum"}:
+            raise Yaml1CleanError(
+                f"{path}.fold_direction={fold_direction} is not implemented. "
+                "A node must choose exactly one direction: sum or future mix_allocation."
+            )
+        if "mix" in node or "allocation" in node:
+            raise Yaml1CleanError(f"{path} mixes decomposition_sum children with allocation/mix data")
+        child_note = "\n".join(str(part) for part in [inherited_note, node.get("note", "")] if part)
+        segments = _require_mapping(node.get("segments"), f"{path}.segments")
+        folds: list[_RevenueFold] = []
+        for child_name, child_any in segments.items():
+            child_path = f"{path}.segments.{child_name}"
+            child = _require_mapping(child_any, child_path)
+            leaf_name = f"{name}.{child_name}" if name else str(child_name)
+            folds.append(
+                _fold_revenue_node(
+                    leaf_name,
+                    child,
+                    child_path,
+                    child_note,
+                    horizon,
+                    warnings,
+                    depth + 1,
+                )
+            )
+        return _sum_revenue_folds(folds, horizon)
+
+    return _fold_revenue_leaf(name, node, path, inherited_note, horizon, warnings)
+
+
 def fold_revenue(yaml1: dict[str, Any], clean_annual: dict[int, dict[str, float]]) -> FoldResult:
     revenue_node = _require_mapping(yaml1.get("income.revenue"), "income.revenue")
     if revenue_node.get("kind") != "decomposition":
@@ -251,46 +489,37 @@ def fold_revenue(yaml1: dict[str, Any], clean_annual: dict[int, dict[str, float]
         raise Yaml1CleanError(f"clean_annual revenue is zero for {base_year}")
 
     warnings: list[dict[str, Any]] = []
-    segments = _require_mapping(revenue_node.get("segments"), "income.revenue.segments")
-    segment_base_revenue: dict[str, float] = {}
-    segment_revenue_by_year: dict[str, dict[int, float]] = {}
-    unit_factors: dict[str, float] = {}
-    revenue_by_year = {year: 0.0 for year in explicit_horizon}
+    fold = _fold_revenue_node(
+        "",
+        revenue_node,
+        "income.revenue",
+        str(revenue_node.get("note", "")),
+        explicit_horizon,
+        warnings,
+        0,
+    )
 
-    for name, segment_any in segments.items():
-        path = f"income.revenue.segments.{name}"
-        segment = _require_mapping(segment_any, path)
-        family = segment.get("revenue_family")
-        factor = _unit_factor(segment, str(revenue_node.get("note", "")), path, warnings)
-        unit_factors[str(name)] = factor
-        base = _require_mapping(segment.get("base"), f"{path}.base")
-        series: dict[int, float] = {}
-
-        if family == "vol_price":
-            volume = _to_float(base.get("volume"))
-            price = _to_float(base.get("price"))
-            segment_base_revenue[str(name)] = volume * price / factor
-            knobs = _require_mapping(segment.get("knobs"), f"{path}.knobs")
-            volume_yoy = _year_values(knobs.get("volume_yoy"), explicit_horizon, f"{path}.knobs.volume_yoy")
-            price_yoy = _year_values(knobs.get("price_yoy"), explicit_horizon, f"{path}.knobs.price_yoy")
-            for idx, year in enumerate(explicit_horizon):
-                volume *= 1.0 + volume_yoy[idx]
-                price *= 1.0 + price_yoy[idx]
-                series[year] = volume * price / factor
-        elif family == "growth":
-            revenue = _to_float(base.get("revenue"))
-            segment_base_revenue[str(name)] = revenue / factor
-            knobs = _require_mapping(segment.get("knobs"), f"{path}.knobs")
-            revenue_yoy = _year_values(knobs.get("revenue_yoy"), explicit_horizon, f"{path}.knobs.revenue_yoy")
-            for idx, year in enumerate(explicit_horizon):
-                revenue *= 1.0 + revenue_yoy[idx]
-                series[year] = revenue / factor
-        else:
-            raise Yaml1CleanError(f"Unsupported revenue_family at {path}: {family}")
-
-        segment_revenue_by_year[str(name)] = series
-        for year, value in series.items():
-            revenue_by_year[year] += value
+    revenue_by_year = fold.revenue_by_year
+    margin_by_leaf = fold.margin_by_leaf
+    gpm_values: list[float] | None = None
+    if margin_by_leaf:
+        leaf_count = len(fold.segment_revenue_by_year)
+        if len(margin_by_leaf) != leaf_count:
+            missing = sorted(set(fold.segment_revenue_by_year) - set(margin_by_leaf))
+            raise Yaml1CleanError(
+                "partial leaf margin is not allowed; either all revenue leaves provide margin "
+                f"or none do. Missing margin leaves: {missing}"
+            )
+        gpm_values = []
+        for idx, year in enumerate(explicit_horizon):
+            revenue = revenue_by_year[year]
+            if abs(revenue) < 1e-12:
+                raise Yaml1CleanError(f"Cannot derive income.gpm from leaf margins because revenue is zero in {year}")
+            gross_profit = sum(
+                fold.segment_revenue_by_year[leaf][year] * margins[idx]
+                for leaf, margins in margin_by_leaf.items()
+            )
+            gpm_values.append(gross_profit / revenue)
 
     yoy: list[float] = []
     prev = base_revenue
@@ -305,20 +534,31 @@ def fold_revenue(yaml1: dict[str, Any], clean_annual: dict[int, dict[str, float]
         base_revenue=base_revenue,
         revenue_by_year=revenue_by_year,
         revenue_yoy=yoy,
-        segment_base_revenue=segment_base_revenue,
-        segment_revenue_by_year=segment_revenue_by_year,
-        unit_factors=unit_factors,
+        segment_base_revenue=fold.segment_base_revenue,
+        segment_revenue_by_year=fold.segment_revenue_by_year,
+        unit_factors=fold.unit_factors,
         warnings=warnings,
+        gpm_values=gpm_values,
     )
 
 
 def _detect_base_year(revenue_node: dict[str, Any], explicit_horizon: list[int]) -> int:
     years: set[int] = set()
-    for segment in _require_mapping(revenue_node.get("segments"), "income.revenue.segments").values():
-        if isinstance(segment, dict):
-            base = segment.get("base", {})
-            if isinstance(base, dict) and "base_year" in base:
-                years.add(int(base["base_year"]))
+
+    def collect(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get("kind") == "decomposition" or ("segments" in node and "revenue_family" not in node):
+            segments = node.get("segments")
+            if isinstance(segments, dict):
+                for child in segments.values():
+                    collect(child)
+            return
+        base = node.get("base", {})
+        if isinstance(base, dict) and "base_year" in base:
+            years.add(int(base["base_year"]))
+
+    collect(revenue_node)
     if len(years) > 1:
         raise Yaml1CleanError(f"Inconsistent segment base_year values: {sorted(years)}")
     if years:
@@ -363,6 +603,7 @@ def _empty_fold_from_yaml2(yaml2: dict[str, Any]) -> FoldResult:
                 "message": "No yaml1 provided; using YAML2 baseline as identity clean pass.",
             }
         ],
+        gpm_values=None,
     )
 
 
@@ -443,6 +684,7 @@ def _initial_report(
             "segment_base_revenue": fold.segment_base_revenue,
             "revenue_by_year": {str(k): v for k, v in fold.revenue_by_year.items()},
             "revenue_yoy": fold.revenue_yoy,
+            "gpm_values": fold.gpm_values,
         },
         "warnings": [],
         "errors": [],
@@ -473,6 +715,17 @@ def _collect_explicit_overlay(
         }
     }
     horizon = fold.explicit_horizon
+    if fold.gpm_values is not None:
+        if "income.gpm" in yaml1:
+            raise Yaml1CleanError(
+                "leaf margin and top-level income.gpm are over-determined; "
+                "remove income.gpm or remove every leaf margin."
+            )
+        overlay["income.gpm"] = {
+            "values": fold.gpm_values,
+            "source": "yaml1.income.revenue.margin_fold",
+            "note": "Derived from revenue leaf margins.",
+        }
     for path, item_any in yaml1.items():
         if path in {"meta", "income.revenue", "terminal", "stash"}:
             continue

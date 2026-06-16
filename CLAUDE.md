@@ -409,6 +409,7 @@ py -m src.report_downloader --ticker 000333.SZ --list-only
 ## 开发流程
 
 - **每次开发完成后必须更新 `ARCHITECTURE.md`**：包括新增/修改的模块、数据模型变更、校验规则变更、设计决策等。在「变更日志」中追加日期和变更摘要。
+- **凡是修改数据流水线，必须同步更新 `docs/数据流水线.md`**：包括 `data_fetcher.py`、`clean.py`、`financial_expense_analyzer.py` / `financial_expense.yaml`、`defaults_gen.py`、`yaml1_cleaner.py`、`calc.py`、`forecast.py`、`workbench.py` 中任何影响取数、clean、YAML 合并、DCF、历史预测拼接或输出目录契约的变化。
 
 ## 运行注意
 

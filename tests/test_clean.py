@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -117,6 +118,102 @@ class TestIncomeStatementChecks:
         present = {k for k, v in row.items() if v != 0.0}
         errors = clean.check_is(row, present, "2024")
         assert any("IS 1.3" in e for e in errors)
+
+
+class TestResolveIsSigns:
+    def _row(self, **overrides: float) -> dict[str, float]:
+        row: dict[str, float] = {
+            "revenue": 1000.0,
+            "total_revenue": 1000.0,
+            "int_income": 0.0,
+            "comm_income": 0.0,
+            "n_oth_b_income": 0.0,
+            "oper_cost": 600.0,
+            "biz_tax_surchg": 10.0,
+            "sell_exp": 20.0,
+            "admin_exp": 30.0,
+            "fin_exp": 40.0,
+            "rd_exp": 0.0,
+            "assets_impair_loss": 0.0,
+            "credit_impa_loss": 0.0,
+            "oth_impair_loss_assets": 0.0,
+            "other_bus_cost": 0.0,
+            "oth_income": 0.0,
+            "invest_income": 50.0,
+            "fv_value_chg_gain": 0.0,
+            "asset_disp_income": 0.0,
+            "net_expo_hedging_benefits": 0.0,
+            "forex_gain": 0.0,
+            "operate_profit": 350.0,
+        }
+        row.update(overrides)
+        return row
+
+    def _present(self, row: dict[str, float]) -> set[str]:
+        return {field for field, value in row.items() if value != 0.0}
+
+    def test_resolve_is_signs_preserves_negative_impairment_loss(self):
+        row = self._row(assets_impair_loss=-20.0, operate_profit=330.0)
+
+        sign_map, warnings = clean.resolve_is_signs(row, self._present(row), "2026Q1")
+
+        assert sign_map == {"assets_impair_loss": 1}
+        assert any("semantic" in warning for warning in warnings)
+
+    def test_resolve_is_signs_preserves_positive_impairment_reversal(self):
+        row = self._row(credit_impa_loss=0.492, operate_profit=350.492)
+
+        sign_map, warnings = clean.resolve_is_signs(row, self._present(row), "2026Q1")
+
+        assert sign_map == {"credit_impa_loss": 1}
+        assert any("semantic" in warning for warning in warnings)
+
+    def test_resolve_is_signs_does_not_flip_small_reversal_inside_noise_band(self):
+        row = self._row(credit_impa_loss=0.6, operate_profit=349.4)
+
+        sign_map, warnings = clean.resolve_is_signs(row, self._present(row), "2026Q1")
+
+        assert sign_map == {"credit_impa_loss": 1}
+        assert any("noise band" in warning for warning in warnings)
+
+    def test_resolve_is_signs_can_flip_when_residual_improvement_is_material(self):
+        row = self._row(
+            assets_impair_loss=10.0,
+            credit_impa_loss=1.0,
+            operate_profit=341.0,
+        )
+
+        sign_map, warnings = clean.resolve_is_signs(row, self._present(row), "2026Q1")
+
+        assert sign_map == {"assets_impair_loss": -1, "credit_impa_loss": 1}
+        assert any("overrode semantic signs" in warning for warning in warnings)
+
+    def test_insta360_quarterly_clean_keeps_2026q1_credit_reversal_semantic_sign(self, tmp_path):
+        source_dir = next(Path("companies").glob("*_688775"))
+        db_path = tmp_path / "data.db"
+        shutil.copy2(source_dir / "data.db", db_path)
+
+        outputs = clean.clean_all(db_path, "688775.SH", mode="quarterly")
+        row = outputs["quarterly"].loc["2026Q1"]
+
+        assert row["income.credit_impa_loss"] == pytest.approx(0.49195703, abs=1e-6)
+        assert row["assets_impair_loss"] == pytest.approx(-32.05605374, abs=1e-6)
+
+        with sqlite3.connect(db_path) as conn:
+            messages = [
+                message
+                for (message,) in conn.execute(
+                    """
+                    select message
+                    from clean_warnings
+                    where period = '2026Q1'
+                      and message like 'IS sign%'
+                    """
+                )
+            ]
+
+        assert any("resolved by semantic reported signs" in message for message in messages)
+        assert not any("credit_impa_loss=-1" in message for message in messages)
 
 
 class TestBalanceSheetChecks:

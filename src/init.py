@@ -231,6 +231,42 @@ def _run_clean(ticker: str, db_path: Path, *, mode: str, no_auto_reconcile: bool
     return subprocess.run(cmd, cwd=BASE_DIR).returncode
 
 
+CORE_VIEW_TEMPLATE = """# 核心观点
+
+请在此文件填写对这家公司的核心投资观点。
+
+建议结构：
+- 一句话逻辑
+- 三个支柱
+- 动能拆分
+- 催化 / 风险
+"""
+
+
+def ensure_company_artifacts(db_path: Path) -> str:
+    """确保公司根目录存在人工维护入口：核心观点.md 与 active_vore/ 文件夹。
+
+    若文件/文件夹已存在则跳过，不覆盖已有内容。
+    返回状态描述供报告使用。
+    """
+    company_dir = db_path.parent
+    created: list[str] = []
+
+    active_vore_dir = company_dir / "active_vore"
+    if not active_vore_dir.exists():
+        active_vore_dir.mkdir(parents=True, exist_ok=True)
+        created.append("active_vore/")
+
+    core_view_path = company_dir / "核心观点.md"
+    if not core_view_path.exists():
+        core_view_path.write_text(CORE_VIEW_TEMPLATE, encoding="utf-8")
+        created.append("核心观点.md")
+
+    if created:
+        return f"✅ 已创建 {', '.join(created)}"
+    return "⏭️ 已存在"
+
+
 def stage_clean(ticker: str, db_path: Path, *, mode: str, verbose: bool) -> tuple[bool, str]:
     """阶段②清洗校验，含年报补全的"失败→生成override→重跑应用"两段式。
 
@@ -298,6 +334,7 @@ def stage_financial_expense(
 def build_report(
     ticker: str,
     db_path: Path,
+    artifacts_status: str,
     fetch_status: str,
     report_status: str,
     clean_status: str,
@@ -309,6 +346,7 @@ def build_report(
     lines.append("=" * 64)
     lines.append(f"  init 数据拉取报告: {name} ({ticker})")
     lines.append("=" * 64)
+    lines.append(f"  [0/4] 公司目录入口    : {artifacts_status}")
     lines.append(f"  [1/4] TuShare 拉取      : {fetch_status}")
     if meta:
         lines.append(
@@ -393,6 +431,7 @@ def run_one(
     LOGGER.info("输入 %r → 解析为 %s", raw_input, ticker)
 
     db_path, fetch_status = stage_fetch(ticker, force=force)
+    artifacts_status = ensure_company_artifacts(db_path)
     report_status = stage_reports(
         ticker,
         db_path,
@@ -406,7 +445,7 @@ def run_one(
     )
 
     print("\n" + build_report(
-        ticker, db_path, fetch_status, report_status, clean_status, fin_exp_status
+        ticker, db_path, artifacts_status, fetch_status, report_status, clean_status, fin_exp_status
     ))
 
     return 0 if ok else 3

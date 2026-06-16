@@ -2,11 +2,35 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from src import yaml1_cleaner
+from src.calc import build_forecast_statements
+
+
+def synthetic_clean_annual(revenue: float = 100.0) -> dict[int, dict[str, float]]:
+    return {2024: {"revenue": revenue}}
+
+
+def synthetic_yaml1(segments: dict[str, object], extra: dict[str, object] | None = None) -> dict[str, object]:
+    data: dict[str, object] = {
+        "meta": {"horizon": [2025, 2026]},
+        "income.revenue": {
+            "kind": "decomposition",
+            "segments": segments,
+        },
+        "terminal": {
+            "explicit_end": 2026,
+            "fade": {"kind": "linear", "to_year": 2026, "fade_paths": [], "hold_paths": []},
+            "perpetual_growth": 0.02,
+        },
+    }
+    if extra:
+        data.update(extra)
+    return data
 
 
 def company_dir() -> Path:
@@ -20,6 +44,12 @@ def paths() -> tuple[Path, Path, Path]:
         base / "defaults.yaml",
         base / "data.db",
     )
+
+
+def write_yaml1_fixture(tmp_path: Path, data: dict[str, object]) -> Path:
+    path = tmp_path / "yaml1_contract.yaml"
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 def test_fold_revenue_uses_structured_unit_factor_and_clean_anchor():
@@ -46,6 +76,307 @@ def test_fold_revenue_uses_structured_unit_factor_and_clean_anchor():
         "ambient": 100.0,
         "fringe_business": 1.0,
     }
+
+
+def test_fold_revenue_supports_factor_product_two_factor_alias_shape():
+    yaml1 = synthetic_yaml1(
+        {
+            "retail": {
+                "revenue_family": "factor_product",
+                "base": {"base_year": 2024, "unit_factor_to_million_cny": 1},
+                "factors": [
+                    {"key": "stores", "label": "门店数", "base": 10, "projection": {"kind": "yoy", "values": [0.1, 0.0]}},
+                    {"key": "sales_per_store", "label": "单店收入", "base": 10, "projection": {"kind": "yoy", "values": [0.0, 0.1]}},
+                ],
+            }
+        }
+    )
+
+    fold = yaml1_cleaner.fold_revenue(yaml1, synthetic_clean_annual())
+
+    assert fold.segment_base_revenue["retail"] == pytest.approx(100.0)
+    assert fold.revenue_by_year[2025] == pytest.approx(110.0)
+    assert fold.revenue_by_year[2026] == pytest.approx(121.0)
+    assert fold.revenue_yoy == pytest.approx([0.1, 0.1])
+
+
+def test_fold_revenue_supports_factor_product_three_factors_with_mixed_projection():
+    yaml1 = synthetic_yaml1(
+        {
+            "power": {
+                "revenue_family": "factor_product",
+                "base": {"base_year": 2024, "unit_factor_to_million_cny": 1},
+                "factors": [
+                    {"key": "capacity", "label": "装机量", "base": 10, "projection": {"kind": "constant"}},
+                    {"key": "hours", "label": "利用小时", "base": 5, "projection": {"kind": "abs", "values": [6, 7]}},
+                    {"key": "tariff", "label": "电价", "base": 2, "projection": {"kind": "constant"}},
+                ],
+            }
+        }
+    )
+
+    fold = yaml1_cleaner.fold_revenue(yaml1, synthetic_clean_annual())
+
+    assert fold.revenue_by_year[2025] == pytest.approx(120.0)
+    assert fold.revenue_by_year[2026] == pytest.approx(140.0)
+    assert fold.revenue_yoy == pytest.approx([0.2, 140.0 / 120.0 - 1.0])
+
+
+def test_fold_revenue_supports_abs_family():
+    yaml1 = synthetic_yaml1(
+        {
+            "direct_amount": {
+                "revenue_family": "abs",
+                "base": {"base_year": 2024, "revenue": 100, "unit_factor_to_million_cny": 1},
+                "knobs": {"revenue_abs": [120, 150]},
+            }
+        }
+    )
+
+    fold = yaml1_cleaner.fold_revenue(yaml1, synthetic_clean_annual())
+
+    assert fold.revenue_by_year == pytest.approx({2025: 120.0, 2026: 150.0})
+    assert fold.revenue_yoy == pytest.approx([0.2, 0.25])
+
+
+def test_contract_fixture_cleans_to_calc_with_current_templates(tmp_path):
+    _, defaults_path, clean_path = paths()
+    base_revenue = 10665.42345785
+    yaml1 = {
+        "meta": {"horizon": [2025, 2026, 2027]},
+        "income.revenue": {
+            "kind": "decomposition",
+            "rollup": "sum",
+            "src": "#contract",
+            "segments": {
+                "retail": {
+                    "kind": "decomposition",
+                    "rollup": "sum",
+                    "segments": {
+                        "stores": {
+                            "revenue_family": "factor_product",
+                            "base": {"base_year": 2024, "unit_factor_to_million_cny": 1},
+                            "factors": [
+                                {
+                                    "key": "stores",
+                                    "label": "门店数",
+                                    "base": 100,
+                                    "projection": {"kind": "yoy", "values": [0.10, 0.0, 0.0]},
+                                },
+                                {
+                                    "key": "sales_per_store",
+                                    "label": "单店收入",
+                                    "base": 50,
+                                    "projection": {"kind": "abs", "values": [52, 54, 56]},
+                                },
+                            ],
+                        },
+                        "online": {
+                            "revenue_family": "growth",
+                            "base": {
+                                "base_year": 2024,
+                                "revenue": 2000,
+                                "unit_factor_to_million_cny": 1,
+                            },
+                            "knobs": {"revenue_yoy": [0.05, 0.04, 0.03]},
+                        },
+                    },
+                },
+                "contracted": {
+                    "revenue_family": "abs",
+                    "base": {
+                        "base_year": 2024,
+                        "revenue": base_revenue - 7000,
+                        "unit_factor_to_million_cny": 1,
+                    },
+                    "knobs": {"revenue_abs": [3800, 3900, 4000]},
+                },
+            },
+        },
+        "income.gpm": {"kind": "knob", "values": [0.30, 0.31, 0.32], "src": "#top_gpm"},
+        "income.financial_expense.other_fin_exp_abs": {
+            "kind": "knob",
+            "values": [1.0, 1.0, 1.0],
+            "src": "#other_fin_exp_abs",
+        },
+        "terminal": {
+            "explicit_end": 2027,
+            "fade": {
+                "kind": "linear",
+                "to_year": 2029,
+                "fade_paths": ["model.revenue_yoy"],
+                "hold_paths": ["income.gpm"],
+            },
+            "perpetual_growth": 0.025,
+        },
+    }
+
+    result = yaml1_cleaner.clean_yaml1(write_yaml1_fixture(tmp_path, yaml1), defaults_path, clean_path)
+    forecast_params = result.forecast_params
+    build = build_forecast_statements(forecast_params)
+
+    assert result.report["backtest"]["status"] == "passed"
+    assert result.report["fold"]["segment_base_revenue"]["retail.stores"] == pytest.approx(5000)
+    assert result.report["fold"]["segment_base_revenue"]["retail.online"] == pytest.approx(2000)
+    assert result.report["fold"]["segment_base_revenue"]["contracted"] == pytest.approx(base_revenue - 7000)
+    assert forecast_params["model"]["revenue_yoy"]["source"] == "#contract"
+    assert forecast_params["income"]["gpm"]["value"][:3] == pytest.approx([0.30, 0.31, 0.32])
+    assert forecast_params["income"]["financial_expense"]["other_fin_exp_abs"]["value"][:3] == pytest.approx(
+        [1.0, 1.0, 1.0]
+    )
+    assert build.forecast_years == forecast_params["model"]["forecast_years"]["value"]
+    assert not build.income_statement.empty
+
+
+def test_contract_fixture_leaf_margin_fold_also_reaches_calc(tmp_path):
+    _, defaults_path, clean_path = paths()
+    base_revenue = 10665.42345785
+    yaml1 = {
+        "meta": {"horizon": [2025, 2026]},
+        "income.revenue": {
+            "kind": "decomposition",
+            "rollup": "sum",
+            "src": "#margin_contract",
+            "segments": {
+                "fresh": {
+                    "revenue_family": "growth",
+                    "base": {"base_year": 2024, "revenue": 6000, "unit_factor_to_million_cny": 1},
+                    "knobs": {"revenue_yoy": [0.05, 0.04], "margin": [0.35, 0.36]},
+                },
+                "ambient": {
+                    "revenue_family": "growth",
+                    "base": {
+                        "base_year": 2024,
+                        "revenue": base_revenue - 6000,
+                        "unit_factor_to_million_cny": 1,
+                    },
+                    "knobs": {"revenue_yoy": [0.00, -0.02], "margin": [0.20, 0.21]},
+                },
+            },
+        },
+        "terminal": {
+            "explicit_end": 2026,
+            "fade": {"kind": "linear", "to_year": 2028, "fade_paths": ["model.revenue_yoy"], "hold_paths": []},
+            "perpetual_growth": 0.025,
+        },
+    }
+
+    result = yaml1_cleaner.clean_yaml1(write_yaml1_fixture(tmp_path, yaml1), defaults_path, clean_path)
+    forecast_params = result.forecast_params
+    build = build_forecast_statements(forecast_params)
+
+    fresh_2025 = 6000 * 1.05
+    ambient_2025 = base_revenue - 6000
+    expected_gpm_2025 = (fresh_2025 * 0.35 + ambient_2025 * 0.20) / (fresh_2025 + ambient_2025)
+    assert result.report["backtest"]["status"] == "passed"
+    assert forecast_params["income"]["gpm"]["source"] == "yaml1.income.revenue.margin_fold"
+    assert forecast_params["income"]["gpm"]["value"][0] == pytest.approx(expected_gpm_2025)
+    assert not build.income_statement.empty
+
+
+def test_fold_revenue_recurses_nested_decomposition_sum():
+    yaml1 = synthetic_yaml1(
+        {
+            "retail": {
+                "kind": "decomposition",
+                "segments": {
+                    "stores": {
+                        "revenue_family": "growth",
+                        "base": {"base_year": 2024, "revenue": 60, "unit_factor_to_million_cny": 1},
+                        "knobs": {"revenue_yoy": [0.1, 0.0]},
+                    },
+                    "online": {
+                        "revenue_family": "growth",
+                        "base": {"base_year": 2024, "revenue": 40, "unit_factor_to_million_cny": 1},
+                        "knobs": {"revenue_yoy": [0.0, 0.1]},
+                    },
+                },
+            }
+        }
+    )
+
+    fold = yaml1_cleaner.fold_revenue(yaml1, synthetic_clean_annual())
+
+    assert fold.segment_base_revenue["retail.stores"] == pytest.approx(60.0)
+    assert fold.segment_base_revenue["retail.online"] == pytest.approx(40.0)
+    assert fold.revenue_by_year[2025] == pytest.approx(106.0)
+    assert fold.revenue_by_year[2026] == pytest.approx(110.0)
+
+
+def test_fold_revenue_derives_gpm_when_all_leaves_have_margin():
+    yaml1 = synthetic_yaml1(
+        {
+            "a": {
+                "revenue_family": "growth",
+                "base": {"base_year": 2024, "revenue": 60, "unit_factor_to_million_cny": 1},
+                "knobs": {"revenue_yoy": [0.0, 0.0], "margin": [0.3, 0.4]},
+            },
+            "b": {
+                "revenue_family": "growth",
+                "base": {"base_year": 2024, "revenue": 40, "unit_factor_to_million_cny": 1},
+                "knobs": {"revenue_yoy": [0.0, 0.0], "margin": [0.45, 0.5]},
+            },
+        }
+    )
+
+    fold = yaml1_cleaner.fold_revenue(yaml1, synthetic_clean_annual())
+    overlay = yaml1_cleaner._collect_explicit_overlay(yaml1, fold, {"warnings": []})
+
+    assert fold.gpm_values == pytest.approx([0.36, 0.44])
+    assert overlay["income.gpm"]["values"] == pytest.approx([0.36, 0.44])
+
+
+def test_fold_revenue_rejects_partial_leaf_margin():
+    yaml1 = synthetic_yaml1(
+        {
+            "a": {
+                "revenue_family": "growth",
+                "base": {"base_year": 2024, "revenue": 60, "unit_factor_to_million_cny": 1},
+                "knobs": {"revenue_yoy": [0.0, 0.0], "margin": [0.3, 0.4]},
+            },
+            "b": {
+                "revenue_family": "growth",
+                "base": {"base_year": 2024, "revenue": 40, "unit_factor_to_million_cny": 1},
+                "knobs": {"revenue_yoy": [0.0, 0.0]},
+            },
+        }
+    )
+
+    with pytest.raises(yaml1_cleaner.Yaml1CleanError, match="partial leaf margin"):
+        yaml1_cleaner.fold_revenue(yaml1, synthetic_clean_annual())
+
+
+def test_collect_overlay_rejects_leaf_margin_and_top_level_gpm():
+    yaml1 = synthetic_yaml1(
+        {
+            "a": {
+                "revenue_family": "growth",
+                "base": {"base_year": 2024, "revenue": 100, "unit_factor_to_million_cny": 1},
+                "knobs": {"revenue_yoy": [0.0, 0.0], "margin": [0.3, 0.4]},
+            }
+        },
+        extra={"income.gpm": {"kind": "knob", "values": [0.31, 0.41]}},
+    )
+
+    fold = yaml1_cleaner.fold_revenue(yaml1, synthetic_clean_annual())
+    with pytest.raises(yaml1_cleaner.Yaml1CleanError, match="leaf margin.*income.gpm"):
+        yaml1_cleaner._collect_explicit_overlay(yaml1, fold, {"warnings": []})
+
+
+def test_fold_revenue_rejects_formula_until_formula_engine_exists():
+    yaml1 = synthetic_yaml1(
+        {
+            "formula_line": {
+                "kind": "formula",
+                "expr": "x[t]",
+                "inputs": {"x": {"knob": [1, 2]}},
+                "upmount": "revenue",
+            }
+        }
+    )
+
+    with pytest.raises(yaml1_cleaner.Yaml1CleanError, match="formula.*not implemented"):
+        yaml1_cleaner.fold_revenue(yaml1, synthetic_clean_annual())
 
 
 def test_clean_yaml1_expands_fade_hold_default_hold_and_alias_warning():

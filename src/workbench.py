@@ -422,6 +422,111 @@ def _display_source(payload: dict[str, Any], fallback: str) -> str:
     return source.lstrip("#") if source else fallback
 
 
+def _product(values: list[float]) -> float:
+    out = 1.0
+    for value in values:
+        out *= value
+    return out
+
+
+def _factor_projection_values(factor: dict[str, Any], years: list[str]) -> list[float]:
+    base = _as_float(factor.get("base"))
+    projection = factor.get("projection", {})
+    if not isinstance(projection, dict):
+        projection = {}
+    kind = str(projection.get("kind", "constant"))
+    if kind == "yoy":
+        current = base
+        values: list[float] = []
+        for index, _year in enumerate(years):
+            current *= 1.0 + _series_value(projection.get("values"), index)
+            values.append(current)
+        return values
+    if kind == "abs":
+        return [_series_value(projection.get("values"), index) for index, _year in enumerate(years)]
+    return [base for _year in years]
+
+
+def _iter_revenue_leaves(
+    segments: dict[str, Any],
+    prefix: str = "",
+) -> list[tuple[str, dict[str, Any]]]:
+    leaves: list[tuple[str, dict[str, Any]]] = []
+    for key, payload in segments.items():
+        if not isinstance(payload, dict):
+            continue
+        name = f"{prefix}.{key}" if prefix else str(key)
+        child_segments = payload.get("segments")
+        if payload.get("kind") == "decomposition" and isinstance(child_segments, dict):
+            leaves.extend(_iter_revenue_leaves(child_segments, name))
+        else:
+            leaves.append((name, payload))
+    return leaves
+
+
+def _evaluate_yaml1_revenue_leaf(
+    payload: dict[str, Any],
+    years: list[str],
+) -> tuple[float, dict[str, float], dict[str, float], dict[str, float | None]]:
+    base = payload.get("base", {}) if isinstance(payload.get("base"), dict) else {}
+    knobs = payload.get("knobs", {}) if isinstance(payload.get("knobs"), dict) else {}
+    family = _cell(payload.get("revenue_family"))
+    unit_factor = _as_float(base.get("unit_factor_to_million_cny"), 1.0) or 1.0
+    revenues: dict[str, float] = {}
+    yoys: dict[str, float] = {}
+    volumes: dict[str, float] = {}
+    base_revenue = _as_float(base.get("revenue")) / unit_factor
+
+    if family in {"factor_product", "driver_rate"}:
+        factors = payload.get("factors")
+        if isinstance(factors, list) and factors:
+            base_revenue = _product([_as_float(factor.get("base")) for factor in factors if isinstance(factor, dict)]) / unit_factor
+            series = [
+                _factor_projection_values(factor, years)
+                for factor in factors
+                if isinstance(factor, dict)
+            ]
+            previous = base_revenue
+            for index, year in enumerate(years):
+                current = _product([values[index] for values in series]) / unit_factor
+                revenues[year] = current
+                yoys[year] = (current / previous - 1.0) if previous else 0.0
+                previous = current
+            return base_revenue, revenues, yoys, volumes
+
+    if family in {"vol_price", "vol_price_margin"}:
+        volume = _as_float(base.get("volume"))
+        price = _as_float(base.get("price"))
+        base_revenue = volume * price / unit_factor
+        previous = base_revenue
+        for index, year in enumerate(years):
+            volume *= 1.0 + _series_value(knobs.get("volume_yoy"), index)
+            price *= 1.0 + _series_value(knobs.get("price_yoy"), index)
+            current = volume * price / unit_factor
+            volumes[year] = volume
+            revenues[year] = current
+            yoys[year] = (current / previous - 1.0) if previous else 0.0
+            previous = current
+        return base_revenue, revenues, yoys, volumes
+
+    if family == "abs":
+        previous = base_revenue
+        for index, year in enumerate(years):
+            current = _series_value(knobs.get("revenue_abs"), index) / unit_factor
+            revenues[year] = current
+            yoys[year] = (current / previous - 1.0) if previous else 0.0
+            previous = current
+        return base_revenue, revenues, yoys, volumes
+
+    previous = base_revenue
+    for index, year in enumerate(years):
+        current = previous * (1.0 + _series_value(knobs.get("revenue_yoy"), index))
+        revenues[year] = current
+        yoys[year] = (current / previous - 1.0) if previous else 0.0
+        previous = current
+    return base_revenue, revenues, yoys, volumes
+
+
 def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
     if not path:
         return None
@@ -444,9 +549,7 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
     base_total = 0.0
     base_year = None
 
-    for segment_key, payload in segments.items():
-        if not isinstance(payload, dict):
-            continue
+    for segment_key, payload in _iter_revenue_leaves(segments):
         base = payload.get("base", {}) if isinstance(payload.get("base"), dict) else {}
         knobs = payload.get("knobs", {}) if isinstance(payload.get("knobs"), dict) else {}
         history = payload.get("history", {}) if isinstance(payload.get("history"), dict) else {}
@@ -457,31 +560,11 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
         unit_factor = _as_float(base.get("unit_factor_to_million_cny"), 1.0) or 1.0
         segment_base_year = int(_as_float(base.get("base_year"), 0))
         base_year = base_year or segment_base_year
-        volume = _as_float(base.get("volume"))
-        price = _as_float(base.get("price"))
-        base_revenue = _as_float(base.get("revenue"))
-        if family == "vol_price":
-            base_revenue = volume * price / unit_factor
+        base_revenue, revenues, yoys, volumes = _evaluate_yaml1_revenue_leaf(payload, years)
         base_total += base_revenue
 
-        revenues: dict[str, float] = {}
-        yoys: dict[str, float] = {}
-        volumes: dict[str, float] = {}
-        previous_revenue = base_revenue
-        current_volume = volume
-        current_price = price
-        for index, year in enumerate(years):
-            if family == "vol_price":
-                current_volume *= 1.0 + _series_value(knobs.get("volume_yoy"), index)
-                current_price *= 1.0 + _series_value(knobs.get("price_yoy"), index)
-                current_revenue = current_volume * current_price / unit_factor
-                volumes[year] = current_volume
-            else:
-                current_revenue = previous_revenue * (1.0 + _series_value(knobs.get("revenue_yoy"), index))
-            revenues[year] = current_revenue
-            yoys[year] = (current_revenue / previous_revenue - 1.0) if previous_revenue else 0.0
+        for year, current_revenue in revenues.items():
             total_revenues[year] += current_revenue
-            previous_revenue = current_revenue
 
         segment_name = _display_source(payload, str(segment_key))
         segment_rows.append(
@@ -490,8 +573,8 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
                 "name": segment_name,
                 "family": family,
                 "base_year": segment_base_year,
-                "base_volume": volume if family == "vol_price" else None,
-                "base_price": price if family == "vol_price" else None,
+                "base_volume": _as_float(base.get("volume")) if family in {"vol_price", "vol_price_margin"} else None,
+                "base_price": _as_float(base.get("price")) if family in {"vol_price", "vol_price_margin"} else None,
                 "base_revenue": base_revenue,
                 "unit_factor": unit_factor,
                 "revenues": revenues,
@@ -519,6 +602,23 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
                     "values": {year: _series_value(values, index) for index, year in enumerate(years)},
                 }
             )
+        factors = payload.get("factors")
+        if isinstance(factors, list):
+            for factor in factors:
+                if not isinstance(factor, dict):
+                    continue
+                projection = factor.get("projection", {}) if isinstance(factor.get("projection"), dict) else {}
+                driver_rows.append(
+                    {
+                        "segment": segment_name,
+                        "driver": _cell(factor.get("label")) or _cell(factor.get("key")),
+                        "values": {
+                            year: value
+                            for year, value in zip(years, _factor_projection_values(factor, years), strict=False)
+                        },
+                        "projection": _cell(projection.get("kind")),
+                    }
+                )
 
     total_yoy: dict[str, float] = {}
     previous_total = base_total
@@ -579,9 +679,7 @@ def _yaml1_revenue_sheet(data: dict[str, Any], years: list[str]) -> dict[str, An
     revenue = data.get("income.revenue", {})
     segments = revenue.get("segments", {}) if isinstance(revenue, dict) else {}
     if isinstance(segments, dict):
-        for segment, payload in segments.items():
-            if not isinstance(payload, dict):
-                continue
+        for segment, payload in _iter_revenue_leaves(segments):
             base = payload.get("base", {}) if isinstance(payload.get("base"), dict) else {}
             knobs = payload.get("knobs", {}) if isinstance(payload.get("knobs"), dict) else {}
             for driver, values in knobs.items():
@@ -600,6 +698,27 @@ def _yaml1_revenue_sheet(data: dict[str, Any], years: list[str]) -> dict[str, An
                         "note": _cell(payload.get("note")),
                     }
                 )
+            factors = payload.get("factors")
+            if isinstance(factors, list):
+                for factor in factors:
+                    if not isinstance(factor, dict):
+                        continue
+                    projection = factor.get("projection", {}) if isinstance(factor.get("projection"), dict) else {}
+                    rows.append(
+                        {
+                            "segment": str(segment),
+                            "driver": _cell(factor.get("label")) or _cell(factor.get("key")),
+                            "family": _cell(payload.get("revenue_family")),
+                            "base_year": _cell(base.get("base_year")),
+                            "base_volume": _cell(factor.get("base")),
+                            "base_price": "",
+                            "base_revenue": "",
+                            "unit_factor": _cell(base.get("unit_factor_to_million_cny")),
+                            **_spread_values(projection.get("values"), years),
+                            "source": _cell(payload.get("src")),
+                            "note": f"projection={_cell(projection.get('kind'))}",
+                        }
+                    )
     return {
         "name": "Revenue Build",
         "description": "Decomposition leaf drivers by segment and year",

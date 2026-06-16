@@ -165,8 +165,9 @@ IS_SUB_RESOLVE: dict[str, list[str]] = {
     "non_oper_exp": ["nca_disploss"],
 }
 
-# Fields whose sign convention varies across reporting periods/years.
-# They are validated dynamically in modern-reporting years (2019+).
+# Fields that are signed P&L impacts in modern reports. They live in the cost
+# bucket for raw categorisation, but their reported sign already carries the
+# accounting meaning: negative = impairment loss, positive = reversal.
 SIGN_QUESTIONABLE_IS_FIELDS = {
     "assets_impair_loss",
     "credit_impa_loss",
@@ -1071,7 +1072,7 @@ def resolve_is_signs(
     year: str,
     tolerance: float = TOLERANCE,
 ) -> tuple[dict[str, int] | None, list[str]]:
-    """Dynamically resolve signs for impairment-like fields in modern years.
+    """Resolve signs for impairment-like fields in modern years.
 
     Only enabled for 2019+ periods, when the modern income-statement format is
     expected to be stable. Earlier years are flagged as 口径断点 and skipped.
@@ -1082,8 +1083,13 @@ def resolve_is_signs(
                          + sum(operating_adjustment fields)
                          + sum(sign_f * value_f for f in questionable fields)
 
-    All inputs come from the same TuShare income table, so this is a sanity
-    check on internal consistency, not an independent cross-validation.
+    Modern reports usually state "losses are presented with a minus sign".
+    Therefore the semantic default is to preserve the reported sign (``+1``).
+    Exhaustive residual minimisation is only allowed to override that default
+    when the improvement is large enough to exceed small-item noise.
+
+    All inputs come from the same TuShare income table, so residuals are a
+    sanity check on internal consistency, not an independent cross-validation.
 
     Returns (sign_map, warnings). sign_map is None when signs cannot be
     resolved. Warnings are emitted instead of errors; callers decide whether
@@ -1118,41 +1124,68 @@ def resolve_is_signs(
         return {}, []
 
     base = revenue_base - stable_cost_sum + stable_adj_sum
-    acceptable: list[tuple[tuple[int, ...], float]] = []
-    best_residual = float("inf")
+    candidates: list[tuple[tuple[int, ...], float]] = []
     best_signs: tuple[int, ...] = ()
+    best_signed_residual = 0.0
+    best_abs_residual = float("inf")
 
     for signs in itertools.product([1, -1], repeat=len(Q_present)):
         adj_from_q = sum(sign * get_income_value(row, f) for sign, f in zip(signs, Q_present))
         residual = operate_profit - (base + adj_from_q)
         abs_residual = abs(residual)
-        if abs_residual < tolerance:
-            acceptable.append((signs, residual))
-        if abs_residual < best_residual:
-            best_residual = abs_residual
+        candidates.append((signs, residual))
+        if abs_residual < best_abs_residual:
+            best_abs_residual = abs_residual
+            best_signed_residual = residual
             best_signs = signs
 
-    if len(acceptable) == 1:
-        sign_map = dict(zip(Q_present, acceptable[0][0]))
-        pairs = ", ".join(f"{f}={s:+d}" for f, s in sign_map.items())
-        return sign_map, [f"IS sign {year} resolved: {pairs}"]
-
+    semantic_signs = tuple(1 for _ in Q_present)
+    semantic_residual = next(residual for signs, residual in candidates if signs == semantic_signs)
+    semantic_abs_residual = abs(semantic_residual)
     values_str = ", ".join(f"{f}={get_income_value(row, f):.4f}" for f in Q_present)
-    if not acceptable:
-        best_pairs = ", ".join(f"{f}={s:+d}" for f, s in zip(Q_present, best_signs))
-        return None, [
-            f"IS sign {year} 口径断点/符号不可判: fields={Q_present}, "
-            f"values=[{values_str}], best_signs=({best_pairs}), "
-            f"best_residual={best_residual:.4f}, tolerance={tolerance:.4f}"
+
+    def make_map(signs: tuple[int, ...]) -> dict[str, int]:
+        return dict(zip(Q_present, signs))
+
+    def format_pairs(signs: tuple[int, ...]) -> str:
+        return ", ".join(f"{f}={s:+d}" for f, s in zip(Q_present, signs))
+
+    if semantic_abs_residual < tolerance:
+        sign_map = make_map(semantic_signs)
+        return sign_map, [
+            f"IS sign {year} resolved by semantic reported signs: {format_pairs(semantic_signs)}, "
+            f"residual={semantic_residual:.4f}"
         ]
 
-    options = "; ".join(
-        f"({','.join(f'{f}={s:+d}' for f, s in zip(Q_present, signs))}, residual={residual:.4f})"
-        for signs, residual in acceptable
-    )
+    improvement = semantic_abs_residual - best_abs_residual
+    smallest_disputed = min(abs(get_income_value(row, f)) for f in Q_present)
+    noise_band = 2.0 * smallest_disputed + tolerance
+
+    if best_signs != semantic_signs and best_abs_residual < semantic_abs_residual:
+        if improvement <= noise_band:
+            sign_map = make_map(semantic_signs)
+            return sign_map, [
+                f"IS sign {year} retained semantic reported signs within noise band: "
+                f"fields={Q_present}, values=[{values_str}], semantic=({format_pairs(semantic_signs)}, "
+                f"residual={semantic_residual:.4f}), best=({format_pairs(best_signs)}, "
+                f"residual={best_signed_residual:.4f}), improvement={improvement:.4f}, "
+                f"noise_band={noise_band:.4f}"
+            ]
+        if best_abs_residual < tolerance:
+            sign_map = make_map(best_signs)
+            return sign_map, [
+                f"IS sign {year} overrode semantic signs because residual improvement is material: "
+                f"fields={Q_present}, values=[{values_str}], semantic=({format_pairs(semantic_signs)}, "
+                f"residual={semantic_residual:.4f}), best=({format_pairs(best_signs)}, "
+                f"residual={best_signed_residual:.4f}), improvement={improvement:.4f}, "
+                f"noise_band={noise_band:.4f}"
+            ]
+
     return None, [
-        f"IS sign {year} 口径断点/符号歧义: fields={Q_present}, "
-        f"values=[{values_str}], acceptable=[{options}]"
+        f"IS sign {year} 口径断点/符号不可判: fields={Q_present}, "
+        f"values=[{values_str}], semantic=({format_pairs(semantic_signs)}, "
+        f"residual={semantic_residual:.4f}), best=({format_pairs(best_signs)}, "
+        f"residual={best_signed_residual:.4f}), tolerance={tolerance:.4f}"
     ]
 
 

@@ -166,6 +166,125 @@ python -m src.init 000333.SZ 600519.SH   # 批量
 python -m src.init 美的集团 --force  # 全量重拉并重跑财务费用分析
 ```
 
+### 3.0a webka.py（网页端核心假设打包器）
+
+`webka.py` 是 `/ka` 的网页端前置打包器，用于把生成 `核心假设.md` 所需的源文件一键汇总到 `companies/{公司}/WEBCLAUDE/核心假设部分/`，方便用户在 Claude.ai 网页端拖拽上传。
+
+与 `/ka` 的区别：
+- `/ka` 在 Claude Code 本地执行，直接读取文件系统并调用核心假设生成修改器 skill。
+- `/webka` 只负责**复制源文件和执行 skill 到固定文件夹**，本身不做判断、不生成核心假设；生成工作交给网页端完成。
+
+**复制清单**（按阅读顺序加序号前缀）：
+
+| 序号文件 | 来源 | 是否必须 |
+|---|---|---|
+| `00_核心观点.md` | `companies/{公司}/核心观点.md` | **必须**，不存在则报错 |
+| `01_核心假设_现有底稿.md` | `companies/{公司}/*核心假设*.md` 最新一份 | 可选，init 模式无则跳过 |
+| `02_活跃素材_xxx` | `active_vore/` 中时间最新文件 | 可选 |
+| `03_最新年报_202X_年度报告.md` | `annuals/` 最新一年年报 Markdown | 可选，**永远不打包 PDF** |
+| `04_核心假设生成修改器_skill_vN.md` | `D:\MKA\skills\` 最新版 | 可选，网页端执行时需要 |
+
+**关键纪律**：
+- 每次执行先清空 `WEBCLAUDE/核心假设部分/` 再复制，防止过时文件污染。
+- 所有 skill（包括 `/ka`、`/webka` 及核心假设生成修改器）**均不读取 PDF**；年报只打包已生成的 Markdown。
+- 若仅有 PDF，报告会提示用户先运行 `python -m src.report_downloader --ticker ... --force-markdown` 生成年报 Markdown。
+
+**退出码语义**：
+
+| 码 | 含义 |
+|----|------|
+| 0 | 成功 |
+| 2 | 输入无法解析为唯一公司目录 |
+| 3 | 缺少 `核心观点.md` |
+| 1 | 其他 IO 异常 |
+
+**CLI**：
+```bash
+python -m src.webka 新乳业
+python -m src.webka 002946
+python -m src.webka 002946.SZ
+```
+
+配套 skill 文件同时部署于：
+- `D:\MKA\.claude\skills\webka\SKILL.md`
+- `C:\Users\Sheld\.claude\skills\webka\SKILL.md`
+
+### 3.0b `/comp` skill（yaml1 compiler 启动器）
+
+`/comp` 是 `/ka` 的 compiler 兄弟。它不负责生成 `核心假设.md`，而是把已有的 `核心假设.md` 编译成机器可读的 `yaml1_公司名_YYYYMMDD.yaml`，供 `forecast.py` 使用。
+
+**执行顺序**（必须遵守）：
+1. 解析公司目录。
+2. **先动态加载最新版 `yaml1compiler` skill**：扫描 `D:\MKA\skills\`，匹配 `yaml1compiler_v*.md`，取版本号最大。
+3. 再读取四份输入材料：
+   - `companies/{公司}/*核心假设*.md` 最新一份（语义层：判断、历史、旋钮、时间轴、覆盖项）
+   - `companies/{公司}/defaults.yaml`（目标命名空间）
+   - `docs/数据格式参考.md`（中文科目 ↔ TuShare 字段字典）
+   - `docs/yaml1算法模板契约.md`（cleaner/calc 支持的算法模板硬边界）
+4. 按加载到的 compiler skill 执行编译。
+5. 输出：`companies/{公司}/yaml1_公司名_YYYYMMDD.yaml`。
+
+**关键纪律**：
+- 所有 skill 均不读取 PDF。
+- `defaults.yaml` 是目标命名空间，compiler 只把 `核心假设.md` 的覆盖项落到 `defaults.yaml` 已有的真实路径上。
+- `docs/数据格式参考.md` 和 `docs/yaml1算法模板契约.md` 是只读契约，compiler 不能改写。
+
+**退出码语义**：
+
+| 码 | 含义 |
+|----|------|
+| 0 | 编译成功 |
+| 2 | 输入无法解析为唯一公司目录 |
+| 3 | 缺少 `核心假设.md` 或 `defaults.yaml` |
+| 1 | compiler 执行异常或其他 IO 错误 |
+
+配套 skill 文件同时部署于：
+- `D:\MKA\.claude\skills\comp\SKILL.md`
+- `C:\Users\Sheld\.claude\skills\comp\SKILL.md`
+
+### 3.0c webcomp.py（网页端 yaml1 compiler 打包器）
+
+`webcomp.py` 是 `/comp` 的网页端前置打包器，用于把编译 yaml1 所需的四份输入材料一键汇总到 `companies/{公司}/WEBCLAUDE/yaml1编译部分/`，方便用户在 Claude.ai 网页端上传后执行 compiler。
+
+与 `/comp` 的区别：
+- `/comp` 在 Claude Code 本地执行，动态加载 `yaml1compiler` skill 后直接编译。
+- `/webcomp` 只负责**复制输入材料到固定文件夹**，本身不执行编译；编译工作交给网页端完成。
+
+**复制清单**（按阅读顺序加序号前缀）：
+
+| 序号文件 | 来源 | 是否必须 |
+|---|---|---|
+| `00_核心假设.md` | `companies/{公司}/*核心假设*.md` 最新一份 | **必须**，不存在则报错 |
+| `01_defaults.yaml` | `companies/{公司}/defaults.yaml` | **必须**，不存在则报错 |
+| `02_数据格式参考.md` | `D:\MKA\docs\数据格式参考.md` | 可选 |
+| `03_yaml1算法模板契约.md` | `D:\MKA\docs\yaml1算法模板契约.md` | 可选 |
+| `04_yaml1compiler_skill_vN.md` | `D:\MKA\skills\` 最新版 | 可选，网页端执行时需要 |
+
+**关键纪律**：
+- 每次执行先清空 `WEBCLAUDE/yaml1编译部分/` 再复制，防止过时文件污染。
+- 所有 skill（包括 `/comp`、`/webcomp` 及 yaml1compiler）**均不读取 PDF**。
+- `defaults.yaml` 是目标命名空间；`docs/数据格式参考.md` 和 `docs/yaml1算法模板契约.md` 是只读契约。
+
+**退出码语义**：
+
+| 码 | 含义 |
+|----|------|
+| 0 | 成功 |
+| 2 | 输入无法解析为唯一公司目录 |
+| 3 | 缺少 `*核心假设*.md` 或 `defaults.yaml` |
+| 1 | 其他 IO 异常 |
+
+**CLI**：
+```bash
+python -m src.webcomp 新乳业
+python -m src.webcomp 002946
+python -m src.webcomp 002946.SZ
+```
+
+配套 skill 文件同时部署于：
+- `D:\MKA\.claude\skills\webcomp\SKILL.md`
+- `C:\Users\Sheld\.claude\skills\webcomp\SKILL.md`
+
 ### 3.1 data_fetcher.py（阶段①）
 
 | 组件 | 职责 |
@@ -289,6 +408,8 @@ companies/{公司名}_{代码}/
 | `yaml1_cleaner.py` | 理解层 clean.py：读取 `yaml1*.yaml + defaults.yaml`，折叠 decomposition、展开 fade、resolve 到标准参数并做历史回测硬闸；支持无 yaml1 的恒等清洗（`--defaults-only`），中间产物默认写入 `.modelking/` |
 | `forecast.py` | **编排器**：读取 `yaml1*.yaml + defaults.yaml`，调用 `yaml1_cleaner.py` 生成逐年标准参数，再调用 `calc.py` 生成 `forecast/` 与内部产物；用户正式入口 |
 | `calc.py` | 纯算账核：只吃清洗后的逐年标准参数表（`--forecast-params`），按 IS→BS→CF→DCF 顺序生成预测；永远看不到 yaml1，也不直接读取 `defaults.yaml` |
+
+**Formula/DAG 设计边界**：复杂 Excel 关系（滞后链、分段函数、中间变量复用、DAG）未来只允许在 `yaml1_cleaner.py` 内求值，先压平成收入折叠或 YAML2 标准路径覆盖，再交给 `calc.py`。`calc.py` 仍保持纯算账核，不直接理解 formula。完整设计见 `docs/formula_DAG开发文档.md`；在该设计完成代码、测试、skill、契约同步前，`docs/yaml1算法模板契约.md` 仍以“formula/DAG 未实现、不得生成”为准。
 
 **CLI**：
 ```bash
@@ -746,6 +867,7 @@ python -m src.financial_expense_analyzer --ticker 002946.SZ --latest-only  # 只
 |---|---|---|---|---|
 | 核心假设.md | `skills/核心假设生成修改器_skill_v14.md` | compiler skill | v14 | `skills/...` |
 | YAML1 (drivers) | `skills/yaml1compiler_v3 (2).md` | `src/yaml1_cleaner.py` | 定稿 | `companies/{公司}/yaml1*.yaml` |
+| YAML1 formula/DAG 开发契约 | `docs/formula_DAG开发文档.md` | `src/yaml1_cleaner.py`, compiler/core-assumption skills, tests | 设计中 | `docs/formula_DAG开发文档.md` |
 | YAML2 / defaults.yaml | `src/yaml2_schema.py` | `src/yaml1_cleaner.py`, `src/defaults_gen.py` | 稳定 | `companies/{公司}/defaults.yaml` |
 | 逐年标准参数表 | `src/yaml1_cleaner.py` | `src/calc.py` | 稳定 | `companies/{公司}/.modelking/forecast_params.yaml` |
 | yaml1 清洗报告 | `src/yaml1_cleaner.py` | 工作台 / 人 | 稳定 | `companies/{公司}/.modelking/yaml1_clean_report.json` |
@@ -816,6 +938,8 @@ MKA/
 ├── src/                           # 核心 Python 源码
 │   ├── __init__.py                # 使 src 成为 package
 │   ├── init.py                    # 一键编排入口
+│   ├── webka.py                   # 网页端核心假设打包器：汇总源文件到 WEBCLAUDE/核心假设部分/
+│   ├── webcomp.py                 # 网页端 yaml1 compiler 打包器：汇总输入材料到 WEBCLAUDE/yaml1编译部分/
 │   ├── data_fetcher.py            # 阶段①：TuShare 拉取 + 标准化 + 入库
 │   ├── clean.py                   # 阶段②：EAV→宽表 + 配平校验 + clean 表写入
 │   ├── report_downloader.py       # 巨潮资讯网年报 PDF + Markdown 批量下载
@@ -1012,6 +1136,10 @@ companies/美的集团_000333/
 
 | 日期 | 变更 |
 |------|------|
+| 2026-06-16 | 标记 YAML1 formula/DAG 设计入口：formula 只允许在 `yaml1_cleaner.py` 内求值并压平成标准参数，`calc.py` 仍保持纯算账核；新增 `docs/formula_DAG开发文档.md` 作为一次性完整上线的设计契约，代码、测试、skill、算法模板契约未同步完成前，compiler 仍不得生成 formula |
+| 2026-06-16 | 新增 `src/webcomp.py` 及配套 `/webcomp` skill：一键打包网页端编译 yaml1 所需四份输入材料到 `companies/{公司}/WEBCLAUDE/yaml1编译部分/`。复制清单：`00_核心假设.md`（`*核心假设*.md` 最新一份，必须）、`01_defaults.yaml`（必须）、`02_数据格式参考.md`、`03_yaml1算法模板契约.md`。所有 skill 均不读取 PDF。skill 文件同时部署于项目 `.claude/skills/webcomp/` 与全局 `C:\Users\Sheld\.claude\skills\webcomp/` |
+| 2026-06-16 | 新增 `/comp` skill：启动 yaml1 compiler，先动态加载 `D:\MKA\skills\yaml1compiler_v*.md` 最新版，再读取 `*核心假设*.md`、`defaults.yaml`、`docs/数据格式参考.md`、`docs/yaml1算法模板契约.md` 四份输入，编译输出 `yaml1_公司名_YYYYMMDD.yaml`。skill 文件同时部署于项目 `.claude/skills/comp/` 与全局 `C:\Users\Sheld\.claude\skills\comp/`。所有 skill 均不读取 PDF |
+| 2026-06-16 | 新增 `src/webka.py` 及配套 `/webka` skill：一键打包网页端生成 `核心假设.md` 所需源文件到 `companies/{公司}/WEBCLAUDE/核心假设部分/`。每次执行先清空旧文件夹，再按阅读顺序复制 `00_核心观点.md`、`01_核心假设_现有底稿.md`、`02_活跃素材`、`03_最新年报.md`；年报仅打包 Markdown，**所有 skill 均不读取 PDF**。skill 文件同时部署于项目 `.claude/skills/webka/` 与全局 `C:\Users\Sheld\.claude\skills\webka/`，供 Claude Code 与网页端两端调用 |
 | 2026-06-15 | `forecast.py` 在生成预测三表后自动拼接历史数据：新增 `forecast/full_is.csv`、`full_bs.csv`、`full_cf.csv`，覆盖 2015–2036 完整年度序列。实现规则：BS/CF 直接按 `forecast_*.csv` 列名从 `clean_annual` 投影；IS 将 `income.credit_impa_loss` 重命名为 `credit_impa_loss` 以匹配预测引擎口径；历史行 `total_opcost` 统一覆盖为 `total_cogs`，保证与预测定义一致。同步更新 `docs/ARCHITECTURE.md` 目录契约与项目结构树，并在 `tests/test_forecast_pipeline.py` 中断言 `full_*.csv` 存在 |
 | 2026-06-15 | 重构 `calc.py` 终值计算：拆分为 `build_forecast_statements()`（三表 + 显式期 FCFF）与 `value_from_statements()`（贴现 + 终值 + 每股价值）；终值改用稳态 terminal FCFF，`ΔNWC = 0`、`CAPEX = D&A × terminal_capex_da_ratio`（默认 1.0）；DCF 层三个参数（WACC、terminal growth、terminal capex/D&A ratio）可在不重跑三表的情况下实时调节。`forecast.py` 跑完后将最小 build 状态写入 `.modelking/forecast_build.json`，工作台新增 `POST /api/companies/{id}/dcf-sensitivity` 端点；前端 DCF tab 增加三个 sensitivity 滑块。`yaml2_schema.py` 与 `defaults_gen.py` 支持 `model.terminal_capex_da_ratio`（默认 1.0），旧 `defaults.yaml` 缺失该字段时向后兼容。更新回归基线 `tests/fixtures/calc_scalar_baseline.json` 与 `tests/test_forecast_pipeline.py` |
 | 2026-06-10 | 初始版本：从已有代码和规格书提炼 |
