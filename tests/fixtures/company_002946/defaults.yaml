@@ -1,0 +1,756 @@
+version: 2
+ticker: 002946.SZ
+name: 新乳业
+generated_at: '2026-06-15T17:47:46'
+base_period: '2024'
+unit: million_cny
+model:
+  forecast_years:
+    value: 8
+    source: model_default
+  revenue_yoy:
+    value: 0.0
+    source: default_flat_no_forecast
+  wacc:
+    value: 0.08
+    source: model_default
+  terminal_growth:
+    value: 0.025
+    source: model_default
+  terminal_capex_da_ratio:
+    value: 1.0
+    source: model_default
+  plug:
+    value: cash
+    source: model_default
+market:
+  total_shares:
+    value: 860.677252
+    source: meta.total_share
+  net_debt:
+    value: 2709.79027833
+    source: interest_bearing_debt - clean_annual.money_cap
+  total_mv:
+    value: 13899.93762
+    source: meta.total_mv
+  close:
+    value: 16.15
+    source: meta.close
+income:
+  revenue:
+    value: 10665.42345785
+    source: clean_annual.revenue
+  revenue_items_abs:
+    int_income:
+      value: 0.0
+      source: clean_annual.int_income
+    prem_earned:
+      value: 0.0
+      source: clean_annual.prem_earned
+    comm_income:
+      value: 0.0
+      source: clean_annual.comm_income
+    n_commis_income:
+      value: 0.0
+      source: clean_annual.n_commis_income
+    n_oth_income:
+      value: 0.0
+      source: clean_annual.n_oth_income
+    n_oth_b_income:
+      value: 0.0
+      source: clean_annual.n_oth_b_income
+    prem_income:
+      value: 0.0
+      source: clean_annual.prem_income
+    reins_income:
+      value: 0.0
+      source: clean_annual.reins_income
+    n_sec_tb_income:
+      value: 0.0
+      source: clean_annual.n_sec_tb_income
+    n_sec_uw_income:
+      value: 0.0
+      source: clean_annual.n_sec_uw_income
+    n_asset_mg_income:
+      value: 0.0
+      source: clean_annual.n_asset_mg_income
+    oth_b_income:
+      value: 0.0
+      source: clean_annual.oth_b_income
+  gpm:
+    value: 0.2836011625824131
+    source: 1 - clean_annual.oper_cost / clean_annual.revenue
+  cost_rates:
+    biz_tax_surchg:
+      value: 0.004974325223903936
+      source: clean_annual.biz_tax_surchg / clean_annual.revenue
+    sell_exp:
+      value: 0.1555765530292868
+      source: clean_annual.sell_exp / clean_annual.revenue
+    admin_exp:
+      value: 0.035705654318836315
+      source: clean_annual.admin_exp / clean_annual.revenue
+    rd_exp:
+      value: 0.0046039707278438
+      source: clean_annual.rd_exp / clean_annual.revenue
+    other_bus_cost:
+      value: 0.0
+      source: clean_annual.other_bus_cost / clean_annual.revenue
+  cost_abs:
+    assets_impair_loss:
+      value: -97.65333397
+      source: clean_annual.assets_impair_loss
+    credit_impa_loss:
+      value: 8.56748016
+      source: clean_annual.income.credit_impa_loss
+    oth_impair_loss_assets:
+      value: 0.0
+      source: clean_annual.oth_impair_loss_assets
+    int_exp:
+      value: 0.0
+      source: clean_annual.int_exp
+    comm_exp:
+      value: 0.0
+      source: clean_annual.comm_exp
+    prem_refund:
+      value: 0.0
+      source: clean_annual.prem_refund
+    compens_payout:
+      value: 0.0
+      source: clean_annual.compens_payout
+    reser_insur_liab:
+      value: 0.0
+      source: clean_annual.reser_insur_liab
+    div_payt:
+      value: 0.0
+      source: clean_annual.div_payt
+    reins_exp:
+      value: 0.0
+      source: clean_annual.reins_exp
+    oper_exp:
+      value: 0.0
+      source: clean_annual.oper_exp
+    insurance_exp:
+      value: 0.0
+      source: clean_annual.insurance_exp
+    out_prem:
+      value: 0.0
+      source: clean_annual.out_prem
+    une_prem_reser:
+      value: 0.0
+      source: clean_annual.une_prem_reser
+    compens_payout_refu:
+      value: 0.0
+      source: clean_annual.compens_payout_refu
+    insur_reser_refu:
+      value: 0.0
+      source: clean_annual.insur_reser_refu
+    reins_cost_refund:
+      value: 0.0
+      source: clean_annual.reins_cost_refund
+  financial_expense:
+    interest_mode:
+      value: circular_average_balance
+      source: model_default
+      note: Engine computes fin_exp from average interest-bearing debt and cash.
+    interest_expense_rate:
+      value: 0.0354419834694995
+      source: annual_report.fin_exp_note
+    cash_interest_rate:
+      value: 0.01931566649545774
+      source: annual_report.fin_exp_note
+    other_fin_exp_abs:
+      value: -1.4712140700000118
+      source: annual_report.fin_exp_note
+      note: 财务费用 = 利息支出 - 利息收入 + 其他财务费用。
+    base_interest_expense:
+      value: 110.09232165
+      source: annual_report.fin_exp_note
+    base_interest_income:
+      value: 7.65824373
+      source: annual_report.fin_exp_note
+    base_fin_exp:
+      value: 100.96286384999999
+      source: annual_report.fin_exp_note
+  operating_adjustments_abs:
+    oth_income:
+      value: 53.883758840000006
+      source: clean_annual.oth_income
+    invest_income:
+      value: -2.606841
+      source: clean_annual.invest_income
+    fv_value_chg_gain:
+      value: 23.5531805
+      source: clean_annual.fv_value_chg_gain
+    asset_disp_income:
+      value: -87.23791206
+      source: clean_annual.asset_disp_income
+    net_expo_hedging_benefits:
+      value: 0.0
+      source: clean_annual.net_expo_hedging_benefits
+    forex_gain:
+      value: 0.0
+      source: clean_annual.forex_gain
+  below_line_abs:
+    non_oper_income:
+      value: 10.846880619999999
+      source: clean_annual.non_oper_income
+    non_oper_exp:
+      value: 47.39275456
+      source: clean_annual.non_oper_exp
+  effective_tax_rate:
+    value: 0.14608023981983087
+    source: clean_annual.income_tax / clean_annual.total_profit
+  minority_ratio:
+    value: 0.021427716959039892
+    source: clean_annual.minority_gain / clean_annual.n_income
+balance_sheet:
+  base:
+    acc_exp:
+      value: 0.0
+      source: clean_annual.acc_exp
+    acc_receivable:
+      value: 0.0
+      source: clean_annual.acc_receivable
+    accounts_pay:
+      value: 990.6431818899999
+      source: clean_annual.accounts_pay
+    accounts_receiv:
+      value: 608.1074137100001
+      source: clean_annual.accounts_receiv
+    accounts_receiv_bill:
+      value: 609.82125103
+      source: clean_annual.accounts_receiv_bill
+    acct_payable:
+      value: 990.6431818899999
+      source: clean_annual.acct_payable
+    acting_trading_sec:
+      value: 0.0
+      source: clean_annual.acting_trading_sec
+    acting_uw_sec:
+      value: 0.0
+      source: clean_annual.acting_uw_sec
+    adv_receipts:
+      value: 0.0
+      source: clean_annual.adv_receipts
+    agency_bus_liab:
+      value: 0.0
+      source: clean_annual.agency_bus_liab
+    amor_exp:
+      value: 0.0
+      source: clean_annual.amor_exp
+    bond_payable:
+      value: 725.2704623999999
+      source: clean_annual.bond_payable
+    cap_rese:
+      value: 523.03376682
+      source: clean_annual.cap_rese
+    cash_reser_cb:
+      value: 0.0
+      source: clean_annual.cash_reser_cb
+    cb_borr:
+      value: 0.0
+      source: clean_annual.cb_borr
+    cip:
+      value: 35.47019247
+      source: clean_annual.cip
+    cip_total:
+      value: 35.47019247
+      source: clean_annual.cip_total
+    client_depos:
+      value: 0.0
+      source: clean_annual.client_depos
+    client_prov:
+      value: 0.0
+      source: clean_annual.client_prov
+    comm_payable:
+      value: 0.0
+      source: clean_annual.comm_payable
+    const_materials:
+      value: 0.0
+      source: clean_annual.const_materials
+    contract_assets:
+      value: 0.0
+      source: clean_annual.contract_assets
+    contract_liab:
+      value: 409.27665145
+      source: clean_annual.contract_liab
+    cost_fin_assets:
+      value: 0.0
+      source: clean_annual.cost_fin_assets
+    debt_invest:
+      value: 0.0
+      source: clean_annual.debt_invest
+    decr_in_disbur:
+      value: 0.0
+      source: clean_annual.decr_in_disbur
+    defer_inc_non_cur_liab:
+      value: 109.77557405
+      source: clean_annual.defer_inc_non_cur_liab
+    defer_tax_assets:
+      value: 21.57354694
+      source: clean_annual.defer_tax_assets
+    defer_tax_liab:
+      value: 13.406517789999999
+      source: clean_annual.defer_tax_liab
+    deferred_inc:
+      value: 0.0
+      source: clean_annual.deferred_inc
+    depos:
+      value: 0.0
+      source: clean_annual.depos
+    depos_ib_deposits:
+      value: 0.0
+      source: clean_annual.depos_ib_deposits
+    depos_in_oth_bfi:
+      value: 0.0
+      source: clean_annual.depos_in_oth_bfi
+    depos_oth_bfi:
+      value: 0.0
+      source: clean_annual.depos_oth_bfi
+    depos_received:
+      value: 0.0
+      source: clean_annual.depos_received
+    deriv_assets:
+      value: 0.0
+      source: clean_annual.deriv_assets
+    deriv_liab:
+      value: 0.0
+      source: clean_annual.deriv_liab
+    div_payable:
+      value: 3.81566854
+      source: clean_annual.div_payable
+    div_receiv:
+      value: 0.0
+      source: clean_annual.div_receiv
+    estimated_liab:
+      value: 0.23908059
+      source: clean_annual.estimated_liab
+    fa_avail_for_sale:
+      value: 0.0
+      source: clean_annual.fa_avail_for_sale
+    fair_value_fin_assets:
+      value: 0.0
+      source: clean_annual.fair_value_fin_assets
+    fix_assets:
+      value: 2912.82651214
+      source: clean_annual.fix_assets
+    fix_assets_total:
+      value: 2912.82651214
+      source: clean_annual.fix_assets_total
+    fixed_assets_disp:
+      value: 0.0
+      source: clean_annual.fixed_assets_disp
+    forex_differ:
+      value: 0.0
+      source: clean_annual.forex_differ
+    goodwill:
+      value: 1002.79560259
+      source: clean_annual.goodwill
+    hfs_assets:
+      value: 0.0
+      source: clean_annual.hfs_assets
+    hfs_sales:
+      value: 0.0
+      source: clean_annual.hfs_sales
+    htm_invest:
+      value: 0.0
+      source: clean_annual.htm_invest
+    indem_payable:
+      value: 0.0
+      source: clean_annual.indem_payable
+    indep_acct_assets:
+      value: 0.0
+      source: clean_annual.indep_acct_assets
+    indept_acc_liab:
+      value: 0.0
+      source: clean_annual.indept_acc_liab
+    int_payable:
+      value: 0.0
+      source: clean_annual.int_payable
+    int_receiv:
+      value: 0.0
+      source: clean_annual.int_receiv
+    intan_assets:
+      value: 661.92026415
+      source: clean_annual.intan_assets
+    inventories:
+      value: 741.64365705
+      source: clean_annual.inventories
+    invest_as_receiv:
+      value: 0.0
+      source: clean_annual.invest_as_receiv
+    invest_loss_unconf:
+      value: 0.0
+      source: clean_annual.invest_loss_unconf
+    invest_real_estate:
+      value: 18.47988253
+      source: clean_annual.invest_real_estate
+    lease_liab:
+      value: 68.60881891
+      source: clean_annual.lease_liab
+    lending_funds:
+      value: 0.0
+      source: clean_annual.lending_funds
+    loan_oth_bank:
+      value: 0.0
+      source: clean_annual.loan_oth_bank
+    loanto_oth_bank_fi:
+      value: 0.0
+      source: clean_annual.loanto_oth_bank_fi
+    long_pay_total:
+      value: 11.0
+      source: clean_annual.long_pay_total
+    lt_amor_exp:
+      value: 13.42188419
+      source: clean_annual.lt_amor_exp
+    lt_borr:
+      value: 1077.26
+      source: clean_annual.lt_borr
+    lt_eqt_invest:
+      value: 515.34814295
+      source: clean_annual.lt_eqt_invest
+    lt_payable:
+      value: 11.0
+      source: clean_annual.lt_payable
+    lt_payroll_payable:
+      value: 0.0
+      source: clean_annual.lt_payroll_payable
+    lt_rec:
+      value: 12.33839024
+      source: clean_annual.lt_rec
+    minority_int:
+      value: 87.02775554
+      source: clean_annual.minority_int
+    money_cap:
+      value: 396.4783577
+      source: clean_annual.money_cap
+    nca_within_1y:
+      value: 3.80797669
+      source: clean_annual.nca_within_1y
+    non_cur_liab_due_1y:
+      value: 864.05331025
+      source: clean_annual.non_cur_liab_due_1y
+    notes_payable:
+      value: 0.0
+      source: clean_annual.notes_payable
+    notes_receiv:
+      value: 1.71383732
+      source: clean_annual.notes_receiv
+    oil_and_gas_assets:
+      value: 0.0
+      source: clean_annual.oil_and_gas_assets
+    ordin_risk_reser:
+      value: 0.0
+      source: clean_annual.ordin_risk_reser
+    oth_assets:
+      value: 0.0
+      source: clean_annual.oth_assets
+    oth_comp_income:
+      value: -622.90217783
+      source: clean_annual.oth_comp_income
+    oth_cur_assets:
+      value: 13.30161489
+      source: clean_annual.oth_cur_assets
+    oth_cur_liab:
+      value: 44.61115501
+      source: clean_annual.oth_cur_liab
+    oth_debt_invest:
+      value: 0.0
+      source: clean_annual.oth_debt_invest
+    oth_eq_invest:
+      value: 570.29261528
+      source: clean_annual.oth_eq_invest
+    oth_eq_ppbond:
+      value: 0.0
+      source: clean_annual.oth_eq_ppbond
+    oth_eqt_tools:
+      value: 96.39865709
+      source: clean_annual.oth_eqt_tools
+    oth_eqt_tools_p_shr:
+      value: 0.0
+      source: clean_annual.oth_eqt_tools_p_shr
+    oth_illiq_fin_assets:
+      value: 0.0
+      source: clean_annual.oth_illiq_fin_assets
+    oth_liab:
+      value: 0.0
+      source: clean_annual.oth_liab
+    oth_nca:
+      value: 27.69950561
+      source: clean_annual.oth_nca
+    oth_ncl:
+      value: 0.0
+      source: clean_annual.oth_ncl
+    oth_pay_total:
+      value: 737.92765478
+      source: clean_annual.oth_pay_total
+    oth_payable:
+      value: 734.11198624
+      source: clean_annual.oth_payable
+    oth_rcv_total:
+      value: 32.91578612
+      source: clean_annual.oth_rcv_total
+    oth_receiv:
+      value: 32.91578612
+      source: clean_annual.oth_receiv
+    payable_to_reinsurer:
+      value: 0.0
+      source: clean_annual.payable_to_reinsurer
+    payables:
+      value: 0.0
+      source: clean_annual.payables
+    payroll_payable:
+      value: 250.67881979
+      source: clean_annual.payroll_payable
+    ph_invest:
+      value: 0.0
+      source: clean_annual.ph_invest
+    ph_pledge_loans:
+      value: 0.0
+      source: clean_annual.ph_pledge_loans
+    pledge_borr:
+      value: 0.0
+      source: clean_annual.pledge_borr
+    policy_div_payable:
+      value: 0.0
+      source: clean_annual.policy_div_payable
+    prec_metals:
+      value: 0.0
+      source: clean_annual.prec_metals
+    prem_receiv_adva:
+      value: 0.0
+      source: clean_annual.prem_receiv_adva
+    premium_receiv:
+      value: 0.0
+      source: clean_annual.premium_receiv
+    prepayment:
+      value: 45.996685060000004
+      source: clean_annual.prepayment
+    produc_bio_assets:
+      value: 968.0441210700001
+      source: clean_annual.produc_bio_assets
+    pur_resale_fa:
+      value: 0.0
+      source: clean_annual.pur_resale_fa
+    qa_bs_current_asset_plug:
+      value: 0.0
+      source: clean_annual.qa_bs_current_asset_plug
+    qa_bs_current_liab_plug:
+      value: 0.0
+      source: clean_annual.qa_bs_current_liab_plug
+    qa_bs_equity_plug:
+      value: 0.0
+      source: clean_annual.qa_bs_equity_plug
+    qa_bs_noncurrent_asset_plug:
+      value: 0.0
+      source: clean_annual.qa_bs_noncurrent_asset_plug
+    qa_bs_noncurrent_liab_plug:
+      value: 0.0
+      source: clean_annual.qa_bs_noncurrent_liab_plug
+    qa_cf_cash_reconcile_plug:
+      value: 0.0
+      source: clean_annual.qa_cf_cash_reconcile_plug
+    r_and_d:
+      value: 0.0
+      source: clean_annual.r_and_d
+    receiv_financing:
+      value: 6.554094780000001
+      source: clean_annual.receiv_financing
+    refund_cap_depos:
+      value: 0.0
+      source: clean_annual.refund_cap_depos
+    refund_depos:
+      value: 0.0
+      source: clean_annual.refund_depos
+    reinsur_receiv:
+      value: 0.0
+      source: clean_annual.reinsur_receiv
+    reinsur_res_receiv:
+      value: 0.0
+      source: clean_annual.reinsur_res_receiv
+    reser_lins_liab:
+      value: 0.0
+      source: clean_annual.reser_lins_liab
+    reser_lthins_liab:
+      value: 0.0
+      source: clean_annual.reser_lthins_liab
+    reser_outstd_claims:
+      value: 0.0
+      source: clean_annual.reser_outstd_claims
+    reser_une_prem:
+      value: 0.0
+      source: clean_annual.reser_une_prem
+    rr_reins_lins_liab:
+      value: 0.0
+      source: clean_annual.rr_reins_lins_liab
+    rr_reins_lthins_liab:
+      value: 0.0
+      source: clean_annual.rr_reins_lthins_liab
+    rr_reins_outstd_cla:
+      value: 0.0
+      source: clean_annual.rr_reins_outstd_cla
+    rr_reins_une_prem:
+      value: 0.0
+      source: clean_annual.rr_reins_une_prem
+    rsrv_insur_cont:
+      value: 0.0
+      source: clean_annual.rsrv_insur_cont
+    sett_rsrv:
+      value: 0.0
+      source: clean_annual.sett_rsrv
+    sold_for_repur_fa:
+      value: 0.0
+      source: clean_annual.sold_for_repur_fa
+    special_rese:
+      value: 0.0
+      source: clean_annual.special_rese
+    specific_payables:
+      value: 0.0
+      source: clean_annual.specific_payables
+    st_bonds_payable:
+      value: 0.0
+      source: clean_annual.st_bonds_payable
+    st_borr:
+      value: 371.07604447000006
+      source: clean_annual.st_borr
+    st_fin_payable:
+      value: 0.0
+      source: clean_annual.st_fin_payable
+    surplus_rese:
+      value: 150.95515293
+      source: clean_annual.surplus_rese
+    taxes_payable:
+      value: 62.43248325
+      source: clean_annual.taxes_payable
+    time_deposits:
+      value: 0.0
+      source: clean_annual.time_deposits
+    total_assets:
+      value: 8878.666870930001
+      source: clean_annual.total_assets
+    total_cur_assets:
+      value: 1998.12562447
+      source: clean_annual.total_cur_assets
+    total_cur_liab:
+      value: 3730.69930089
+      source: clean_annual.total_cur_liab
+    total_hldr_eqy_exc_min_int:
+      value: 3055.37936076
+      source: clean_annual.total_hldr_eqy_exc_min_int
+    total_hldr_eqy_inc_min_int:
+      value: 3142.4071163000003
+      source: clean_annual.total_hldr_eqy_inc_min_int
+    total_liab:
+      value: 5736.25975463
+      source: clean_annual.total_liab
+    total_liab_hldr_eqy:
+      value: 8878.666870930001
+      source: clean_annual.total_liab_hldr_eqy
+    total_nca:
+      value: 6880.54124646
+      source: clean_annual.total_nca
+    total_ncl:
+      value: 2005.56045374
+      source: clean_annual.total_ncl
+    total_share:
+      value: 860.673916
+      source: clean_annual.total_share
+    trad_asset:
+      value: 147.60620115
+      source: clean_annual.trad_asset
+    trading_fl:
+      value: 0.0
+      source: clean_annual.trading_fl
+    transac_seat_fee:
+      value: 0.0
+      source: clean_annual.transac_seat_fee
+    treasury_share:
+      value: 0.0
+      source: clean_annual.treasury_share
+    undistr_porfit:
+      value: 2047.22004575
+      source: clean_annual.undistr_porfit
+    use_right_assets:
+      value: 120.3305863
+      source: clean_annual.use_right_assets
+  revenue_pct:
+    notes_receiv:
+      value: 0.00016069097741623902
+      source: clean_annual.notes_receiv / clean_annual.revenue
+    accounts_receiv:
+      value: 0.057016715380618
+      source: clean_annual.accounts_receiv / clean_annual.revenue
+    receiv_financing:
+      value: 0.0006145180082067941
+      source: clean_annual.receiv_financing / clean_annual.revenue
+    prepayment:
+      value: 0.004312691872177412
+      source: clean_annual.prepayment / clean_annual.revenue
+    oth_receiv:
+      value: 0.0030862146496183625
+      source: clean_annual.oth_receiv / clean_annual.revenue
+    contract_assets:
+      value: 0.0
+      source: clean_annual.contract_assets / clean_annual.revenue
+    oth_cur_assets:
+      value: 0.0012471717548363916
+      source: clean_annual.oth_cur_assets / clean_annual.revenue
+    adv_receipts:
+      value: 0.0
+      source: clean_annual.adv_receipts / clean_annual.revenue
+    contract_liab:
+      value: 0.03837415861334252
+      source: clean_annual.contract_liab / clean_annual.revenue
+    payroll_payable:
+      value: 0.023503878751808448
+      source: clean_annual.payroll_payable / clean_annual.revenue
+    taxes_payable:
+      value: 0.0058537275614732615
+      source: clean_annual.taxes_payable / clean_annual.revenue
+    oth_payable:
+      value: 0.0688310210223933
+      source: clean_annual.oth_payable / clean_annual.revenue
+    oth_cur_liab:
+      value: 0.004182783289037169
+      source: clean_annual.oth_cur_liab / clean_annual.revenue
+  cogs_days:
+    inventories:
+      value: 35.42869662754253
+      source: clean_annual.inventories / clean_annual.oper_cost * 365
+    notes_payable:
+      value: 0.0
+      source: clean_annual.notes_payable / clean_annual.oper_cost * 365
+    acct_payable:
+      value: 47.32353121838681
+      source: clean_annual.acct_payable / clean_annual.oper_cost * 365
+  capex_pct:
+    value: 0.06242805384252604
+    source: clean_annual.c_pay_acq_const_fiolta / clean_annual.revenue
+  depr_rate:
+    value: 0.1460492804452863
+    source: clean_annual.depr_fa_coga_dpba / fixed_assets_base
+  amort_intang_assets:
+    value: 26.050263010000002
+    source: clean_annual.amort_intang_assets
+  lt_amort_deferred_exp:
+    value: 4.94723824
+    source: clean_annual.lt_amort_deferred_exp
+  use_right_asset_dep:
+    value: 16.22792484
+    source: clean_annual.use_right_asset_dep
+  dividend_payout:
+    value: 0.0
+    source: max(clean_annual.distr_profit_shrhder, clean_annual.comshare_payable_dvd) / clean_annual.n_income_attr_p
+    note: Falls back to 0 if no dividend distribution field is present.
+cashflow:
+  capex:
+    value: 665.82162988
+    source: clean_annual.c_pay_acq_const_fiolta
+  da:
+    value: 472.64164225
+    source: depr_fa_coga_dpba + amort_intang_assets + lt_amort_deferred_exp + use_right_asset_dep
+  base_nwc:
+    value: -1041.5211886999996
+    source: operating current assets - operating current liabilities
+review_flags: []

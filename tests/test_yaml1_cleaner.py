@@ -9,6 +9,7 @@ import pytest
 
 from src import yaml1_cleaner
 from src.calc import build_forecast_statements
+from src.yaml1_formula import evaluate_formula_graph
 
 
 def synthetic_clean_annual(revenue: float = 100.0) -> dict[int, dict[str, float]]:
@@ -34,7 +35,8 @@ def synthetic_yaml1(segments: dict[str, object], extra: dict[str, object] | None
 
 
 def company_dir() -> Path:
-    return next(Path("companies").glob("*_002946"))
+    # Frozen snapshot (see tests/conftest.py) — decoupled from the live workspace.
+    return Path(__file__).resolve().parent / "fixtures" / "company_002946"
 
 
 def paths() -> tuple[Path, Path, Path]:
@@ -61,20 +63,20 @@ def test_fold_revenue_uses_structured_unit_factor_and_clean_anchor():
 
     assert fold.base_year == 2024
     assert fold.base_revenue == pytest.approx(10665.42345785)
-    assert fold.segment_base_revenue["low_temp_fresh_milk"] == pytest.approx(2739.3222)
-    assert fold.segment_base_revenue["low_temp_yogurt"] == pytest.approx(2767.5343)
+    assert fold.segment_base_revenue["fresh_milk"] == pytest.approx(2739.3222)
+    assert fold.segment_base_revenue["yogurt"] == pytest.approx(2767.5343)
     assert fold.segment_base_revenue["ambient"] == pytest.approx(4329.5231)
-    assert fold.segment_base_revenue["fringe_business"] == pytest.approx(829.24)
-    assert fold.revenue_by_year[2025] == pytest.approx(10856.504606625)
-    assert fold.revenue_yoy[0] == pytest.approx(10856.504606625 / 10665.42345785 - 1)
+    assert fold.segment_base_revenue["other_business"] == pytest.approx(829.2)
+    assert fold.revenue_by_year[2025] == pytest.approx(10856.464606625)
+    assert fold.revenue_yoy[0] == pytest.approx(10856.464606625 / 10665.42345785 - 1)
     # If this accidentally anchors to the four-line base sum, it will be slightly different.
     segment_sum = sum(fold.segment_base_revenue.values())
-    assert fold.revenue_yoy[0] != pytest.approx(10856.504606625 / segment_sum - 1)
+    assert fold.revenue_yoy[0] != pytest.approx(10856.464606625 / segment_sum - 1)
     assert fold.unit_factors == {
-        "low_temp_fresh_milk": 100.0,
-        "low_temp_yogurt": 100.0,
+        "fresh_milk": 100.0,
+        "yogurt": 100.0,
         "ambient": 100.0,
-        "fringe_business": 1.0,
+        "other_business": 1.0,
     }
 
 
@@ -363,20 +365,104 @@ def test_collect_overlay_rejects_leaf_margin_and_top_level_gpm():
         yaml1_cleaner._collect_explicit_overlay(yaml1, fold, {"warnings": []})
 
 
-def test_fold_revenue_rejects_formula_until_formula_engine_exists():
+def test_fold_revenue_supports_formula_leaf():
     yaml1 = synthetic_yaml1(
         {
             "formula_line": {
                 "kind": "formula",
-                "expr": "x[t]",
-                "inputs": {"x": {"knob": [1, 2]}},
-                "upmount": "revenue",
+                "formula_ref": "retail_revenue",
+                "base": {"base_year": 2024, "revenue": 100, "unit_factor_to_million_cny": 1},
             }
-        }
+        },
+        extra={
+            "formulas": {
+                "nodes": {
+                    "stores": {"kind": "input", "unit": "store", "values": [11, 11]},
+                    "sales_per_store": {"kind": "input", "unit": "million_cny_per_store", "values": [10, 11]},
+                    "retail_revenue": {
+                        "kind": "formula",
+                        "unit": "million_cny",
+                        "expr": "stores * sales_per_store",
+                        "inputs": ["stores", "sales_per_store"],
+                    },
+                }
+            }
+        },
     )
 
-    with pytest.raises(yaml1_cleaner.Yaml1CleanError, match="formula.*not implemented"):
-        yaml1_cleaner.fold_revenue(yaml1, synthetic_clean_annual())
+    formulas = evaluate_formula_graph(yaml1, [2025, 2026])
+    fold = yaml1_cleaner.fold_revenue(yaml1, synthetic_clean_annual(), formulas)
+
+    assert fold.segment_base_revenue["formula_line"] == pytest.approx(100)
+    assert fold.revenue_by_year == pytest.approx({2025: 110, 2026: 121})
+    assert fold.revenue_yoy == pytest.approx([0.10, 0.10])
+    assert formulas.report()["targets"]["income.revenue.segments.formula_line"] == "retail_revenue"
+
+
+def test_clean_yaml1_formula_leaf_and_formula_overlay_reach_calc(tmp_path):
+    base = company_dir()
+    defaults_path = base / "defaults.yaml"
+    clean_path = base / "data.db"
+    base_revenue = 10665.42345785
+    yaml1 = {
+        "meta": {"horizon": [2025, 2026, 2027]},
+        "formulas": {
+            "nodes": {
+                "openings": {"kind": "input", "unit": "store", "values": [20, 25, 25]},
+                "closures": {"kind": "input", "unit": "store", "values": [5, 5, 5]},
+                "stores": {
+                    "kind": "formula",
+                    "unit": "store",
+                    "expr": "lag(stores, 1) + openings - closures",
+                    "inputs": ["stores", "openings", "closures"],
+                    "seeds": {2024: 100},
+                    "history": {2024: 100},
+                },
+                "sales_per_store": {
+                    "kind": "input",
+                    "unit": "million_cny_per_store",
+                    "values": [base_revenue / 115, base_revenue * 1.02 / 135, base_revenue * 1.03 / 155],
+                },
+                "retail_revenue": {
+                    "kind": "formula",
+                    "unit": "million_cny",
+                    "expr": "stores * sales_per_store",
+                    "inputs": ["stores", "sales_per_store"],
+                },
+                "gpm_formula": {"kind": "input", "unit": "ratio", "values": [0.30, 0.31, 0.32]},
+            }
+        },
+        "income.revenue": {
+            "kind": "decomposition",
+            "rollup": "sum",
+            "src": "#formula_contract",
+            "segments": {
+                "retail": {
+                    "kind": "formula",
+                    "formula_ref": "retail_revenue",
+                    "base": {"base_year": 2024, "revenue": base_revenue, "unit_factor_to_million_cny": 1},
+                },
+            },
+        },
+        "income.gpm": {"kind": "formula", "formula_ref": "gpm_formula", "src": "#formula_gpm"},
+        "terminal": {
+            "explicit_end": 2027,
+            "fade": {"kind": "linear", "to_year": 2027, "fade_paths": [], "hold_paths": []},
+            "perpetual_growth": 0.025,
+        },
+    }
+
+    result = yaml1_cleaner.clean_yaml1(write_yaml1_fixture(tmp_path, yaml1), defaults_path, clean_path)
+    forecast_params = result.forecast_params
+    build = build_forecast_statements(forecast_params)
+
+    assert result.report["formula"]["status"] == "ok"
+    assert result.report["formula"]["targets"]["income.revenue.segments.retail"] == "retail_revenue"
+    assert result.report["formula"]["targets"]["income.gpm"] == "gpm_formula"
+    assert forecast_params["model"]["revenue_yoy"]["source"] == "#formula_contract"
+    assert forecast_params["model"]["revenue_yoy"]["value"][:3] == pytest.approx([0.0, 0.02, 1.03 / 1.02 - 1.0])
+    assert forecast_params["income"]["gpm"]["value"][:3] == pytest.approx([0.30, 0.31, 0.32])
+    assert not build.income_statement.empty
 
 
 def test_clean_yaml1_expands_fade_hold_default_hold_and_alias_warning():
@@ -391,31 +477,25 @@ def test_clean_yaml1_expands_fade_hold_default_hold_and_alias_warning():
     y = result.forecast_params
     warnings = [item["message"] for item in result.report["warnings"]]
 
-    assert y["model"]["forecast_years"]["value"] == 12
-    assert y["meta"]["horizon"] == list(range(2025, 2037))
+    assert y["model"]["forecast_years"]["value"] == 10
+    assert y["meta"]["horizon"] == list(range(2025, 2035))
     revenue_yoy = y["model"]["revenue_yoy"]["value"]
-    assert len(revenue_yoy) == 12
-    assert revenue_yoy[:7] == pytest.approx(
+    assert len(revenue_yoy) == 10
+    assert revenue_yoy == pytest.approx(
         [
-            0.017915945815949685,
-            0.014292883231659115,
-            0.01856631471147141,
-            0.021776623729457878,
-            0.02411847415260815,
-            0.025798344902929538,
-            0.02395436614151536,
+            0.017912195378833262,
+            0.01429330433700926,
+            0.018566702336527907,
+            0.0217769755064936,
+            0.024118789962974452,
+            0.02529503197037956,
+            0.02647127397778467,
+            0.02764751598518978,
+            0.02882375799259489,
+            0.03,
         ]
     )
-    assert revenue_yoy[7:] == pytest.approx(
-        [
-            0.02416349291321229,
-            0.024372619684909218,
-            0.024581746456606143,
-            0.024790873228303072,
-            0.025,
-        ]
-    )
-    assert y["income"]["gpm"]["value"][-5:] == pytest.approx([0.314] * 5)
+    assert y["income"]["gpm"]["value"][-5:] == pytest.approx([0.316] * 5)
     assert y["income"]["cost_rates"]["admin_exp"]["value"][-5:] == pytest.approx([0.036] * 5)
 
     assert any("总增速低于永续" in message for message in warnings)

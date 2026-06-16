@@ -7,6 +7,10 @@ companies/
 .recon/
 annuals/
 
+# ...but keep committed test fixtures even though annuals/ is ignored globally
+!tests/fixtures/company_002946/annuals/
+!tests/fixtures/company_002946/annuals/*
+
 # Python cache
 __pycache__/
 *.py[cod]

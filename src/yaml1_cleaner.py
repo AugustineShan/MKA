@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from src.clean import resolve_is_signs
+from src.yaml1_formula import FormulaError, FormulaResult, evaluate_formula_graph
 from src.yaml2_schema import plain_value, read_yaml2, write_yaml2
 
 
@@ -333,13 +334,13 @@ def _margin_values(
 def _unsupported_revenue_family(path: str, family: Any) -> Yaml1CleanError:
     if family == "formula":
         return Yaml1CleanError(
-            f"formula revenue node at {path} is not implemented in yaml1_cleaner. "
-            "Use factor_product/growth/abs, or raise the case to a human."
+            f"revenue_family=formula at {path} is not a valid formula shape. "
+            "Use kind: formula with formula_ref, and define the node under formulas.nodes."
         )
     return Yaml1CleanError(
         f"Unsupported revenue_family at {path}: {family}. "
         "Supported families: factor_product, vol_price, vol_price_margin, growth, abs. "
-        "Formula/DAG families are not implemented."
+        "For Formula/DAG use kind: formula with formula_ref."
     )
 
 
@@ -350,10 +351,39 @@ def _fold_revenue_leaf(
     inherited_note: str,
     horizon: list[int],
     warnings: list[dict[str, Any]],
+    formula_result: FormulaResult | None = None,
 ) -> _RevenueFold:
     kind = segment.get("kind")
     if kind == "formula":
-        raise _unsupported_revenue_family(path, "formula")
+        if formula_result is None:
+            raise Yaml1CleanError(f"formula revenue node at {path} has no evaluated formula graph")
+        forbidden = [key for key in ["revenue_family", "factors"] if key in segment]
+        knobs = segment.get("knobs")
+        if isinstance(knobs, dict):
+            forbidden.extend(key for key in ["revenue_yoy", "revenue_abs", "volume_yoy", "price_yoy"] if key in knobs)
+        if forbidden:
+            raise Yaml1CleanError(f"formula revenue node at {path} is over-determined by {forbidden}")
+        formula_ref = segment.get("formula_ref")
+        if not isinstance(formula_ref, str) or not formula_ref:
+            raise Yaml1CleanError(f"{path}.formula_ref is required for formula revenue leaf")
+        factor = _unit_factor(segment, inherited_note, path, warnings)
+        base = _require_mapping(segment.get("base"), f"{path}.base")
+        base_revenue = _to_float(base.get("revenue")) / factor
+        try:
+            values = formula_result.values(formula_ref)
+        except FormulaError as exc:
+            raise Yaml1CleanError(str(exc)) from exc
+        series = {year: values[idx] / factor for idx, year in enumerate(horizon)}
+        margin = _margin_values(segment, horizon, path)
+        formula_result.targets[path] = formula_ref
+        return _RevenueFold(
+            base_revenue=base_revenue,
+            revenue_by_year=series,
+            segment_base_revenue={name: base_revenue},
+            segment_revenue_by_year={name: series},
+            unit_factors={name: factor},
+            margin_by_leaf={name: margin} if margin is not None else {},
+        )
     if kind in {"mix_allocation", "allocation"}:
         raise Yaml1CleanError(
             f"{path} uses {kind}, but mix/allocation nodes are not implemented. "
@@ -430,10 +460,9 @@ def _fold_revenue_node(
     horizon: list[int],
     warnings: list[dict[str, Any]],
     depth: int,
+    formula_result: FormulaResult | None = None,
 ) -> _RevenueFold:
     kind = node.get("kind")
-    if kind == "formula":
-        raise _unsupported_revenue_family(path, "formula")
     if kind in {"mix_allocation", "allocation"}:
         raise Yaml1CleanError(
             f"{path} uses {kind}, but mix_allocation is not implemented and cannot be mixed with decomposition_sum."
@@ -466,14 +495,19 @@ def _fold_revenue_node(
                     horizon,
                     warnings,
                     depth + 1,
+                    formula_result,
                 )
             )
         return _sum_revenue_folds(folds, horizon)
 
-    return _fold_revenue_leaf(name, node, path, inherited_note, horizon, warnings)
+    return _fold_revenue_leaf(name, node, path, inherited_note, horizon, warnings, formula_result)
 
 
-def fold_revenue(yaml1: dict[str, Any], clean_annual: dict[int, dict[str, float]]) -> FoldResult:
+def fold_revenue(
+    yaml1: dict[str, Any],
+    clean_annual: dict[int, dict[str, float]],
+    formula_result: FormulaResult | None = None,
+) -> FoldResult:
     revenue_node = _require_mapping(yaml1.get("income.revenue"), "income.revenue")
     if revenue_node.get("kind") != "decomposition":
         raise Yaml1CleanError("income.revenue must be kind=decomposition")
@@ -497,6 +531,7 @@ def fold_revenue(yaml1: dict[str, Any], clean_annual: dict[int, dict[str, float]
         explicit_horizon,
         warnings,
         0,
+        formula_result,
     )
 
     revenue_by_year = fold.revenue_by_year
@@ -628,10 +663,16 @@ def clean_yaml1(
     if yaml1_path is None:
         yaml1: dict[str, Any] = {}
         fold = _empty_fold_from_yaml2(yaml2)
+        formula_result = evaluate_formula_graph(yaml1, fold.explicit_horizon)
         defaults_only = True
     else:
         yaml1 = load_yaml(yaml1_path)
-        fold = fold_revenue(yaml1, clean_annual)
+        explicit_horizon = _explicit_horizon_from_yaml1(yaml1)
+        try:
+            formula_result = evaluate_formula_graph(yaml1, explicit_horizon)
+            fold = fold_revenue(yaml1, clean_annual, formula_result)
+        except FormulaError as exc:
+            raise Yaml1CleanError(str(exc)) from exc
         defaults_only = False
 
     report = _initial_report(
@@ -641,9 +682,15 @@ def clean_yaml1(
         fold,
     )
     report["defaults_only"] = defaults_only
+    report["formula"] = formula_result.report()
     report["warnings"].extend(fold.warnings)
+    report["warnings"].extend(formula_result.warnings)
 
-    overlay = _collect_explicit_overlay(yaml1, fold, report)
+    try:
+        overlay = _collect_explicit_overlay(yaml1, fold, report, formula_result)
+    except FormulaError as exc:
+        raise Yaml1CleanError(str(exc)) from exc
+    report["formula"] = formula_result.report()
     terminal = yaml1.get("terminal") if yaml1 else _empty_terminal_from_yaml2(yaml2, fold.explicit_horizon)
     full_horizon = _full_horizon(terminal, fold.explicit_horizon)
     expanded = _expand_overlay(overlay, terminal, fold.explicit_horizon, full_horizon, report)
@@ -691,10 +738,18 @@ def _initial_report(
     }
 
 
+def _explicit_horizon_from_yaml1(yaml1: dict[str, Any]) -> list[int]:
+    explicit_horizon = [int(year) for year in yaml1.get("meta", {}).get("horizon", [])]
+    if not explicit_horizon:
+        raise Yaml1CleanError("meta.horizon is required")
+    return explicit_horizon
+
+
 def _collect_explicit_overlay(
     yaml1: dict[str, Any],
     fold: FoldResult,
     report: dict[str, Any],
+    formula_result: FormulaResult | None = None,
 ) -> dict[str, dict[str, Any]]:
     defaults_only = not yaml1
     revenue_node = yaml1.get("income.revenue") if yaml1 else {}
@@ -727,10 +782,24 @@ def _collect_explicit_overlay(
             "note": "Derived from revenue leaf margins.",
         }
     for path, item_any in yaml1.items():
-        if path in {"meta", "income.revenue", "terminal", "stash"}:
+        if path in {"meta", "income.revenue", "terminal", "stash", "formulas"}:
             continue
         item = _require_mapping(item_any, path)
         kind = item.get("kind")
+        if kind == "formula":
+            if formula_result is None:
+                raise Yaml1CleanError(f"formula overlay at {path} has no evaluated formula graph")
+            formula_ref = item.get("formula_ref")
+            if not isinstance(formula_ref, str) or not formula_ref:
+                raise Yaml1CleanError(f"{path}.formula_ref is required for formula overlay")
+            overlay[path] = {
+                "values": formula_result.values(formula_ref),
+                "source": item.get("src", f"yaml1.{path}.formula"),
+            }
+            if item.get("note"):
+                overlay[path]["note"] = item["note"]
+            formula_result.targets[path] = formula_ref
+            continue
         if kind != "knob":
             raise Yaml1CleanError(f"Unsupported yaml1 item kind at {path}: {kind}")
         overlay[path] = {

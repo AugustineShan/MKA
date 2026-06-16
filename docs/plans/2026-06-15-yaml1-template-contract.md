@@ -1,5 +1,7 @@
 # YAML1 Template Contract Implementation Plan
 
+> Superseded: this plan described the stateless template rollout before the formula/DAG evaluator existed. Current formula/DAG contract lives in `docs/formula_DAG开发文档.md` and `docs/yaml1算法模板契约.md`.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Make yaml1 revenue templates executable and auditable without expanding `calc.py` beyond its existing `model.revenue_yoy` and `income.gpm` inputs.
@@ -18,7 +20,7 @@
 
 **Steps:**
 1. Update the compiler skill to declare executable revenue families as `factor_product`, `vol_price` compatibility alias, `vol_price_margin` compatibility alias, `growth`, and `abs`.
-2. Mark `formula`, `bridge`, `ratio_to_driver`, cross-period recursion, reusable intermediate variables, and general DAG as not implemented and not generatable.
+2. Historical note: this plan originally kept `formula`, `bridge`, `ratio_to_driver`, cross-period recursion, reusable intermediate variables, and general DAG outside the stateless template rollout.
 3. Define `factor_product` as an n-factor product with per-factor `projection.kind` of `yoy`, `abs`, or `constant`.
 4. State the over-determined rules: `decomposition_sum` and future `mix_allocation` are mutually exclusive per node; leaf margins and top-level `income.gpm` are mutually exclusive.
 5. Update the v17 generator skill to say company skeletons may vary, but compiler-executable algorithm templates are finite.
@@ -47,7 +49,7 @@
 4. Add factor projection evaluation for `yoy`, `abs`, and `constant`.
 5. Add margin-fold derivation and over-determined checks.
 6. Inject derived `income.gpm` into overlay only when all revenue leaves provide margins and no top-level `income.gpm` knob is present.
-7. Improve unsupported family/kind errors so `formula` tells the agent it is not implemented.
+7. Historical note: this plan originally improved unsupported family/kind errors for the pre-formula cleaner.
 
 ### Task 4: Update Workbench Display
 

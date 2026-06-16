@@ -43,9 +43,12 @@ YAML1 收入侧分三层。
 折叠层:
   revenue leaves -> model.revenue_yoy
   leaf margins   -> income.gpm
+
+formula/DAG 层:
+  formulas.nodes -> formula leaf / YAML2 标准路径 overlay
 ```
 
-未来可能有 formula/DAG 层，但当前未实现。当前文档只定义已经可执行的模板。
+formula/DAG 已有受限执行器，详见 `docs/formula_DAG开发文档.md`。它只在 `yaml1_cleaner.py` 内求值，最终仍必须压平成 `model.revenue_yoy`、`income.gpm` 或 `defaults.yaml` 中已经存在的标准路径。`calc.py` 不直接理解 formula。
 
 ## 结构层：decomposition_sum
 
@@ -284,29 +287,83 @@ oper_cost = revenue * (1 - gpm)
 
 原因：部分分线毛利 + 整体毛利率手拍是两个口径混用，无法审计。
 
-## 当前禁止生成的形态
+## formula/DAG 层：受限公式节点
 
-以下形态当前没有执行器，不得进入 yaml1：
-
-- `kind: formula`
-- 自创 `revenue_family`
-- `bridge`
-- `ratio_to_driver`
-- `mix_allocation`
-- `ref` / `lag_ref`
-- 跨期递推
-- 可复用中间变量
-- 分段函数
-- 通用 DAG
-
-遇到这些形态，正确动作是：
+formula 只接模板装不下的长尾，不是默认模板。优先级永远是：
 
 ```text
-在报告里举旗：
-  该线需要 formula/DAG 引擎，当前 cleaner 未实现。
+decomposition_sum -> factor_product -> growth -> abs -> leaf margin -> formula/DAG
 ```
 
-不要把它伪装成 `factor_product`，也不要发明新的族名。
+只有出现跨期递推、中间变量复用、分段函数、滞后关系，且无法无损表达为 `factor_product/growth/abs` 时，才允许使用 formula。
+
+全局公式节点写在 `formulas.nodes`：
+
+```yaml
+formulas:
+  version: 1
+  nodes:
+    openings:
+      kind: input
+      unit: store
+      values: [80, 90, 95]
+      src: "#开店计划"
+
+    stores:
+      kind: formula
+      unit: store
+      expr: "lag(stores, 1) + openings - closures"
+      inputs: [stores, openings, closures]
+      seeds:
+        2024: 1200
+      src: "#门店数递推"
+```
+
+收入 formula leaf 写在收入树里：
+
+```yaml
+income.revenue:
+  kind: decomposition
+  segments:
+    retail:
+      kind: formula
+      formula_ref: retail_revenue
+      base:
+        base_year: 2024
+        revenue: 2460
+        unit_factor_to_million_cny: 1
+```
+
+标准路径 formula overlay 写在对应 YAML2 路径：
+
+```yaml
+income.cost_rates.sell_exp:
+  kind: formula
+  formula_ref: sell_exp_rate
+  src: "#固定费用/收入 + 变动费率"
+```
+
+安全子集：
+
+- 只允许四则运算、括号、比较、`lag(node, n)`、`min/max/abs/clip/if_else`。
+- `inputs` 必须和表达式引用双向一致。
+- `lag()` 必须有 `seeds` 或 `history` 支撑。
+- DAG 按 `(node, year)` 检测循环；当前年互相引用硬失败，合法滞后允许。
+- formula 输出的标准路径必须存在于 `defaults.yaml`。
+- 回测失败、引用缺失、循环、缺 seed 都硬失败。
+
+以下形态仍不得以自创族名或裸结构进入 yaml1：
+
+- 自创 `revenue_family`
+- `mix_allocation`
+- `ref` / `lag_ref`
+- `bridge`
+- `ratio_to_driver`
+- 任意 Python / Excel 原生公式
+
+如果确实需要 bridge、ratio_to_driver、跨期递推、分段函数、中间变量复用，必须投影成受限 `formulas.nodes` + `formula_ref`，不得发明新 `kind` 或新 `revenue_family`。
+
+`mix_allocation` 仍未实现，遇到父定子/占比分配需求仍需举旗。
 
 ## 模板层与 formula 层的边界
 
@@ -317,19 +374,15 @@ oper_cost = revenue * (1 - gpm)
 - 无 DAG：没有拓扑求值。
 - 产物直达现有 calc 入口：只折成 `model.revenue_yoy` 或 `income.gpm`。
 
-只要某个算法需要跨期状态、引用别的节点、或产出要被别处复用的中间变量，它就不属于模板层，而属于未来 formula/DAG 层。
+只要某个算法需要跨期状态、引用别的节点、或产出要被别处复用的中间变量，它就不属于模板层，而属于 formula/DAG 层。
 
-## formula/DAG 层的后续实现口径
-
-当前轮次不实现 formula。先把模板层锁稳，再单开一轮设计 formula/DAG。未来若要实现，必须先同时给出：
+formula/DAG 层必须同时满足：
 
 - 明确的求值边界：只允许在 cleaner 内求值，`calc.py` 仍然只吃标准 YAML2 参数。
-- 明确的安全子集：允许哪些表达式、哪些函数、哪些跨期引用。
-- 明确的 DAG 规则：拓扑排序、循环检测、缺失引用报错。
+- 明确的安全子集：不执行任意 Python。
+- 明确的 DAG 规则：循环检测、缺失引用报错。
 - 明确的审计输出：每个公式节点的输入、输出、单位、来源和回测结果必须进 clean report。
 - 明确的降级规则：回测不过或引用缺失时硬失败，不静默退成 0 或平推。
-
-`bridge`、`ratio_to_driver`、滞后链、分段函数、中间变量复用，都归入这一层。它们有价值，但不属于当前无状态模板层。
 
 ## compiler 生成检查清单
 
@@ -346,7 +399,8 @@ oper_cost = revenue * (1 - gpm)
 - `unit_factor_to_million_cny` 是否结构化写在 leaf base 中。
 - 是否出现 leaf margin 与顶层 `income.gpm` 混用。
 - 是否出现 partial leaf margin。
-- 是否出现 formula/DAG/bridge/ratio_to_driver/mix_allocation。
+- 如出现 formula/DAG，是否严格使用 `formulas.nodes` + `formula_ref`，且没有自创族名。
+- 是否出现 mix_allocation。
 
 任一项不满足，举旗，不要生成一个“看起来能跑”的 YAML。
 

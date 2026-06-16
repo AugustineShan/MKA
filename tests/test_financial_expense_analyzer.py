@@ -2,29 +2,18 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
 
+from conftest import copy_fixture_company
 import src.financial_expense_analyzer as fea
 from src import defaults_gen
 
 
-def _source_company_dir() -> Path:
-    return next(Path("companies").glob("*_002946"))
-
-
 def _copy_new_hope_dairy(tmp_path: Path) -> Path:
-    src = _source_company_dir()
-    dst = tmp_path / "companies" / src.name
-    dst.mkdir(parents=True)
-    for name in ["defaults.yaml", "data.db"]:
-        shutil.copy2(src / name, dst / name)
-    (dst / "annuals").mkdir()
-    for md in (src / "annuals").glob("*.md"):
-        shutil.copy2(md, dst / "annuals" / md.name)
-    return dst
+    # Frozen snapshot incl. annuals/2025_年度报告.md note stub (see tests/conftest.py).
+    return copy_fixture_company(tmp_path)
 
 
 def _mock_llm_response() -> dict:
