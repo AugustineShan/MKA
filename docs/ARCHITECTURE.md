@@ -865,8 +865,8 @@ python -m src.financial_expense_analyzer --ticker 002946.SZ --latest-only  # 只
 
 | 契约 | 拥有者 | 消费者 | 状态 | 路径 |
 |---|---|---|---|---|
-| 核心假设.md | `skills/核心假设生成修改器_skill_v14.md` | compiler skill | v14 | `skills/...` |
-| YAML1 (drivers) | `skills/yaml1compiler_v3 (2).md` | `src/yaml1_cleaner.py` | 定稿 | `companies/{公司}/yaml1*.yaml` |
+| 核心假设.md | `skills/核心假设生成修改器_skill_v17.md` | compiler skill | v17 | `skills/...` |
+| YAML1 (drivers) | `skills/yaml1compiler_v4 (2).md` | `src/yaml1_cleaner.py` | 定稿 | `companies/{公司}/yaml1*.yaml` |
 | YAML1 formula/DAG 开发契约 | `docs/formula_DAG开发文档.md` | `src/yaml1_cleaner.py`, compiler/core-assumption skills, tests | 实验性·受限（仅合成 fixture 验证） | `docs/formula_DAG开发文档.md` |
 | YAML2 / defaults.yaml | `src/yaml2_schema.py` | `src/yaml1_cleaner.py`, `src/defaults_gen.py` | 稳定 | `companies/{公司}/defaults.yaml` |
 | 逐年标准参数表 | `src/yaml1_cleaner.py` | `src/calc.py` | 稳定 | `companies/{公司}/.modelking/forecast_params.yaml` |
@@ -1000,119 +1000,17 @@ MKA/
 
 ---
 
-## 9. 运行时数据实例
+## 9. 已验证公司与暴露的口径教训
 
-当前 `companies/` 目录下已有三家公司的完整数据。
+已端到端验证 5 家（安克创新 300866 / 新乳业 002946 / 伊利股份 600887 / 美的集团 000333 / 比亚迪 002594），年度+季度全部硬校验通过。具体行数、meta、市值等运行时数据随重拉漂移，不在此沉淀——查 `companies/{公司}/data.db` 即得。各公司暴露的系统性口径问题（已在源头修复，对接手者有设计含义）：
 
-### 9.1 安克创新（300866.SZ）
+| 公司 | 暴露的系统性问题 | 修复方式 |
+|------|------------------|----------|
+| 伊利 600887 | `int_income` 计入 `total_revenue`；`const_materials` 未分类；季报 `int_receiv`/`specific_payables` 口径重叠 | IS 1.6 改 `total_revenue=Σrevenue_item` 检测；补 `BS_FIELD_CATEGORIES`；`COMBO_RESOLVE` 适配 |
+| 美的 000333 | `lending_funds`（发放贷款和垫款）TuShare 漏披露 → BS 2.1 `target_gt_calc` | reconciler 从年报 Markdown 补数 + approved override |
+| 比亚迪 002594 | `oth_eqt_tools_p_shr`/`oth_eq_ppbond` 重复计入权益；`estimated_liab` 列报为流动而非默认非流动 | 改归 `sub_item`；override `clean_category` per-period 重分类 |
 
-```
-companies/安克创新_300866/
-├── data.db
-```
-
-| 维度 | 数据 |
-|------|------|
-| raw_tushare | 14,091 行（income rt1: 37期×86字段, income rt2: 31期×86字段, balancesheet rt1: 33期×150字段, cashflow rt1: 37期×89字段） |
-| SQLite 表 | `raw_tushare` + `meta` + `clean_annual` + `clean_quarterly` |
-| meta | 14 条（ticker, name, total_share=536.28百万股, total_mv=57531.73百万元, close=107.28, pe_ttm=22.82, pb=5.61, ...） |
-| clean 表 | `clean_annual`: 10期×332列（period+325官方字段+6 QA plug）；`clean_quarterly`: 30期×332列（period+325官方字段+6 QA plug） |
-
-### 9.2 新乳业（002946.SZ）
-
-```
-companies/新乳业_002946/
-├── data.db
-```
-
-| 维度 | 数据 |
-|------|------|
-| raw_tushare | 17,531 行（income rt1: 50期×86字段, income rt2: 35期×86字段, balancesheet rt1: 45期×150字段, cashflow rt1: 39期×89字段） |
-| SQLite 表 | `raw_tushare` + `meta` + `clean_annual` + `clean_quarterly` |
-| meta | 14 条（ticker, name, total_share=860.68百万股, total_mv=14270.03百万元, close=16.58, pe_ttm=18.19, pb=3.73, ...） |
-| clean 表 | `clean_annual`: 10期×332列（period+325官方字段+6 QA plug）；`clean_quarterly`: 34期×332列（period+325官方字段+6 QA plug） |
-
-### 9.3 伊利股份（600887.SH）
-
-```
-companies/伊利股份_600887/
-├── data.db
-```
-
-| 维度 | 数据 |
-|------|------|
-| raw_tushare | 35,256 行（income rt1: 109期×86字段, income rt2: 94期×86字段, balancesheet rt1: 70期×150字段, cashflow rt1: 82期×89字段） |
-| SQLite 表 | `raw_tushare` + `meta` + `clean_annual` + `clean_quarterly` |
-| meta | 14 条（ticker, name, total_share=6078.13百万股, total_mv=21483.63百万元, close=3.54, pe_ttm=17.05, pb=2.67, ...） |
-| clean 表 | `clean_annual`: 10期×332列（period+325官方字段+6 QA plug）；`clean_quarterly`: 48期×332列（period+325官方字段+6 QA plug，最近12年） |
-
-伊利股份暴露并修复了三个系统性的科目口径问题：
-1. `int_income` 计入 `total_revenue` 导致 IS 1.2/1.6 校验需要自适应适配（已修复：IS 1.6 改为 `total_revenue = Σrevenue_item` 检测）
-2. `const_materials`（工程物资）未归入 BS 字段分类体系（已修复：纳入 `BS_FIELD_CATEGORIES` 的 `noncurrent_asset` 分类）
-3. 季报中 `int_receiv`/`div_receiv` 被包含于 `oth_rcv_total`，以及 `specific_payables` 与 `long_pay_total` 口径重叠（已在 `bs_bucket_sum()` 的 `COMBO_RESOLVE` 逻辑中适配）
-
-### 9.4 三家公司对比要点
-
-| 对比项 | 安克创新 (300866) | 新乳业 (002946) | 伊利股份 (600887) |
-|--------|-------------------|-----------------|-------------------|
-| raw_tushare 报告期数 | income rt1:37 / rt2:31, bs rt1:33, cf rt1:37 | income rt1:50 / rt2:35, bs rt1:45, cf rt1:39 | income rt1:109 / rt2:94, bs rt1:70, cf rt1:82 |
-| raw_tushare 字段覆盖 | income:86, bs:150, cf:89 ✓ | income:86, bs:150, cf:89 ✓ | income:86, bs:150, cf:89 ✓ |
-| clean 表字段数 | annual/quarterly 均为 332 | annual/quarterly 均为 332 | annual/quarterly 均为 332 |
-| 跨端点消歧字段 | `income.credit_impa_loss` + `cashflow.credit_impa_loss` | 同 | 同 |
-| 最新市值 | 575.3 亿元 | 142.7 亿元 | 214.8 亿元 |
-
-**clean 表列数一致性**：各公司的 SQLite clean 年度/季度表字段数完全一致（332 列 = `period` + 325 个官方字段 + 6 个 QA plug 字段）。不同公司在某些字段上值全为 0（如安克创新无商誉，goodwill 全为 0），但列始终保留，确保下游模型可使用统一特征集；QA plug 也始终保留，确保下游模型能显式识别季度收纳残差。
-
-### 9.5 meta 字段清单
-
-三家公司的 meta 表结构一致，均含 14 个键值对：
-
-| key | 含义 | 示例（安克创新） |
-|-----|------|------------------|
-| `ticker` | 股票代码 | 300866.SZ |
-| `name` | 公司名称 | 安克创新 |
-| `last_updated` | 最后拉取时间 | 2026-06-08T21:34:23 |
-| `latest_trade_date` | 最新交易日 | 20260608 |
-| `daily_basic_trade_date` | daily_basic 取数日期 | 20260608 |
-| `total_share` | 总股本（百万股） | 536.27636 |
-| `float_share` | 流通股本（百万股） | 307.58313 |
-| `total_mv` | 总市值（百万元） | 57531.727901 |
-| `close` | 收盘价（元） | 107.28 |
-| `pe_ttm` | 滚动市盈率 | 22.8213 |
-| `pb` | 市净率 | 5.6086 |
-| `last_ann_date` | 最后公告日期 | 20260430 |
-| `last_f_ann_date` | 最后实际公告日期 | 20260430 |
-| `last_report_period` | 最后报告期 | 20260331 |
-
-### 9.6 报告期数据范围
-
-报告期原样存放在 `raw_tushare.end_date`，不再生成季度派生表。report_type=2 仅在上游真实返回时保留，目前实测为 income 单季合并。
-
-| 公司 | income rt1 | income rt2 | balancesheet rt1 | cashflow rt1 |
-|------|------------|------------|------------------|--------------|
-| 安克创新 (300866) | 37 期 | 31 期 | 33 期 | 37 期 |
-| 新乳业 (002946) | 50 期 | 35 期 | 45 期 | 39 期 |
-
-### 9.7 美的集团年报 PDF + Markdown（000333.SZ）
-
-```
-companies/美的集团_000333/
-└── annuals/
-    ├── 2013_年度报告.pdf
-    ├── 2013_年度报告.md
-    ├── ...
-    ├── 2025_年度报告.pdf
-    └── 2025_年度报告.md
-```
-
-| 维度 | 数据 |
-|------|------|
-| cninfo orgId | `9900005965` |
-| 查询类目 | `category_ndbg_szsh` |
-| 下载结果 | 13 份中文年度报告 PDF + 13 份 Markdown（2013–2025） |
-| 本次验收重点 | 2016–2025 年度报告 PDF 与 Markdown 全部生成成功 |
-| Markdown 抽取 | 2025 年报 276 页全部抽取，`text_chars=281227` |
-| 跳过验证 | 二次运行 `pdf_downloaded=0, pdf_skipped=13, md_written=0, md_skipped=13`，已存在文件不重复生成 |
+**clean 表列恒等**：所有公司 `clean_annual`/`clean_quarterly` 均为 332 列（`period` + 325 官方字段 + 6 QA plug）；公司缺某科目则值全 0，列恒保留，保证下游统一特征集。
 
 ---
 
@@ -1134,47 +1032,16 @@ companies/美的集团_000333/
 
 ## 11. 变更日志
 
-| 日期 | 变更 |
-|------|------|
-| 2026-06-16 | 回绿测试基线 + 校正 formula 状态声明：(1) 全套测试 77/6 → 83 passed/0，根因是 forecast/cleaner/financial_expense 测试直接 glob 活的运行时 `companies/*_002946` 数据（yaml1 重编译 + data.db 刷新后漂移），非引擎回归；修法为新增 committed 冻结快照 `tests/fixtures/company_002946/` + `conftest.copy_fixture_company()`，并把 forecast 的脆弱点断言改为不变式（配平恒等式 + 区间 + backtest passed）。(2) formula/DAG 状态从"已上线/稳定"**降级为"实验性·受限"**——代码闭环 + 单元测试绿已达成，但仅合成 fixture 验证，真实异构公司未跑通；升"稳定"需第二家异构公司从 compiler→cleaner→calc→回测全程通过。同步 `docs/formula_DAG开发文档.md`、本文契约表、`理解层_设计决策与开发方向 (6).md` |
-| 2026-06-16 | 落地 YAML1 formula/DAG 受限执行器（实验性，仅合成 fixture 验证）：formula 只允许在 `yaml1_cleaner.py` 内求值并压平成标准参数，`calc.py` 仍保持纯算账核；新增 `src/yaml1_formula.py`、`tests/test_yaml1_formula.py`，`yaml1_cleaner.py` 支持 revenue formula leaf 和标准路径 formula overlay；同步 `docs/formula_DAG开发文档.md`、`docs/yaml1算法模板契约.md`、`docs/数据流水线.md`、compiler skill 与核心假设 skill |
-| 2026-06-16 | 新增 `src/webcomp.py` 及配套 `/webcomp` skill：一键打包网页端编译 yaml1 所需输入材料到 `companies/{公司}/WEBCLAUDE/yaml1编译部分/`。复制清单：`00_核心假设.md`（`*核心假设*.md` 最新一份，必须）、`01_defaults.yaml`（必须）、`02_数据格式参考.md`、`03_yaml1算法模板契约.md`、`04_yaml1compiler_skill_vN.md`。所有 skill 均不读取 PDF。skill 文件同时部署于项目 `.claude/skills/webcomp/` 与全局 `C:\Users\Sheld\.claude\skills\webcomp/` |
-| 2026-06-16 | 新增 `/comp` skill：启动 yaml1 compiler，先动态加载 `D:\MKA\skills\yaml1compiler_v*.md` 最新版，再读取 `*核心假设*.md`、`defaults.yaml`、`docs/数据格式参考.md`、`docs/yaml1算法模板契约.md` 四份输入，编译输出 `yaml1_公司名_YYYYMMDD.yaml`。skill 文件同时部署于项目 `.claude/skills/comp/` 与全局 `C:\Users\Sheld\.claude\skills\comp/`。所有 skill 均不读取 PDF |
-| 2026-06-16 | 新增 `src/webka.py` 及配套 `/webka` skill：一键打包网页端生成 `核心假设.md` 所需源文件到 `companies/{公司}/WEBCLAUDE/核心假设部分/`。每次执行先清空旧文件夹，再按阅读顺序复制 `00_核心观点.md`、`01_核心假设_现有底稿.md`、`02_活跃素材`、`03_最新年报.md`、`04_核心假设生成修改器_skill_vN.md`；年报仅打包 Markdown，**所有 skill 均不读取 PDF**。skill 文件同时部署于项目 `.claude/skills/webka/` 与全局 `C:\Users\Sheld\.claude\skills\webka/`，供 Claude Code 与网页端两端调用 |
-| 2026-06-15 | `forecast.py` 在生成预测三表后自动拼接历史数据：新增 `forecast/full_is.csv`、`full_bs.csv`、`full_cf.csv`，覆盖 2015–2036 完整年度序列。实现规则：BS/CF 直接按 `forecast_*.csv` 列名从 `clean_annual` 投影；IS 将 `income.credit_impa_loss` 重命名为 `credit_impa_loss` 以匹配预测引擎口径；历史行 `total_opcost` 统一覆盖为 `total_cogs`，保证与预测定义一致。同步更新 `docs/ARCHITECTURE.md` 目录契约与项目结构树，并在 `tests/test_forecast_pipeline.py` 中断言 `full_*.csv` 存在 |
-| 2026-06-15 | 重构 `calc.py` 终值计算：拆分为 `build_forecast_statements()`（三表 + 显式期 FCFF）与 `value_from_statements()`（贴现 + 终值 + 每股价值）；终值改用稳态 terminal FCFF，`ΔNWC = 0`、`CAPEX = D&A × terminal_capex_da_ratio`（默认 1.0）；DCF 层三个参数（WACC、terminal growth、terminal capex/D&A ratio）可在不重跑三表的情况下实时调节。`forecast.py` 跑完后将最小 build 状态写入 `.modelking/forecast_build.json`，工作台新增 `POST /api/companies/{id}/dcf-sensitivity` 端点；前端 DCF tab 增加三个 sensitivity 滑块。`yaml2_schema.py` 与 `defaults_gen.py` 支持 `model.terminal_capex_da_ratio`（默认 1.0），旧 `defaults.yaml` 缺失该字段时向后兼容。更新回归基线 `tests/fixtures/calc_scalar_baseline.json` 与 `tests/test_forecast_pipeline.py` |
-| 2026-06-10 | 初始版本：从已有代码和规格书提炼 |
-| 2026-06-10 | 新增第9章「运行时数据实例」：补充安克创新(300866)和新乳业(002946)的完整数据画像、对比要点、meta 字段清单、季度数据时间范围 |
-| 2026-06-10 | 修复 clean.py pivot 丢列问题：pandas `pivot_table` 静默丢弃全 NaN 列 → 用 `reindex(columns=all_columns)` 补回；两家公司 CSV 列数从 156/226 统一为 325；新增 §5.5 宽表列完整性 |
-| 2026-06-10 | 简化 data_fetcher.py：仅保留 raw_tushare + meta，入库校验基于官方字段镜像；手写三表映射与派生表逻辑移除 |
-| 2026-06-10 | 数据基座重构：raw_tushare 主键加入 report_type；新增 clean_annual/clean_quarterly 写库；年度/季度统一 325 字段；季度以 income report_type=2 为锚点；两家公司重拉并完成年度+季度校验 |
-| 2026-06-10 | 清理废弃产物：删除 field_terms.csv、statement_field_coverage.csv、data_fetcher_spec.md、clean_spec_v3.md；ARCHITECTURE.md 移除过时文件引用 |
-| 2026-06-10 | clean.py 季度 CF 拆算补完：cashflow report_type=1 累计值拆为单季（Q2=H1−Q1, Q3=Q3−H1, Q4=Annual−Q3），修正 beg_period；两家公司（安克创新/新乳业）重跑并通过全部硬校验 |
-| 2026-06-10 | 全路径验证伊利股份（600887.SH）：年度 10 期 + 季度 48 期全部通过；修复 IS 1.2/1.6 `total_revenue` 含 `int_income` 的自适应口径适配、BS_FIELD_CATEGORIES 补全 `const_materials` 分类、季报 `int_receiv`/`specific_payables` 口径重叠适配；季度范围限制为最近 48 quarter（12 年） |
-| 2026-06-10 | 三家验证：安克创新（300866）annual 10+quarterly 31、新乳业（002946）annual 10+quarterly 35、伊利股份（600887）annual 10+quarterly 48，全部硬校验通过 |
-| 2026-06-10 | **BS 明细校验重构为全量分类方案**：对 balancesheet 全部 150 个 float 字段建立穷尽分类表 `BS_FIELD_CATEGORIES`（current_asset/noncurrent_asset/current_liab/noncurrent_liab/equity/subtotal/combo/derived），替换原先手动维护的 5 个 ITEMS 列表；新增 `COMBO_RESOLVE` 映射和 `bs_bucket_sum()` 自动推导 bucket 总和；删除 `BS_CUR_ASSET_ITEMS`/`BS_NCA_ITEMS`/`BS_CUR_LIAB_ITEMS`/`BS_NCL_ITEMS`/`BS_EQUITY_ITEMS`/`RESOLVE_SPECS`/`sum_with_resolve`；三家公司重跑全部通过 |
-| 2026-06-10 | **IS + CF 字段穷尽分类**：对 income 86 个 float 字段建立 `IS_FIELD_CATEGORIES`（revenue_item/cost_item/operating_adjustment/below_line/tax/attribution/comprehensive/subtotal/sub_item/derived），对 cashflow 89 个 float 字段建立 `CF_FIELD_CATEGORIES`（cfo_inflow/cfo_outflow/cfi_inflow/cfi_outflow/cff_inflow/cff_outflow/subtotal/supplementary/balance/sub_item/derived）；重构 `check_is()` 使用 `is_bucket_sum()` 自动收集字段（保留 total_opcost 与 operate_profit 降级路径）；`check_cf()` 保持原有 5.1–5.5 校验不变；删除 `IS_COGS_STANDARD`/`IS_COGS_EXTRA`/`IS_OPER_PROFIT_EXTRAS`/`EXCLUDED_FROM_CHECKS`/`SUB_ITEMS`；三家公司重跑全部通过 |
-| 2026-06-10 | 新增巨潮资讯网年报 PDF 下载能力：完整 vendored `rollysys/use_cninfo` 到 `vendor/use_cninfo/`；新增 `report_downloader.py` 复用其 cninfo API/orgId/PDF 下载封装；支持 `python -m src.report_downloader --ticker 000333.SZ`，按年份从新到旧下载中文年度报告 PDF 到 `companies/{公司名}_{代码}/annuals/`，已存在文件跳过；美的集团（000333.SZ）实测下载 2013–2025 共 13 份，其中 2016–2025 全部成功 |
-| 2026-06-10 | 升级 `report_downloader.py`：默认在 PDF 旁生成同名 Markdown，复用 vendored `cninfo.parser` / PyMuPDF 提取全文，并写入 YAML frontmatter；新增 `--no-markdown` 和 `--force-markdown`；美的集团（000333.SZ）已补齐 2013–2025 共 13 份 `.md`，二次运行 PDF/MD 均跳过 |
-| 2026-06-11 | 新增 `annual_report_reconciler.py`：作为 `clean.py` 年度硬校验失败后的外置年报 Markdown 智能核对器，复用 clean 年度透视与 `check_*()` 逻辑收集失败，按报表类型切片年报并调用 LLM 输出结构化 evidence；美的集团 2025 年 `BS 2.1` 实测识别 TuShare `lending_funds` 缺失，年报“发放贷款和垫款”11,779,217 千元完全解释 11,779.217 百万元残差 |
-| 2026-06-11 | 新增 approved override 审计层：`annual_report_reconciler.py --write-overrides --approve-high-confidence` 强制基于 LLM 结构化结论生成 `recon/annual_report_overrides.json`，`--no-llm` 不允许写 override；`clean.py` 默认只应用 approved 年报补数到年度宽表并保留 `raw_tushare` 不变，新增 `clean_adjustments`/`clean_warnings` 审计表与 `--mode annual|quarterly|all`、`--no-overrides`；美的集团 2016–2025 年 `lending_funds` 10 条补数后年度硬校验全部通过 |
-| 2026-06-11 | 新增季度 QA plug 收纳科目：clean 年度/季度表统一扩展为 325 个官方字段 + 6 个 QA plug 字段；quarterly 模式对 BS bucket 小计残差写入显式 `qa_bs_*_plug`，对 CF 5.5 现金桥接残差写入 `qa_cf_cash_reconcile_plug`，并持久化公式级 warning（含公式、残差、建议核对路径）；美的集团 48 个季度全部硬校验通过，仅 `BS 2.1` 使用 `qa_bs_current_asset_plug` |
-| 2026-06-11 | 新增年度 hard-check 强触发：`clean.py` 在 annual/all 年度硬校验失败时默认自动调用 `annual_report_reconciler.py --write-overrides --approve-high-confidence`，终端明确标记为 clean-data blocker；自动触发只生成 LLM evidence/approved override，不修改 raw，也不把失败运行改判成功；override 文件重写时合并既有 approved 记录 |
-| 2026-06-11 | 年报智能核对默认 LLM 从 Kimi 切换为 GLM `glm-5-turbo`：`.env` 使用 `LLM_PROVIDER=glm`、`GLM_*` 配置，Kimi 配置保留为注释；`clean.py` 接受 `source=glm/kimi` 的历史 approved override |
-| 2026-06-11 | 新增轻量已知缺陷提示卡：`knowledge/known_tushare_defects.json` 以“触发条件+字段”沉淀 TuShare 缺陷诊断经验；首条记录为 `BS 2.1/current_asset/lending_funds`，仅用于 annual_report_reconciler 的 LLM 年报检索提示，不自动补数、不替代 evidence |
-| 2026-06-11 | 新增一键编排入口 `init.py` + `.claude/skills/init/SKILL.md`：输入公司名/裸代码/完整 ticker，自动按序编排 data_fetcher→report_downloader→clean，含年报补全两段式重跑；幂等（当日已拉取跳过取数、已有年报跳过下载、补数只在重跑应用）；退出码 0/2/3/1 语义化交给 Agent；输出数据拉取报告（纯 TuShare 通过 vs 年报确认补全科目，全程可追溯）；美的集团（000333.SZ）端到端实测退出码 0 |
-| 2026-06-11 | 比亚迪（002594.SZ）暴露并修复 BS 4.1 重复计数 bug：`oth_eqt_tools_p_shr`（优先股）/`oth_eq_ppbond`（永续债）是 `oth_eqt_tools` 的“其中”子项（官方 36.md 证实），原误归 equity 导致权益 bucket 重复计入；改归 `sub_item`，四家公司（安克/新乳业/伊利/美的）回归无破坏 |
-| 2026-06-11 | 新增 override `clean_category` 重分类机制：处理 TuShare 字段默认 bucket 与公司列报口径不一致（比亚迪 `estimated_liab` 预计负债列报为流动而非 TuShare 默认非流动）。`bs_bucket_sum`/`check_bs` 接受 per-period `reclass` 映射；`apply_annual_overrides` 从 override 的 `clean_category` 写 `wide.attrs["bs_reclass"]`，只影响该公司该期 bucket 归属，不改静态分类；`clean_adjustments` 增加 `clean_category` 审计列。reconciler 端：`build_field_context` 纳入 known-defect 命中字段（即便不在 bucket）并透传 `clean_category`/别名，override builder 从候选透传 `clean_category`；新增 `knowledge/known_tushare_defects.json` 第 2 条 `BS 3.1/current_liab/estimated_liab`（比亚迪 2016-2025）。候选生成已验证；LLM 端到端 override 生成与 clean 重跑验证待补 |
-| 2026-06-11 | 修正 SQLite clean 表输出契约：`clean.py` 写入 `data.db` 的 `clean_annual` / `clean_quarterly` 必须保留完整 clean 宽表（`period` + 325 个官方字段 + 6 个 QA plug 字段），QA plug 是 clean 阶段的显式审计/防呆字段，供 defaults_gen 等下游从 SQLite 主库直接读取 |
-| 2026-06-11 | 新增 YAML2 默认 DCF 层：`yaml2_schema.py` 定义 YAML2 读写/校验，`defaults_gen.py` 从最新 `clean_annual` + `meta` 生成带 `value/source` 的 `defaults.yaml`，`calc.py` 按 IS→BS→CF→DCF 顺序生成默认预测三表和估值 summary；财务费用拆为利息支出、利息收入、其他财务费用，每个预测年循环求解 IS→BS plug→平均现金/债务→财务费用直到收敛；会计恒等式不配平即失败，cash plug 产生负现金只写 `review_flags.negative_cash_from_plug` warning，不阻断计算。5 家现有公司均已跑通，BS/CF 残差为浮点误差级 |
-| 2026-06-13 | 审计修复与测试补全：修复 `apply_quarterly_bs_plugs`/`apply_quarterly_cf_cash_plugs` 的 NaN plug 累积 bug；季度模式 income `report_type=2` 缺失时回退到 `report_type=1` 累计值并 warning，不再静默丢弃整期；`data_fetcher._call_api` 新增 `is_permanent_error` 快速区分参数/字段/ts_code 永久错误与限流/超时可重试错误；`_fetch_daily_basic` 15 天回退仍为空时明确抛错；`report_downloader` 并发下载 PDF 的 worker 内增加 `--min-interval`/`--max-interval` sleep；`treasury_share` 符号异常从硬错误改为软 warning；`pivot_to_wide` 季度窗口通过 `--max-quarters` 可配置并记录被丢弃 period；`annual_report_reconciler` prompt 移除美的集团硬编码，改为从 `known_tushare_defects.json` 动态注入，并增加 LLM 响应 schema 校验；重命名 `_v`/`_vi`/`_vc` 为 `get_value`/`get_income_value`/`get_cashflow_value`；修复 `auto_reconcile_annual_failure` 的硬编码 reconciler 路径；提取 `_build_adjustment_record` 统一 override 记录构造；完成比亚迪 `estimated_liab` 端到端验证（年度 10 期 + 季度 48 期全部通过）；新增核心模块单元测试 `tests/test_clean.py`、`tests/test_data_fetcher.py`、`tests/test_report_downloader.py`（42 例全部通过）；新增 `.gitignore` 忽略 `.env`、`companies/`、`__pycache__`、日志、worktree 等 |
-| 2026-06-13 | 修复 `report_downloader.py` 季报漏下载 bug：cninfo 季报标题常带 `全文` / `正文` 后缀（如 `2021年第一季度报告全文`），原正则要求严格结尾导致一季报/三季报被漏掉；现正则允许可选 `全文`/`正文` 后缀，并在同一年同类型存在多个版本时优先保留 `全文` |
-| 2026-06-13 | 新增 `report_downloader.py` 漏匹配检测机制：`collect_reports()` 按 category 统计匹配数，若某 category 返回公告但 0 条匹配，或存在疑似定期报告本体却未匹配，则输出 warning 并列出未匹配标题；用于及时发现标题格式变化导致的季报漏下 |
-| 2026-06-14 | 移除 `clean.py` 的 CSV 导出：年度/季度 clean 宽表仅写入 SQLite `clean_annual` / `clean_quarterly`，不再输出 `clean_annual_{code}.csv` / `clean_quarterly_{code}.csv`；同步修改 `forecast.py` / `yaml1_cleaner.py` / 测试 / 文档，默认从 `data.db` 读取 clean 数据 |
-| 2026-06-14 | 规范理解层到 DCF 的正式运行入口：新增 `forecast.py` 作为用户入口，固定 `defaults.yaml + yaml1*.yaml → forecast/`；`yaml1_cleaner.py` 的清洗参数与报告默认写入 `.modelking/`，不再在公司目录顶层暴露 `yaml2_yearly.yaml`；`calc.py` 输出目录强制命名为 `forecast` 且每次重算先清空，避免 `forecast_current`/`forecast_fixed`/`forecast_yaml1` 等调试目录静默成为正式结果 |
-| 2026-06-14 | 新增 ModelKing 本地 Web 工作台第一版：`app/` 使用 React + Vite 实现 Apple HIG 风格 UI，包含公司列表、Overview、核心假设 Markdown、YAML1 source editor、DCF/三表和素材文件浏览；`src/workbench.py` 提供 FastAPI 本地壳，扫描 `companies/` 并调用 `src.forecast.run_company_forecast()` 一键重算；运行入口为 `py -m src.workbench` 或双击 `run_workbench.cmd`，当前已通过 `npm run build` |
-| 2026-06-14 | 新增财务费用细则分析器：`src/financial_expense_analyzer.py` 从年报「财务费用」附注拆出利息支出/资本化利息/财政贴息/利息收入/其他，按固定规则 derive 利率类参数，动态 detect `clean.fin_exp_int_exp` 口径，生成按年份归档的 `financial_expense.yaml`；`src/defaults_gen.py` 读取 YAML 档案、取最新 approved/high 且勾稽通过的年份覆盖 `income.financial_expense`；`src/init.py` 在 `stage_clean()` 后新增 `stage_financial_expense()` 全量生成档案，失败只 warning；抽出 `src/annual_report_utils.py` 供 reconciler 与 analyzer 共用；新增 `tests/test_financial_expense_analyzer.py` 以新乳业 2024 基期回归（subsidy≈3.82M、detected_basis=net_of_capitalized_and_subsidy）；同步更新 `tests/fixtures/calc_scalar_baseline.json` 以反映新默认财务费用结构；全量 55 例测试通过 |
+> 完整逐条变更见 `git log`。本表只留里程碑级架构变更，避免与 git 历史重复。
 
+| 日期 | 里程碑 |
+|------|------|
+| 2026-06-10 | 数据基座成型：raw_tushare（EAV 官方镜像）+ clean_annual/clean_quarterly 宽表；BS/IS/CF 全字段穷尽分类（`*_FIELD_CATEGORIES`），替代手维护科目清单 |
+| 2026-06-11 | 年报补全闭环：`annual_report_reconciler` + approved override 审计链 + 季度 QA plug；`init.py` 一键编排；默认 LLM 切 GLM |
+| 2026-06-11 | YAML2/DCF 层上线：`yaml2_schema` + `defaults_gen` + `calc.py`（IS→BS→CF→DCF，财务费用循环求解） |
+| 2026-06-14 | 理解层正式入口 `forecast.py`（`defaults.yaml + yaml1*.yaml → forecast/`）；ModelKing 只读 Web 工作台（`workbench.py` + `app/`）；财务费用细则分析器 |
+| 2026-06-15 | `calc.py` 终值重构（稳态 terminal FCFF + DCF sensitivity 三参数实时调节）；`forecast.py` 拼接历史 `full_*.csv` |
+| 2026-06-16 | formula/DAG 受限执行器落地（`yaml1_formula.py`，实验性·仅合成 fixture 验证）；回绿测试基线（冻结 fixture + 不变式，83 passed） |
 
 ---
 
@@ -1184,8 +1051,8 @@ companies/美的集团_000333/
 |---|---|---|
 | 清洗yaml1.py | `src/yaml1_cleaner.py` | 理解层的 clean.py |
 | 逐年标准参数表 | `.modelking/forecast_params.yaml` | yaml1_cleaner 输出，calc.py 唯一输入 |
-| 核心假设.md | `skills/核心假设生成修改器_skill_v14.md` | 由 skill 拥有；设计文档版本号需同步 |
-| compiler / yaml1compiler | `skills/yaml1compiler_v3 (2).md` | 设计文档版本号需与磁盘一致 |
+| 核心假设.md | `skills/核心假设生成修改器_skill_v17.md` | 由 skill 拥有；设计文档版本号需同步 |
+| compiler / yaml1compiler | `skills/yaml1compiler_v4 (2).md` | 设计文档版本号需与磁盘一致 |
 | YAML2 | `defaults.yaml` | 同物两名 |
 | 三棒 pipeline | `src/forecast.py` 编排 `yaml1_cleaner.py` + `src/calc.py` | `forecast.py` 是实际编排器 |
 | 年报清洗器 | `src/report_downloader.py` + `src/annual_report_extractor.py` | 设计文档未精确对应，以代码为准 |
