@@ -12,6 +12,7 @@ The script never mutates raw_tushare, clean_annual, clean_quarterly, or data.db.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import re
 import sqlite3
@@ -42,7 +43,7 @@ from src.annual_report_utils import (
 )
 
 
-DOCS_DIR = ROOT / ".refs" / "tushare-docs"
+DOCS_DIR = ROOT / "TushareOfficialAPIMD"
 KNOWN_DEFECTS_PATH = ROOT / "knowledge" / "known_tushare_defects.json"
 
 DEFAULT_MAX_FAILURES = 12
@@ -160,9 +161,9 @@ def collect_failures(wide: pd.DataFrame, present_by_period: dict[str, set[str]])
 
 def read_tushare_field_docs() -> dict[str, dict[str, str]]:
     docs = {
-        "income": DOCS_DIR / "33.md",
-        "balancesheet": DOCS_DIR / "36.md",
-        "cashflow": DOCS_DIR / "44.md",
+        "income": DOCS_DIR / "income.md",
+        "balancesheet": DOCS_DIR / "balancesheet.md",
+        "cashflow": DOCS_DIR / "cashflow.md",
     }
     out: dict[str, dict[str, str]] = {}
     pattern = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_.]*)\s+\|\s+float\s+\|\s+[^|]+\|\s+(.+?)\s*$")
@@ -175,6 +176,19 @@ def read_tushare_field_docs() -> dict[str, dict[str, str]]:
                     fields[match.group(1)] = match.group(2).strip()
         out[endpoint] = fields
     return out
+
+
+def comparative_annual_markdown_path(company_dir: Path, year: str, *, max_offset: int = 2) -> Path | None:
+    """Use a later annual report as comparative evidence when the target year is absent."""
+    try:
+        base_year = int(year)
+    except ValueError:
+        return None
+    for offset in range(1, max_offset + 1):
+        path = annual_markdown_path(company_dir, str(base_year + offset))
+        if path is not None:
+            return path
+    return None
 
 
 def failure_candidate_fields(failure: Failure) -> tuple[str, list[str]]:
@@ -562,11 +576,21 @@ def analyze_failure(
     known_defect_hints = known_defect_hints_for_failure(failure, row, present, known_defects)
     field_context = build_field_context(failure, row, present, field_docs, known_defect_hints)
     md_path = annual_markdown_path(company_dir, failure.period)
+    comparative_source = False
+    if md_path is None:
+        md_path = comparative_annual_markdown_path(company_dir, failure.period)
+        comparative_source = md_path is not None
     markdown_context: dict[str, Any]
     if md_path is None:
         markdown_context = {"error": f"No annual markdown found for {failure.period}"}
     else:
         markdown_context = extract_markdown_context(failure, md_path, field_context, known_defect_hints)
+        if comparative_source:
+            markdown_context["comparative_source_for_period"] = failure.period
+            markdown_context["comparative_source_note"] = (
+                "Target-year annual report was not available; this later annual report is used because "
+                "annual financial statements usually include a comparative column for the prior year."
+            )
 
     result: dict[str, Any] = {
         "failure": asdict(failure),
@@ -617,12 +641,93 @@ def compact_text(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
+def annual_report_aliases_for_field(field: dict[str, Any], hint_aliases: list[str]) -> list[str]:
+    aliases: list[str] = []
+    if field.get("annual_report_alias"):
+        aliases.append(str(field["annual_report_alias"]))
+    desc = str(field.get("description") or "").strip()
+    if desc:
+        aliases.append(desc)
+        # Official TuShare descriptions sometimes carry unit suffixes such as
+        # "(元)"; annual reports usually print the plain item name.
+        aliases.append(re.sub(r"[（(]\s*元\s*[）)]$", "", desc).strip())
+    aliases.extend(hint_aliases)
+
+    out: list[str] = []
+    for alias in aliases:
+        alias = alias.strip()
+        if alias and alias not in out:
+            out.append(alias)
+    return out
+
+
+def find_alias_amount_matches(
+    snippets: list[str],
+    aliases: list[str],
+    *,
+    expected_million: float | None = None,
+) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for text in snippets:
+        lines = numbered_lines(text)
+        for idx, (line_no, content) in enumerate(lines):
+            matched_alias = next(
+                (alias for alias in aliases if compact_text(alias) in compact_text(content)),
+                None,
+            )
+            if not matched_alias:
+                continue
+            nearby = lines[idx + 1 : idx + 10]
+            for value_line_no, value_text in nearby:
+                stripped_value = value_text.strip()
+                if not re.search(r"\d", stripped_value):
+                    if stripped_value in {"", "-", "—", "－"}:
+                        continue
+                    break
+                for token in re.findall(r"\(?-?\d[\d,]*(?:\.\d+)?\)?", value_text):
+                    raw_value = parse_report_number(token)
+                    if raw_value is None:
+                        continue
+                    candidates = [
+                        ("千元人民币", raw_value / 1000.0, "千元"),
+                        ("元人民币", raw_value / 1_000_000.0, "元"),
+                    ]
+                    for unit, value_million, evidence_unit in candidates:
+                        if expected_million is None and abs(value_million) < clean.TOLERANCE:
+                            continue
+                        if expected_million is not None:
+                            tolerance = max(1.0, abs(expected_million) * 0.00001)
+                            if abs(value_million - expected_million) > tolerance:
+                                continue
+                        matches.append(
+                            {
+                                "annual_report_item": matched_alias,
+                                "annual_report_value_raw": raw_value,
+                                "annual_report_unit": unit,
+                                "value_million_cny": value_million,
+                                "evidence_lines": f"{line_no}-{value_line_no}: {matched_alias} {token} {evidence_unit}",
+                            }
+                        )
+    return matches
+
+
+def find_alias_amount_match(
+    snippets: list[str],
+    aliases: list[str],
+    *,
+    expected_million: float | None = None,
+) -> dict[str, Any] | None:
+    matches = find_alias_amount_matches(snippets, aliases, expected_million=expected_million)
+    return matches[0] if matches else None
+
+
 def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     """Find exact annual-report line-item matches without an LLM.
 
-    This is intentionally conservative: it only suggests a field when a known
-    annual-report alias appears in the statement snippet and one of the nearby
-    reported numbers equals the hard-check residual after converting 千元→百万元.
+    This is intentionally conservative: it only suggests fields when an annual
+    report alias appears in the statement snippet and the nearby reported
+    amount, or a small group of such amounts, equals the hard-check residual
+    after converting the annual-report unit to million CNY.
     It is diagnostic-only; approved override generation is LLM-only.
     """
     failure = analysis.get("failure", {})
@@ -653,69 +758,81 @@ def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, 
         if field and aliases:
             hint_alias_by_field[field] = aliases
 
+    matched_items: list[dict[str, Any]] = []
     for field in analysis.get("candidate_tushare_fields", []):
-        aliases = []
-        if field.get("annual_report_alias"):
-            aliases.append(str(field["annual_report_alias"]))
-        aliases.extend(hint_alias_by_field.get(str(field.get("field")), []))
-        aliases = list(dict.fromkeys(aliases))
+        aliases = annual_report_aliases_for_field(field, hint_alias_by_field.get(str(field.get("field")), []))
         if not aliases:
             continue
         old_value = float(field.get("value_million_cny") or 0.0)
         if abs(old_value) >= clean.TOLERANCE:
             continue
+        matches = find_alias_amount_matches(snippets, aliases)
+        if not matches:
+            continue
+        for match in matches:
+            item = {
+                **match,
+                "candidate_tushare_field": field.get("field"),
+                "clean_category": field.get("clean_category"),
+                "tushare_value_million_cny": old_value,
+            }
+            matched_items.append(item)
+        single_match = find_alias_amount_match(snippets, aliases, expected_million=float(residual))
+        if single_match:
+            item = {
+                **single_match,
+                "candidate_tushare_field": field.get("field"),
+                "clean_category": field.get("clean_category"),
+                "tushare_value_million_cny": old_value,
+            }
+            value_million = float(single_match["value_million_cny"])
+            suggestions.append(
+                {
+                    "source": "rule:alias_exact_residual",
+                    "confidence": "high",
+                    **item,
+                    "explains_residual": True,
+                    "residual_difference_million_cny": abs(float(residual) - value_million),
+                }
+            )
 
-        for text in snippets:
-            lines = numbered_lines(text)
-            for idx, (line_no, content) in enumerate(lines):
-                matched_alias = next(
-                    (alias for alias in aliases if compact_text(alias) in compact_text(content)),
-                    None,
+    grouped_fields: set[str] = set()
+    for size in range(2, min(5, len(matched_items) + 1)):
+        for group in itertools.combinations(matched_items, size):
+            fields = tuple(str(item.get("candidate_tushare_field")) for item in group)
+            if len(set(fields)) != len(fields):
+                continue
+            if any(field in grouped_fields for field in fields):
+                continue
+            group_total = sum(float(item["value_million_cny"]) for item in group)
+            diff = abs(float(residual) - group_total)
+            if diff >= clean.TOLERANCE:
+                continue
+            group_id = f"{failure.get('period')}_{failure.get('code')}_{'_'.join(fields)}"
+            group_items = [
+                {
+                    "candidate_tushare_field": item.get("candidate_tushare_field"),
+                    "annual_report_item": item.get("annual_report_item"),
+                    "value_million_cny": item.get("value_million_cny"),
+                    "evidence_lines": item.get("evidence_lines"),
+                }
+                for item in group
+            ]
+            for item in group:
+                suggestions.append(
+                    {
+                        "source": "rule:alias_group_residual",
+                        "confidence": "high",
+                        **item,
+                        "explains_residual": True,
+                        "residual_difference_million_cny": diff,
+                        "candidate_group_id": group_id,
+                        "group_value_million_cny": group_total,
+                        "group_residual_difference_million_cny": diff,
+                        "group_items": group_items,
+                    }
                 )
-                if not matched_alias:
-                    continue
-                nearby = lines[idx + 1 : idx + 10]
-                for value_line_no, value_text in nearby:
-                    for token in re.findall(r"\(?-?\d[\d,]*(?:\.\d+)?\)?", value_text):
-                        raw_value = parse_report_number(token)
-                        if raw_value is None:
-                            continue
-                        # Try 千元 first, then 元 (older annual reports use 元)
-                        matched = False
-                        if abs(raw_value - float(residual) * 1000.0) <= max(1.0, abs(float(residual) * 1000.0) * 0.00001):
-                            matched = True
-                            unit = "千元人民币"
-                            value_million = raw_value / 1000.0
-                            evidence_unit = "千元"
-                        elif abs(raw_value - float(residual) * 1_000_000.0) <= max(1.0, abs(float(residual) * 1_000_000.0) * 0.00001):
-                            matched = True
-                            unit = "元人民币"
-                            value_million = raw_value / 1_000_000.0
-                            evidence_unit = "元"
-                        if matched:
-                            suggestions.append(
-                                {
-                                    "source": "rule:alias_exact_residual",
-                                    "confidence": "high",
-                                    "annual_report_item": matched_alias,
-                                    "annual_report_value_raw": raw_value,
-                                    "annual_report_unit": unit,
-                                    "value_million_cny": value_million,
-                                    "candidate_tushare_field": field.get("field"),
-                                    "clean_category": field.get("clean_category"),
-                                    "tushare_value_million_cny": old_value,
-                                    "explains_residual": True,
-                                    "residual_difference_million_cny": abs(float(residual) - value_million),
-                                    "evidence_lines": f"{line_no}-{value_line_no}: {matched_alias} {token} {evidence_unit}",
-                                }
-                            )
-                            break
-                    if suggestions and suggestions[-1].get("candidate_tushare_field") == field.get("field"):
-                        break
-                if suggestions and suggestions[-1].get("candidate_tushare_field") == field.get("field"):
-                    break
-            if suggestions and suggestions[-1].get("candidate_tushare_field") == field.get("field"):
-                break
+                grouped_fields.add(str(item.get("candidate_tushare_field")))
     return suggestions
 
 
@@ -854,7 +971,9 @@ def batch_llm_confirm_candidates(
         '  "notes": string\n'
         "}\n\n"
         "批准标准：\n"
-        "1. failure residual 与候选年报值换算为百万元后的金额必须在 1 百万元内吻合。\n"
+        "1. failure residual 与候选年报值换算为百万元后的金额必须在 1 百万元内吻合；"
+        "如果候选项带 candidate_group_id/group_items，则按同一 group 的 group_value_million_cny 与 residual 是否吻合判断，"
+        "吻合时可逐条批准该 group 内每个缺失字段。\n"
         "2. 候选字段必须能对应年报科目；如果只是规则猜测但字段不可靠，不批准。\n"
         "3. 只批准 suspected TuShare field missing/zero 的情形；重复计入或分类错误不批准。\n"
         "4. 已知 TuShare 字段缺失模式（按年报核对提示卡），金额吻合且字段匹配时可批准；"

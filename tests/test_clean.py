@@ -119,6 +119,34 @@ class TestIncomeStatementChecks:
         errors = clean.check_is(row, present, "2024")
         assert any("IS 1.3" in e for e in errors)
 
+    def test_check_is_allows_missing_optional_operating_adjustment_fields(self):
+        row = self._minimal_is_row(
+            assets_impair_loss=-20.0,
+            total_cogs=700.0,
+            operate_profit=335.0,
+            total_profit=340.0,
+            n_income=251.25,
+            n_income_attr_p=235.0,
+        )
+        present = {k for k, v in row.items() if v != 0.0}
+        present.add("oth_income")
+
+        errors = clean.check_is(row, present, "2024", sign_map={"assets_impair_loss": 1})
+
+        assert errors == []
+
+    def test_annual_income_subtotal_adaptation_prefers_stable_cost_detail(self):
+        row = self._minimal_is_row(total_cogs=760.0)
+        wide = pd.DataFrame([row], index=["2024"])
+        wide = clean.ensure_qa_columns(wide)
+        present = {"2024": {k for k, v in row.items() if v != 0.0}}
+
+        records = clean.apply_annual_income_subtotal_adaptations(wide, present, "000001.SZ")
+
+        assert wide.loc["2024", "total_cogs"] == pytest.approx(700.0)
+        assert len(records) == 1
+        assert records[0]["code"] == "annual_income_subtotal_adaptation"
+
 
 class TestResolveIsSigns:
     def _row(self, **overrides: float) -> dict[str, float]:
@@ -294,7 +322,6 @@ class TestBalanceSheetChecks:
         errors, warnings = clean.check_bs(row, present, "2024")
         assert errors == []
         assert any("treasury_share" in w for w in warnings)
-
 
 class TestCashFlowChecks:
     def _minimal_cf_row(self, **overrides: float) -> dict[str, float]:

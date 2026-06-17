@@ -72,3 +72,22 @@ class TestIsPermanentError:
 
     def test_network_timeout_is_not_permanent(self):
         assert not data_fetcher.is_permanent_error(RuntimeError("timeout"))
+
+
+class TestOfficialTuShareSource:
+    def test_default_tushare_url_is_official(self):
+        assert data_fetcher.DEFAULT_TUSHARE_HTTP_URL == "http://api.waditu.com/dataapi"
+
+    def test_non_official_tushare_url_is_rejected_before_sdk_import(self):
+        with pytest.raises(ValueError, match="official TuShare source"):
+            data_fetcher.create_tushare_client(token="fake-token", http_url="https://example.invalid")
+
+    def test_income_report_type_2_is_not_required_for_health_check(self):
+        assert data_fetcher.REQUIRED_REPORT_TYPES_BY_ENDPOINT["income"] == (
+            data_fetcher.REPORT_TYPE_CONSOLIDATED,
+        )
+
+    def test_official_doc_fields_read_from_skill_export(self):
+        fields = data_fetcher.official_doc_fields("income")
+        assert fields["total_cogs"][0] == "float"
+        assert "营业总成本" in fields["total_cogs"][1]

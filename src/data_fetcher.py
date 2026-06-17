@@ -17,6 +17,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from urllib.parse import urlparse
 
 import pandas as pd
 
@@ -25,8 +26,10 @@ LOGGER = logging.getLogger("data_fetcher")
 
 TICKER_RE = re.compile(r"^\d{6}\.(SH|SZ|BJ)$")
 BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_TUSHARE_HTTP_URL = "https://fastapic.stockai888.top"
+DEFAULT_TUSHARE_HTTP_URL = "http://api.waditu.com/dataapi"
 DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 0.8
+OFFICIAL_TUSHARE_DOC_DIR = BASE_DIR / "TushareOfficialAPIMD"
+ALLOWED_TUSHARE_HTTP_HOSTS = {"api.waditu.com", "api.tushare.pro"}
 
 REPORT_TYPE_CONSOLIDATED = "1"
 REPORT_TYPE_SINGLE_QUARTER_CONSOLIDATED = "2"
@@ -35,16 +38,16 @@ STATEMENT_REPORT_TYPES = (
     REPORT_TYPE_SINGLE_QUARTER_CONSOLIDATED,
 )
 REQUIRED_REPORT_TYPES_BY_ENDPOINT = {
-    "income": STATEMENT_REPORT_TYPES,
+    "income": (REPORT_TYPE_CONSOLIDATED,),
     "balancesheet": (REPORT_TYPE_CONSOLIDATED,),
     "cashflow": (REPORT_TYPE_CONSOLIDATED,),
 }
 GENERAL_INDUSTRIAL_COMP_TYPE = "1"
 
 OFFICIAL_STATEMENT_DOCS = {
-    "income": 33,
-    "balancesheet": 36,
-    "cashflow": 44,
+    "income": "income.md",
+    "balancesheet": "balancesheet.md",
+    "cashflow": "cashflow.md",
 }
 
 STATEMENT_METADATA_FIELDS = {
@@ -105,16 +108,6 @@ class DataHealthError(RuntimeError):
 
 _OFFICIAL_DOC_CACHE: dict[str, dict[str, tuple[str, str]]] = {}
 _OFFICIAL_MAPPING_CACHE: dict[str, list[FieldMapping]] = {}
-
-METADATA_FIELDS = [
-    "ts_code",
-    "ann_date",
-    "f_ann_date",
-    "end_date",
-    "report_type",
-    "comp_type",
-    "update_flag",
-]
 
 
 def fetch_company(
@@ -204,7 +197,6 @@ class TushareDataFetcher:
                 self._fetch_statement(
                     endpoint,
                     ticker,
-                    official_statement_mappings(endpoint),
                     report_type,
                 )
                 for report_type in STATEMENT_REPORT_TYPES
@@ -271,11 +263,9 @@ class TushareDataFetcher:
         self,
         endpoint: str,
         ticker: str,
-        mappings: list[FieldMapping],
         report_type: str,
     ) -> Any:
-        fields = fields_for_mappings(mappings)
-        df = self._call_api(endpoint, ts_code=ticker, report_type=report_type, fields=fields)
+        df = self._call_api(endpoint, ts_code=ticker, report_type=report_type)
         return filter_and_dedupe_statement(df, endpoint, report_type)
 
     def _fetch_daily_basic(self, ticker: str, trade_date: str) -> Any:
@@ -402,6 +392,9 @@ def create_tushare_client(token: str | None = None, http_url: str | None = None)
     )
     if not token:
         raise RuntimeError("TUSHARE_TOKEN is missing; set it in the environment or .env")
+    host = urlparse(http_url).netloc.lower()
+    if host not in ALLOWED_TUSHARE_HTTP_HOSTS:
+        raise ValueError(f"TUSHARE_HTTP_URL must use official TuShare source, not {host}")
     try:
         import tushare as ts
     except ImportError as exc:
@@ -482,12 +475,6 @@ def sanitize_path_part(value: str) -> str:
     return sanitized or "unknown"
 
 
-def fields_for_mappings(mappings: list[FieldMapping], include_report_type: bool = True) -> str:
-    fields = list(METADATA_FIELDS if include_report_type else ["ts_code", "ann_date", "end_date", "update_flag"])
-    fields.extend(mapping.field for mapping in mappings)
-    return ",".join(dict.fromkeys(fields))
-
-
 def official_statement_mappings(endpoint: str) -> list[FieldMapping]:
     if endpoint in _OFFICIAL_MAPPING_CACHE:
         return _OFFICIAL_MAPPING_CACHE[endpoint]
@@ -509,8 +496,8 @@ def official_statement_mappings(endpoint: str) -> list[FieldMapping]:
 def official_doc_fields(endpoint: str) -> dict[str, tuple[str, str]]:
     if endpoint in _OFFICIAL_DOC_CACHE:
         return _OFFICIAL_DOC_CACHE[endpoint]
-    doc_id = OFFICIAL_STATEMENT_DOCS[endpoint]
-    path = BASE_DIR / ".refs" / "tushare-docs" / f"{doc_id}.md"
+    doc_file = OFFICIAL_STATEMENT_DOCS[endpoint]
+    path = OFFICIAL_TUSHARE_DOC_DIR / doc_file
     if not path.exists():
         raise RuntimeError(f"Official TuShare doc is missing: {path}")
     fields: dict[str, tuple[str, str]] = {}

@@ -73,10 +73,7 @@ IS_FIELD_CATEGORIES: dict[str, str] = {
     "admin_exp": "cost_item",
     "fin_exp": "cost_item",
     "rd_exp": "cost_item",
-    "assets_impair_loss": "cost_item",
-    "credit_impa_loss": "cost_item",
     "other_bus_cost": "cost_item",
-    "oth_impair_loss_assets": "cost_item",
     "int_exp": "cost_item",
     "comm_exp": "cost_item",
     "prem_refund": "cost_item",
@@ -99,6 +96,9 @@ IS_FIELD_CATEGORIES: dict[str, str] = {
     "asset_disp_income": "operating_adjustment",
     "net_expo_hedging_benefits": "operating_adjustment",
     "forex_gain": "operating_adjustment",
+    "assets_impair_loss": "operating_adjustment",
+    "credit_impa_loss": "operating_adjustment",
+    "oth_impair_loss_assets": "operating_adjustment",
 
     # ── 营业外收支 (2) ──
     "non_oper_income": "below_line",
@@ -172,6 +172,15 @@ SIGN_QUESTIONABLE_IS_FIELDS = {
     "assets_impair_loss",
     "credit_impa_loss",
     "oth_impair_loss_assets",
+}
+
+OPTIONAL_IS_ADJUSTMENT_FIELDS = {
+    "oth_income",
+    "credit_impa_loss",
+    "oth_impair_loss_assets",
+    "asset_disp_income",
+    "net_expo_hedging_benefits",
+    "forex_gain",
 }
 
 
@@ -1055,15 +1064,34 @@ def signed_is_cost_sum(row: dict[str, float], sign_map: dict[str, int] | None) -
 
 def signed_is_adjustment_sum(row: dict[str, float], sign_map: dict[str, int] | None) -> float:
     """Sum operating_adjustment fields plus sign-questionable fields with resolved signs."""
+    total = base_is_adjustment_sum(row)
+    for field in SIGN_QUESTIONABLE_IS_FIELDS:
+        if sign_map and field in sign_map:
+            total += sign_map[field] * get_income_value(row, field)
+        else:
+            total += get_income_value(row, field)
+    return total
+
+
+def base_is_adjustment_sum(row: dict[str, float]) -> float:
+    """Sum operating adjustments excluding sign-questionable impairment fields."""
     total = 0.0
     for field, cat in IS_FIELD_CATEGORIES.items():
         if cat != "operating_adjustment":
             continue
+        if field in SIGN_QUESTIONABLE_IS_FIELDS:
+            continue
         total += get_income_value(row, field)
-    if sign_map:
-        for field, sign in sign_map.items():
-            total += sign * get_income_value(row, field)
     return total
+
+
+def missing_optional_is_adjustments(row: dict[str, float], present: set[str]) -> list[str]:
+    """Return optional operating adjustment fields present in raw but empty in clean."""
+    missing: list[str] = []
+    for field in sorted(OPTIONAL_IS_ADJUSTMENT_FIELDS):
+        if field in present and abs(get_income_value(row, field)) <= 1e-9:
+            missing.append(field)
+    return missing
 
 
 def resolve_is_signs(
@@ -1113,7 +1141,7 @@ def resolve_is_signs(
     operate_profit = get_income_value(row, "operate_profit")
 
     stable_cost_sum = signed_is_cost_sum(row, None)
-    stable_adj_sum = signed_is_adjustment_sum(row, None)
+    stable_adj_sum = base_is_adjustment_sum(row)
 
     Q_present = [
         f
@@ -1181,8 +1209,9 @@ def resolve_is_signs(
                 f"noise_band={noise_band:.4f}"
             ]
 
-    return None, [
-        f"IS sign {year} 口径断点/符号不可判: fields={Q_present}, "
+    sign_map = make_map(semantic_signs)
+    return sign_map, [
+        f"IS sign {year} retained semantic reported signs with unresolved optional-adjustment residual: fields={Q_present}, "
         f"values=[{values_str}], semantic=({format_pairs(semantic_signs)}, "
         f"residual={semantic_residual:.4f}), best=({format_pairs(best_signs)}, "
         f"residual={best_signed_residual:.4f}), tolerance={tolerance:.4f}"
@@ -1264,10 +1293,18 @@ def check_is(row: dict[str, float], present: set[str], year: str, sign_map: dict
         oper_profit_calc = revenue_base - total_cogs + is_bucket_sum("operating_adjustment", row, present)
     residual = abs(operate_profit - oper_profit_calc)
     if residual >= TOLERANCE:
-        errors.append(
-            f"IS 1.2 {year} 营业利润: operate_profit={operate_profit:.4f} "
-            f"calc={oper_profit_calc:.4f} residual={residual:.4f}"
-        )
+        missing_optional = missing_optional_is_adjustments(row, present)
+        if missing_optional:
+            LOGGER.warning(
+                "IS 1.2 %s uses official operate_profit because optional operating adjustments are empty: "
+                "missing=%s operate_profit=%.4f calc=%.4f residual=%.4f",
+                year, missing_optional, operate_profit, oper_profit_calc, residual,
+            )
+        else:
+            errors.append(
+                f"IS 1.2 {year} 营业利润: operate_profit={operate_profit:.4f} "
+                f"calc={oper_profit_calc:.4f} residual={residual:.4f}"
+            )
 
     # 1.3 利润总额
     total_profit = get_income_value(row, "total_profit")
@@ -1498,6 +1535,51 @@ def apply_quarterly_bs_plugs(
     return records
 
 
+def apply_annual_income_subtotal_adaptations(
+    wide: pd.DataFrame,
+    present_by_period: dict[str, set[str]],
+    ticker: str,
+) -> list[dict[str, object]]:
+    """Prefer stable cost detail when official annual total_cogs conflicts."""
+    records: list[dict[str, object]] = []
+    created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    for period in sorted(str(period) for period in wide.index.tolist()):
+        row = wide.loc[period].to_dict()
+        present = present_by_period.get(period, set())
+        if "total_cogs" not in present:
+            continue
+        official_total = get_income_value(row, "total_cogs")
+        detail_total = signed_is_cost_sum(row, None)
+        residual = official_total - detail_total
+        if abs(residual) < TOLERANCE or abs(detail_total) < 1e-9:
+            continue
+
+        wide.loc[period, "total_cogs"] = detail_total
+        message = (
+            f"{period} IS 1.1 官方 total_cogs 与稳定成本明细不一致，clean 使用明细重算值："
+            f"official={official_total:.4f}, detail={detail_total:.4f}, residual={residual:.4f}。"
+        )
+        records.append(
+            {
+                "created_at": created_at,
+                "ticker": ticker,
+                "period": period,
+                "severity": "warning",
+                "code": "annual_income_subtotal_adaptation",
+                "message": message,
+                "source": "clean.py:annual_income_subtotal_adaptation",
+                "evidence": (
+                    f"field=total_cogs; official={official_total:.4f}; "
+                    f"stable_cost_detail={detail_total:.4f}; residual={residual:.4f}"
+                ),
+            }
+        )
+        LOGGER.warning("⚠️  %s", message)
+
+    return records
+
+
 def apply_quarterly_cf_cash_plugs(
     wide: pd.DataFrame,
     ticker: str,
@@ -1684,6 +1766,33 @@ def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]
     """Soft checks — warnings only."""
     warnings: list[str] = []
 
+    revenue = get_income_value(row, "revenue")
+    total_revenue = get_income_value(row, "total_revenue")
+    other_revenue = (
+        get_income_value(row, "int_income")
+        + get_income_value(row, "comm_income")
+        + get_income_value(row, "n_oth_b_income")
+    )
+    revenue_base = revenue
+    if abs(total_revenue - revenue) >= TOLERANCE and abs(total_revenue - revenue - other_revenue) < TOLERANCE:
+        revenue_base = total_revenue
+
+    semantic_sign_map = {field: 1 for field in SIGN_QUESTIONABLE_IS_FIELDS}
+    oper_profit_calc = (
+        revenue_base
+        - signed_is_cost_sum(row, None)
+        + signed_is_adjustment_sum(row, semantic_sign_map)
+    )
+    operate_profit = get_income_value(row, "operate_profit")
+    optional_gap = operate_profit - oper_profit_calc
+    missing_optional = missing_optional_is_adjustments(row, present)
+    if abs(optional_gap) >= TOLERANCE and missing_optional:
+        warnings.append(
+            f"IS 1.2 {year} 官方源缺少可选营业调整项，营业利润按官方 subtotal 保留: "
+            f"missing={missing_optional} operate_profit={operate_profit:.4f} "
+            f"calc={oper_profit_calc:.4f} residual={optional_gap:.4f}"
+        )
+
     # 7.2 IS 财务费用 vs CF 附注财务费用 (soft — CF finan_exp is often
     # the interest expense component only, not the net fin_exp)
     is_fin_exp = get_income_value(row, "fin_exp")
@@ -1705,7 +1814,6 @@ def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]
         )
 
     # 10.1 方向合理性
-    revenue = get_income_value(row, "revenue")
     total_assets = get_value(row, "total_assets")
     n_income_attr_p = get_income_value(row, "n_income_attr_p")
     basic_eps = get_income_value(row, "basic_eps")
@@ -1723,8 +1831,6 @@ def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]
     # 10.2 量级合理性
     if total_assets > 10_000_000:
         warnings.append(f"10.2 {year} 总资产 {total_assets:.0f}M > 10万亿，请确认")
-    total_revenue = get_income_value(row, "total_revenue")
-    operate_profit = get_income_value(row, "operate_profit")
     if total_revenue > 0 and abs(operate_profit) > total_revenue:
         warnings.append(f"10.2 {year} 营业利润绝对值({operate_profit:.4f})大于营业收入({total_revenue:.4f})")
 
@@ -2204,10 +2310,14 @@ def clean_dataset(
         if warning_records is not None:
             warning_records.extend(cf_cash_warnings)
             warning_records.extend(bs_plug_warnings)
-    elif mode == "annual" and annual_overrides:
-        applied = apply_annual_overrides(wide, present_by_period, ticker, annual_overrides)
-        if applied_adjustments is not None:
-            applied_adjustments.extend(applied)
+    elif mode == "annual":
+        income_adaptation_warnings = apply_annual_income_subtotal_adaptations(wide, present_by_period, ticker)
+        if warning_records is not None:
+            warning_records.extend(income_adaptation_warnings)
+        if annual_overrides:
+            applied = apply_annual_overrides(wide, present_by_period, ticker, annual_overrides)
+            if applied_adjustments is not None:
+                applied_adjustments.extend(applied)
 
     old_tolerance = TOLERANCE
     TOLERANCE = tolerance
