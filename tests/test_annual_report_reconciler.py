@@ -59,7 +59,9 @@ def test_batch_confirm_chunks_by_failure_and_isolates_errors(monkeypatch):
     assert result.get("partial") is True
     assert [e["period"] for e in result["chunk_errors"]] == ["2099"]
     assert result["_usage"]["total_tokens"] == 20  # 2 successful chunks × 10 (2099 errored)
-    assert seen_periods == ["2019", "2020", "2099"]
+    # Chunks now confirm concurrently, so call order is not guaranteed; the
+    # contract is that every (period, code) chunk is confirmed exactly once.
+    assert sorted(seen_periods) == ["2019", "2020", "2099"]
 
 
 def test_batch_confirm_empty_candidates_returns_empty():

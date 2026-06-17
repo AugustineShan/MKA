@@ -10,8 +10,9 @@ import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable, TypeVar
 
 import requests
 
@@ -145,6 +146,54 @@ def llm_timeout_seconds(provider: str) -> int:
     if provider == "kimi":
         return int(os.environ.get("KIMI_TIMEOUT_SECONDS", os.environ.get("LLM_TIMEOUT_SECONDS", str(LLM_TIMEOUT_SECONDS))))
     return int(os.environ.get("LLM_TIMEOUT_SECONDS", str(LLM_TIMEOUT_SECONDS)))
+
+
+_T = TypeVar("_T")
+_R = TypeVar("_R")
+
+
+def llm_max_workers() -> int:
+    """Bounded concurrency for independent LLM calls (per-year confirm / analyze).
+
+    Each call keeps its own provider timeout + retry; concurrency only collapses
+    wall-clock from sum(calls) to ~max(call). Default 6 is conservative for
+    GLM/Kimi rate limits; override with LLM_MAX_WORKERS.
+    """
+    try:
+        return max(1, int(os.environ.get("LLM_MAX_WORKERS", "6")))
+    except ValueError:
+        return 6
+
+
+def parallel_map(
+    func: Callable[[_T], _R],
+    items: Iterable[_T],
+    *,
+    max_workers: int | None = None,
+) -> list[_R]:
+    """Run ``func`` over ``items`` concurrently, returning results in input order.
+
+    Order-preserving (result[i] corresponds to items[i]) so callers stay
+    deterministic regardless of completion order. Exceptions propagate exactly
+    as in a serial loop (first failing result re-raises after in-flight tasks
+    settle). A single item or max_workers==1 runs inline without thread overhead.
+    """
+    materialized = list(items)
+    if not materialized:
+        return []
+    workers = max(1, min(max_workers or llm_max_workers(), len(materialized)))
+    if workers == 1:
+        return [func(item) for item in materialized]
+
+    results: list[Any] = [None] * len(materialized)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_index = {
+            executor.submit(func, item): idx
+            for idx, item in enumerate(materialized)
+        }
+        for future in as_completed(future_to_index):
+            results[future_to_index[future]] = future.result()
+    return results
 
 
 def call_llm(messages: list[dict[str, str]]) -> dict[str, Any]:

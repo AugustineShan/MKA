@@ -1077,6 +1077,8 @@ MKA/
 | 2026-06-14 | 理解层正式入口 `forecast.py`（`defaults.yaml + yaml1*.yaml → forecast/`）；ModelKing 只读 Web 工作台（`workbench.py` + `app/`）；财务费用细则分析器 |
 | 2026-06-15 | `calc.py` 终值重构（稳态 terminal FCFF + DCF sensitivity 三参数实时调节）；`forecast.py` 拼接历史 `full_*.csv` |
 | 2026-06-16 | formula/DAG 受限执行器落地（`yaml1_formula.py`，实验性·仅合成 fixture 验证）；回绿测试基线（冻结 fixture + 不变式，83 passed） |
+| 2026-06-17 | reconciler 通用性加固（格力 000651 验证：30 个年度硬失败全靠年报证据配平，年度零 plug）：LLM 确认按 (period,code) 分片调用（单次大调用会 ReadTimeout 丢全部证据）；`call_llm` temperature→0 + 重试 + finish_reason 截断检测（根治"伪不稳定"）；默认超时兑齐 300s；年报 statement/term snippet 窗口放宽（覆盖含金融子公司的长合并报表）；单字段精确命中残差时抑制投机性 group；`target_lt_calc` 按 -residual 匹配负值缺失项（如终止经营净亏损）；子串别名碰撞抑制（"应收款项"⊂"应收款项融资"）；自动核对 max-failures 默认 20/12→60；新增 `receiv_financing`（应收款项融资）已知缺陷卡 |
+| 2026-06-17 | LLM 调用并发化：`annual_report_utils.parallel_map`（有界、保序、异常透传）作为唯一并发开关（`LLM_MAX_WORKERS`，默认 6）；reconciler 的 (period,code) 分片确认与 `financial_expense_analyzer` 的逐年分析从串行循环改为并发——分片已相互隔离，每次调用各自保留超时/重试/`chunk_errors` 审计，输出经 `zip(order,…)` 保持字节级确定性；墙钟从"逐次相加"压成"最慢一次"，取数/下载不变 |
 
 ---
 

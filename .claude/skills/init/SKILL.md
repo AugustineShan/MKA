@@ -61,6 +61,13 @@ python -m src.init <用户输入>
 - 失败的那次 clean 运行不会被改判；override 只在重跑时应用——这套两段式已由 `init.py` 自动完成，你无需手工敲 `annual_report_reconciler.py`。
 - 汇报用事实，不用营销词。补全过的科目要讲清来源是年报、可追溯。
 
+## 性能与耗时预期（通用，排查"慢"先看这里）
+
+- **"init 慢"≈"在等串行 LLM"，几乎从不是 TuShare 取数或年报下载慢。** 取数 0.8s/次、下载已多线程；真正的墙钟时间花在两处 LLM 循环：clean 年度失败后的 **reconcile 配平确认**，和 **财务费用细则**逐年分析。排查慢按全局 CLAUDE.md 的调试顺序：先查并发/超时，最后才怀疑模型。
+- **这两处 LLM 循环已并发**（有界线程池，`LLM_MAX_WORKERS` 默认 6）：N 个失败年×bucket / N 个年份不再相加，墙钟≈最慢的一次。每次调用仍各自保留超时+重试+`chunk_errors` 分片审计，不会因并发静默吞错。公司失败年份很多时首跑仍要几分钟，但已是"最慢一次"而非"逐次相加"，属正常。
+- **首跑 vs 复跑成本不对称**：首跑要付 K 次 LLM 确认 + K 次 PDF→Markdown 解析；复跑几乎免费（年报 PDF/MD、`financial_expense.yaml`、approved override 全部缓存/跳过）。所以反复 init 同一公司廉价。`--force` 会重新付全部 LLM 成本，仅在确需重算时用。
+- 单公司还嫌慢可临时调大并发：`LLM_MAX_WORKERS=10 python -m src.init <公司>`（受 GLM/Kimi 速率限制约束，别盲目调高）。
+
 ## 报告怎么转述给用户
 
 init.py 已打印结构化报告，包含：

@@ -34,6 +34,7 @@ from src.annual_report_utils import (
     find_company_dir,
     find_line,
     load_env,
+    parallel_map,
     read_json,
     read_md_lines,
     write_json,
@@ -524,8 +525,13 @@ def analyze_all_periods(
     latest_period: str | None = None
     latest_record: dict[str, Any] | None = None
 
-    for base_period, row in rows:
-        record = _analyze_period(ticker, company_dir, db_path, base_period, row)
+    # Each period is independent (own markdown slice + own LLM call, no shared
+    # state), so analyze them concurrently. parallel_map preserves input order.
+    records = parallel_map(
+        lambda item: _analyze_period(ticker, company_dir, db_path, item[0], item[1]),
+        rows,
+    )
+    for (base_period, _row), record in zip(rows, records):
         periods[base_period] = record
         if latest_period is None or base_period > latest_period:
             latest_period = base_period

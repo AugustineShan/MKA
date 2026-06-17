@@ -37,6 +37,7 @@ from src.annual_report_utils import (
     find_line,
     load_env,
     llm_provider,
+    parallel_map,
     parse_ticker,
     read_md_lines,
     write_json,
@@ -1089,8 +1090,14 @@ def batch_llm_confirm_candidates(
     provider: str | None = None
     model: str | None = None
 
-    for key in order:
-        result = _confirm_candidate_chunk(ticker, chunks[key], known_defects)
+    # Chunks are independent (one timeout no longer discards the others), so
+    # confirm them concurrently. parallel_map preserves `order`, so the merged
+    # output is byte-for-byte identical to the previous serial loop.
+    chunk_results = parallel_map(
+        lambda key: _confirm_candidate_chunk(ticker, chunks[key], known_defects),
+        order,
+    )
+    for key, result in zip(order, chunk_results):
         provider = provider or result.get("_provider")
         model = model or result.get("_model")
         usage = result.get("_usage")
