@@ -46,7 +46,12 @@ from src.annual_report_utils import (
 DOCS_DIR = ROOT / "TushareOfficialAPIMD"
 KNOWN_DEFECTS_PATH = ROOT / "knowledge" / "known_tushare_defects.json"
 
-DEFAULT_MAX_FAILURES = 12
+# 单次自动核对分析的年度失败上限。年度失败天然有界（约 ≤10 年年报 × 每年少数
+# 勾稽检查），复杂公司（如有金融子公司、逐年漏同一明细字段）可达 30+ 个失败。
+# 上限太低会让复杂公司"永远补不全"——简单公司能过、复杂公司悄悄漏，等同隐性公司特判。
+# LLM 确认已按失败分片（见 batch_llm_confirm_candidates），单片成本独立，故放宽到可
+# 覆盖完整年报历史；仍保留一个上限作为失控保护。
+DEFAULT_MAX_FAILURES = 60
 EVIDENCE_VERSION = 1
 OVERRIDE_VERSION = 1
 COMMON_ANNUAL_ALIASES = {
@@ -433,17 +438,25 @@ def slim_markdown_context_for_llm(markdown_context: dict[str, Any]) -> dict[str,
     snippets = markdown_context.get("snippets")
     if not isinstance(snippets, list):
         return markdown_context
-    compact_snippets = []
+    # glm-5-turbo carries 150–200k context, so there is no reason to collapse to
+    # a single truncated snippet. Keep the full statement snippet plus a generous
+    # set of term snippets; only bound the total to stay well within context.
+    MAX_SNIPPETS = 24
+    PER_SNIPPET_CHARS = 24000
+    TOTAL_CHARS = 160000
+    compact_snippets: list[dict[str, Any]] = []
+    total = 0
     for snippet in snippets:
         if not isinstance(snippet, dict):
             continue
-        if compact_snippets and snippet.get("kind") != "statement":
-            continue
-        text = str(snippet.get("text", ""))
+        text = str(snippet.get("text", ""))[:PER_SNIPPET_CHARS]
+        if total + len(text) > TOTAL_CHARS:
+            break
         compact = dict(snippet)
-        compact["text"] = text[:14000]
+        compact["text"] = text
         compact_snippets.append(compact)
-        if len(compact_snippets) >= 1:
+        total += len(text)
+        if len(compact_snippets) >= MAX_SNIPPETS:
             break
     return {**markdown_context, "snippets": compact_snippets}
 
@@ -462,32 +475,42 @@ def extract_markdown_context(
     snippets: list[dict[str, Any]] = []
     used_ranges: list[tuple[int, int]] = []
 
-    # 1. Statement-level snippet (balance sheet / income / cashflow)
+    # 1. Statement-level snippet (balance sheet / income / cashflow).
+    #    A full consolidated statement can run several hundred extracted lines —
+    #    e.g. companies with financial subsidiaries push receivables/financing
+    #    lines 250+ lines below the heading. A short window silently cut those
+    #    off, so the residual-matching line was never seen. glm-5-turbo carries
+    #    150–200k context, so capture the whole statement generously.
     for marker in section_markers(failure):
         idx = find_line(lines, marker)
         if idx is not None:
-            window = compact_window(lines, idx, before=10, after=170)
+            window = compact_window(lines, idx, before=10, after=520)
             snippets.append({"kind": "statement", "patterns": marker, **window})
             used_ranges.append((window["start_line"], window["end_line"]))
             break
 
     # 2. Term-level snippets: generate one for *every* occurrence so the LLM
     #    can pick the context where the matching number actually appears.
-    #    Kimi context is ~200k; 20 snippets of ~100 lines each is trivial.
+    #    glm-5-turbo context is 150–200k; 40 snippets of ~120 lines each is
+    #    well within budget and avoids dropping the relevant occurrence.
     terms = add_known_defect_search_terms(
         search_terms_for_failure(failure, field_context),
         known_defect_hints or [],
     )
-    MAX_TERM_SNIPPETS = 20
+    MAX_TERM_SNIPPETS = 40
     for term in terms:
         indices = find_all_lines(lines, [term])
         for idx in indices:
-            window = compact_window(lines, idx, before=18, after=80)
-            span = (window["start_line"], window["end_line"])
-            if _overlaps(span, used_ranges):
+            center_line = idx + 1
+            # Only skip when this exact occurrence line is already inside a
+            # captured snippet; mere window overlap must not drop an occurrence,
+            # otherwise the line that actually carries the matching amount can
+            # fall into the gap between two adjacent snippets.
+            if any(lo <= center_line <= hi for lo, hi in used_ranges):
                 continue
+            window = compact_window(lines, idx, before=20, after=100)
             snippets.append({"kind": "term", "term": term, **window})
-            used_ranges.append(span)
+            used_ranges.append((window["start_line"], window["end_line"]))
             if len(snippets) >= MAX_TERM_SNIPPETS:
                 break
         if len(snippets) >= MAX_TERM_SNIPPETS:
@@ -735,6 +758,15 @@ def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, 
     if residual is None:
         return []
 
+    # A target_lt_calc failure (detail sum > subtotal) means TuShare dropped a
+    # NEGATIVE line item (e.g. a discontinued-operations loss), so the amount
+    # that closes the gap is -residual, not +residual.
+    signed_residual = (
+        -float(residual)
+        if str(failure.get("direction")) == "target_lt_calc"
+        else float(residual)
+    )
+
     snippets = [
         str(snippet.get("text") or "")
         for snippet in analysis.get("annual_report_context", {}).get("snippets", [])
@@ -777,7 +809,7 @@ def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, 
                 "tushare_value_million_cny": old_value,
             }
             matched_items.append(item)
-        single_match = find_alias_amount_match(snippets, aliases, expected_million=float(residual))
+        single_match = find_alias_amount_match(snippets, aliases, expected_million=signed_residual)
         if single_match:
             item = {
                 **single_match,
@@ -792,12 +824,40 @@ def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, 
                     "confidence": "high",
                     **item,
                     "explains_residual": True,
-                    "residual_difference_million_cny": abs(float(residual) - value_million),
+                    "residual_difference_million_cny": abs(signed_residual - value_million),
                 }
             )
 
+    def _evidence_line(sug):
+        ev = str(sug.get("evidence_lines") or "")
+        return ev.split(":", 1)[0].strip()
+
+    spurious_substring: set[int] = set()
+    exact = [s for s in suggestions if s.get("source") == "rule:alias_exact_residual"]
+    for i, a in enumerate(exact):
+        for bsug in exact:
+            if a is bsug:
+                continue
+            item_a = str(a.get("annual_report_item") or "")
+            item_b = str(bsug.get("annual_report_item") or "")
+            same_line = _evidence_line(a) == _evidence_line(bsug)
+            same_value = abs(float(a.get("value_million_cny") or 0) - float(bsug.get("value_million_cny") or 0)) < clean.TOLERANCE
+            if same_line and same_value and item_a != item_b and item_a in item_b:
+                spurious_substring.add(id(a))
+    if spurious_substring:
+        suggestions = [s for s in suggestions if id(s) not in spurious_substring]
+
+    # A single annual-report line item whose name matches a TuShare field and
+    # whose value equals the residual is the most reliable signal possible.
+    # Speculative groups — several fields whose values merely *sum* to the
+    # residual — are far weaker and can attribute the missing amount to the
+    # wrong fields (e.g. acc_receivable+amor_exp+lending_funds coincidentally
+    # summing to a receiv_financing residual). So only build group candidates
+    # when no single exact-residual match exists for this failure.
+    has_exact_single = any(s.get("source") == "rule:alias_exact_residual" for s in suggestions)
     grouped_fields: set[str] = set()
-    for size in range(2, min(5, len(matched_items) + 1)):
+    group_range = range(0) if has_exact_single else range(2, min(5, len(matched_items) + 1))
+    for size in group_range:
         for group in itertools.combinations(matched_items, size):
             fields = tuple(str(item.get("candidate_tushare_field")) for item in group)
             if len(set(fields)) != len(fields):
@@ -805,7 +865,7 @@ def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, 
             if any(field in grouped_fields for field in fields):
                 continue
             group_total = sum(float(item["value_million_cny"]) for item in group)
-            diff = abs(float(residual) - group_total)
+            diff = abs(signed_residual - group_total)
             if diff >= clean.TOLERANCE:
                 continue
             group_id = f"{failure.get('period')}_{failure.get('code')}_{'_'.join(fields)}"
@@ -929,14 +989,16 @@ def validate_batch_llm_response(parsed: dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
-def batch_llm_confirm_candidates(
+def _confirm_candidate_chunk(
     ticker: str,
     candidates: list[dict[str, Any]],
     known_defects: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if not candidates:
-        return {"adjustments": []}
+    """Confirm one small group of candidates in a single LLM call.
 
+    Kept deliberately small (one hard-check failure's candidates) so the request
+    stays well within the provider timeout. See batch_llm_confirm_candidates.
+    """
     payload = {
         "ticker": ticker,
         "unit": "TuShare/clean values are 百万元人民币; annual_report_value_raw is 千元人民币.",
@@ -988,6 +1050,77 @@ def batch_llm_confirm_candidates(
     return validate_batch_llm_response(
         call_llm([{"role": "system", "content": system}, {"role": "user", "content": user}])
     )
+
+
+def batch_llm_confirm_candidates(
+    ticker: str,
+    candidates: list[dict[str, Any]],
+    known_defects: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Confirm rule-based candidates via the LLM, chunked per hard-check failure.
+
+    A single monolithic call carrying every candidate scales with the number of
+    failing periods/buckets; complex companies (many year×bucket failures) make
+    that one request slow enough to ReadTimeout, which drops *all* annual-report
+    evidence and yields zero overrides. Chunking by (period, code) keeps every
+    call small and within the provider timeout, keeps a candidate group's
+    members together, and isolates failures: one chunk timing out no longer
+    discards the others' confirmations. The return shape stays identical
+    (adjustments list + provider/usage metadata) so callers are unaffected.
+    """
+    if not candidates:
+        return {"adjustments": []}
+
+    # Group by hard-check failure; grouped (candidate_group_id) members always
+    # share one (period, code) so they stay in the same chunk.
+    chunks: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    order: list[tuple[str, str]] = []
+    for cand in candidates:
+        failure = cand.get("failure", {}) if isinstance(cand, dict) else {}
+        key = (str(failure.get("period")), str(failure.get("code")))
+        if key not in chunks:
+            chunks[key] = []
+            order.append(key)
+        chunks[key].append(cand)
+
+    merged_adjustments: list[dict[str, Any]] = []
+    chunk_errors: list[dict[str, Any]] = []
+    usage_total: dict[str, Any] = {}
+    provider: str | None = None
+    model: str | None = None
+
+    for key in order:
+        result = _confirm_candidate_chunk(ticker, chunks[key], known_defects)
+        provider = provider or result.get("_provider")
+        model = model or result.get("_model")
+        usage = result.get("_usage")
+        if isinstance(usage, dict):
+            for name, value in usage.items():
+                if isinstance(value, (int, float)):
+                    usage_total[name] = usage_total.get(name, 0) + value
+        if result.get("error"):
+            chunk_errors.append(
+                {
+                    "period": key[0],
+                    "code": key[1],
+                    "error": result.get("error"),
+                    "detail": result.get("detail"),
+                }
+            )
+            continue
+        merged_adjustments.extend(result.get("adjustments", []))
+
+    out: dict[str, Any] = {"adjustments": merged_adjustments}
+    if provider:
+        out["_provider"] = provider
+    if model:
+        out["_model"] = model
+    if usage_total:
+        out["_usage"] = usage_total
+    if chunk_errors:
+        out["chunk_errors"] = chunk_errors
+        out["partial"] = True
+    return out
 
 
 def _build_adjustment_record(

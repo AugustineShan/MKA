@@ -19,7 +19,10 @@ import requests
 ROOT = Path(__file__).resolve().parent.parent
 COMPANIES_DIR = ROOT / "companies"
 
-LLM_TIMEOUT_SECONDS = 120
+# 默认 LLM 请求超时（秒）。结构化的年报勾稽确认是推理型任务，glm-5-turbo 单批可达
+# ~150s，kimi 更慢；统一兑齐到 300s，避免未显式配置 *_TIMEOUT_SECONDS 的 provider
+# （历史上 kimi 默认仅 120s）在复杂公司上 ReadTimeout 丢掉全部年报证据。
+LLM_TIMEOUT_SECONDS = 300
 
 
 def load_env(path: Path) -> None:
@@ -158,12 +161,40 @@ def call_llm(messages: list[dict[str, str]]) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "max_tokens": int(os.environ.get("LLM_MAX_TOKENS", os.environ.get("KIMI_MAX_TOKENS", "8192"))),
+        "max_tokens": int(os.environ.get("LLM_MAX_TOKENS", os.environ.get("KIMI_MAX_TOKENS", "16384"))),
         "response_format": {"type": "json_object"},
     }
     # kimi-k2.6 only allows temperature=1; skip it for Kimi to use the default.
+    # For every other provider use temperature=0: the hard-check reconciliation
+    # is a deterministic accounting judgement, and any randomness made the same
+    # candidate get approved one year and rejected the next (false "instability").
     if provider != "kimi":
-        body["temperature"] = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
+        body["temperature"] = float(os.environ.get("LLM_TEMPERATURE", "0"))
+
+    # Transient failures (network blips, empty/truncated bodies, malformed JSON)
+    # must not silently drop an entire confirmation chunk. Retry with backoff;
+    # only return the error after the final attempt.
+    attempts = max(1, int(os.environ.get("LLM_MAX_RETRIES", "3")))
+    last_error: dict[str, Any] = {}
+    for attempt in range(attempts):
+        result = _call_llm_once(provider, url, api_key, body, model)
+        if not result.get("error"):
+            return result
+        last_error = result
+        if attempt < attempts - 1:
+            time.sleep(2 * (attempt + 1))
+    last_error.setdefault("_provider", provider)
+    last_error["_attempts"] = attempts
+    return last_error
+
+
+def _call_llm_once(
+    provider: str,
+    url: str,
+    api_key: str,
+    body: dict[str, Any],
+    model: str,
+) -> dict[str, Any]:
     try:
         response = requests.post(
             url,
@@ -176,12 +207,28 @@ def call_llm(messages: list[dict[str, str]]) -> dict[str, Any]:
     if response.status_code >= 400:
         return {"error": f"{provider} HTTP {response.status_code}", "body": response.text[:1000], "_provider": provider}
 
-    data = response.json()
-    content = data["choices"][0]["message"]["content"]
+    try:
+        data = response.json()
+        choice = data["choices"][0]
+        content = choice["message"]["content"]
+    except (ValueError, KeyError, IndexError) as exc:
+        return {"error": f"{provider} response had no usable content: {type(exc).__name__}", "_provider": provider}
+
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "length":
+        # Truncated output is unparseable JSON; treat as retryable so a larger
+        # response can complete instead of dropping the chunk.
+        return {
+            "error": f"{provider} response truncated (finish_reason=length); raise LLM_MAX_TOKENS",
+            "_provider": provider,
+        }
+    if not content or not content.strip():
+        return {"error": f"{provider} returned empty content", "_provider": provider}
+
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
-        parsed = {"error": "LLM response was not valid JSON", "raw": content}
+        return {"error": "LLM response was not valid JSON", "raw": content[:1000], "_provider": provider}
     parsed["_usage"] = data.get("usage", {})
     parsed["_model"] = data.get("model", model)
     parsed["_provider"] = provider

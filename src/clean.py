@@ -2423,7 +2423,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-overrides", action="store_true", help="Do not apply approved annual-report overrides")
     parser.add_argument("--mode", choices=["annual", "quarterly", "all"], default="all", help="Which clean table(s) to build")
     parser.add_argument("--no-auto-reconcile", action="store_true", help="Do not run annual_report_reconciler.py after annual hard-check failure")
-    parser.add_argument("--auto-reconcile-max-failures", type=int, default=20, help="Maximum annual failures to analyze when auto-reconciliation is triggered")
+    parser.add_argument("--auto-reconcile-max-failures", type=int, default=60, help="Maximum annual failures to analyze when auto-reconciliation is triggered. Complex companies (financial subsidiaries, recurring missing fields) can exceed 30 failures; the cap must cover the full annual history so they reconcile fully rather than silently leaving later years unbalanced.")
     parser.add_argument("--max-quarters", type=int, default=48, help="Maximum quarterly periods to retain (default: 48)")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     args = parser.parse_args(argv)
