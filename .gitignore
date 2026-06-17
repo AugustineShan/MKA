@@ -1,22 +1,14 @@
 # ====================================================================
-# ⚠️ 私人项目部署须知 — 以下两项【切勿忽略】，必须纳入版本控制
-#   .env         — TuShare / GLM 等凭证与 endpoint 配置，部署缺它无法取数
-#   companies/   — 每家公司 data.db / defaults.yaml / 年报 / forecast 等运行数据
-# 本文件显式不忽略它们。不要重新加入 .env 或 companies/ 的忽略规则，
-# 否则部署拉取后将缺少配置与数据，系统无法运行。
-# （注：.env 含敏感凭证，本仓库为私人仓库；切勿将仓库转为公开。）
+# 私人项目部署须知
+#   .env       — TuShare / GLM 等凭证与配置，纳入版本控制（私人仓库，切勿转公开）
+#   companies/ — 运行数据，体积大且含可再生二进制（PDF/db 等），不纳入版本控制
+#                部署时凭 .env 用 data_fetcher / report_downloader / clean 重新生成
 # ====================================================================
 
-# Generated data directories（仅顶层临时产物，非 companies/ 内）
+# Generated data directories
+companies/
 .recon/
 annuals/
-
-# companies/ 内可再生的大二进制仍忽略：凭 .env 用 report_downloader / data_fetcher 重生成
-# 文本产物（.md/.yaml/.json/.csv）正常纳入版本控制
-companies/**/*.pdf
-companies/**/*.db
-companies/**/*.xlsm
-companies/**/*.xlsx
 
 # ...but keep committed test fixtures even though annuals/ is ignored globally
 !tests/fixtures/company_002946/annuals/
