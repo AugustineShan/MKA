@@ -73,6 +73,19 @@ STATEMENT_META = {
             "below_line": ["total_profit"],
             "tax": ["n_income"],
         },
+        # 会计准则展示顺序（数据格式参考.md 是字母序，这里覆盖为严格会计序）。
+        # 未列出的字段回退到字母序排在该类末尾，对金融企业字段无害（comp_type≠1 已过滤）。
+        "field_order": [
+            "revenue",
+            "oper_cost", "biz_tax_surchg", "sell_exp", "admin_exp", "rd_exp", "fin_exp",
+            "assets_impair_loss", "credit_impa_loss",
+            "oth_income", "invest_income", "fv_value_chg_gain", "net_expo_hedging_benefits",
+            "asset_disp_income", "forex_gain",
+            "non_oper_income", "non_oper_exp",
+            "income_tax",
+            "n_income_attr_p", "minority_gain",
+            "oth_compr_income", "t_compr_income", "compr_inc_attr_p", "compr_inc_attr_m_s",
+        ],
     },
     "forecast_bs.csv": {
         "key": "bs",
@@ -97,6 +110,28 @@ STATEMENT_META = {
             "noncurrent_liab": ["total_ncl", "total_liab"],
             "equity": ["total_hldr_eqy_exc_min_int", "total_hldr_eqy_inc_min_int", "total_liab_hldr_eqy"],
         },
+        "field_order": [
+            # 流动资产
+            "money_cap", "notes_receiv", "accounts_receiv", "receiv_financing", "prepayment",
+            "oth_receiv", "inventories", "contract_assets", "hfs_assets", "nca_within_1y", "oth_cur_assets",
+            # 非流动资产
+            "debt_invest", "oth_debt_invest", "lt_rec", "lt_eqt_invest", "oth_eq_invest",
+            "oth_illiq_fin_assets", "invest_real_estate", "fix_assets", "cip", "produc_bio_assets",
+            "oil_and_gas_assets", "use_right_assets", "intan_assets", "r_and_d", "goodwill",
+            "lt_amor_exp", "defer_tax_assets", "oth_nca",
+            # 流动负债
+            "st_borr", "cb_borr", "loan_oth_bank", "deriv_liab", "notes_payable", "acct_payable",
+            "adv_receipts", "contract_liab", "sold_for_repur_fa", "depos", "acting_trading_sec",
+            "acting_uw_sec", "payroll_payable", "taxes_payable", "oth_payable", "int_payable",
+            "div_payable", "oth_cur_liab", "hfs_sales", "non_cur_liab_due_1y",
+            # 非流动负债
+            "lt_borr", "bond_payable", "lease_liab", "lt_payable", "lt_payroll_payable",
+            "estimated_liab", "defer_inc_non_cur_liab", "defer_tax_liab", "oth_ncl",
+            # 所有者权益
+            "total_share", "oth_eqt_tools", "cap_rese", "treasury_share", "oth_comp_income",
+            "surplus_rese", "ordin_risk_reser", "special_rese", "undistr_porfit", "minority_int",
+            "forex_differ",
+        ],
     },
     "forecast_cf.csv": {
         "key": "cf",
@@ -124,8 +159,35 @@ STATEMENT_META = {
             "cff_inflow": ["stot_cash_in_fnc_act"],
             "cff_outflow": ["stot_cashout_fnc_act", "n_cash_flows_fnc_act", "eff_fx_flu_cash", "n_incr_cash_cash_equ"],
         },
+        "field_order": [
+            # 经营活动流入
+            "c_fr_sale_sg", "recp_tax_rends", "c_fr_oth_operate_a",
+            # 经营活动流出
+            "c_paid_goods_s", "c_paid_to_for_empl", "c_paid_for_taxes", "oth_cash_pay_oper_act",
+            # 投资活动流入
+            "c_disp_withdrwl_invest", "c_recp_return_invest", "n_recp_disp_fiolta",
+            "n_recp_disp_sobu", "oth_recp_ral_inv_act",
+            # 投资活动流出
+            "c_pay_acq_const_fiolta", "c_paid_invest", "n_disp_subs_oth_biz", "oth_pay_ral_inv_act",
+            # 筹资活动流入
+            "c_recp_cap_contrib", "c_recp_borrow", "proc_issue_bonds", "oth_cash_recp_ral_fnc_act",
+            # 筹资活动流出
+            "c_prepay_amt_borr", "c_pay_dist_dpcp_int_exp", "oth_cashpay_ral_fnc_act",
+            # 期初/期末现金桥
+            "c_cash_equ_beg_period", "c_cash_equ_end_period",
+        ],
     },
 }
+
+# full_*.csv = history+forecast concatenated, same schema as forecast_*.csv.
+# Alias to the forecast meta so _statement_rows shapes them identically (same field labels).
+FULL_STATEMENT_TABLES = ("full_is.csv", "full_bs.csv", "full_cf.csv")
+for _full_name, _fcst_name in (
+    ("full_is.csv", "forecast_is.csv"),
+    ("full_bs.csv", "forecast_bs.csv"),
+    ("full_cf.csv", "forecast_cf.csv"),
+):
+    STATEMENT_META[_full_name] = STATEMENT_META[_fcst_name]
 
 app = FastAPI(title="ModelKing Workbench")
 
@@ -271,6 +333,77 @@ def _parse_field_reference() -> dict[str, list[dict[str, str]]]:
 
 FIELD_REFERENCE = _parse_field_reference()
 
+# 展示层标签覆盖：数据格式参考.md 个别标签与会计惯例不一致（如 rd_exp 漏"减:"）。
+# 仅影响 workbench 展示，不触碰只读契约文档。
+LABEL_OVERRIDE: dict[str, str] = {
+    "rd_exp": "减:研发费用",
+    "credit_impa_loss": "减:信用减值损失",  # 与 资产减值损失 对齐，明确为营业总成本中的减项
+}
+
+
+# 扁平 字段→中文 索引：复用 FIELD_REFERENCE（数据格式参考.md）+ LABEL_OVERRIDE。
+# 用于 stash/历史观测等非报表场景的展示层中文化（行/列标签），纯展示，不碰契约。
+def _build_field_label_index() -> dict[str, str]:
+    idx: dict[str, str] = {}
+    for rows in FIELD_REFERENCE.values():
+        for r in rows:
+            idx[r["field"]] = r["label"]
+    idx.update(LABEL_OVERRIDE)
+    return idx
+
+
+FIELD_LABELS = _build_field_label_index()
+
+# 非 TuShare 码（knob 路径/历史观测专用），不在 FIELD_REFERENCE，展示层补中文。
+# 仅覆盖本项目 defaults.yaml 命名空间与历史观测常见码；未知码由 _humanize_label 原样回退。
+STASH_CODE_LABELS: dict[str, str] = {
+    "gpm": "整体毛利率",
+    "effective_tax_rate": "有效税率",
+    "minority_ratio": "少数股东损益占比",
+    "fin_exp_total": "财务费用合计",
+    "other_fin_exp_abs": "其他财务费用(外生)",
+    "ton_cost": "吨成本",
+    "interest_bearing_debt": "有息负债",
+    "money_cap": "货币资金",
+    "interest_expense_net": "利息净额",
+    "interest_income": "利息收入",
+    # 驱动/旋钮路径末段（terminal fade_paths/hold_paths 用）
+    "revenue_yoy": "营收增速",
+    "revenue_abs": "营收绝对值",
+    "volume_yoy": "销量增速",
+    "price_yoy": "吨价增速",
+}
+
+_YEAR_PREFIXD_KEY = re.compile(r"^(\d{4})_(.+)$")
+
+
+def _humanize_label(token: Any) -> str:
+    """通用 token→中文标签解析器（展示层）。任何未知 token 原样返回，零丢失。
+
+    顺序：FIELD_LABELS(TuShare 字段) → STASH_CODE_LABELS(knob 码) →
+          YYYY_<code> 拆分递归 → 原样。
+    """
+    s = str(token)
+    if s in FIELD_LABELS:
+        return FIELD_LABELS[s]
+    if s in STASH_CODE_LABELS:
+        return STASH_CODE_LABELS[s]
+    m = _YEAR_PREFIXD_KEY.match(s)
+    if m:
+        return f"{m.group(1)} {_humanize_label(m.group(2))}"
+    return s
+
+
+def _humanize_path(path: Any) -> str:
+    """defaults.yaml knob 路径 → 中文末段（展示层）。取最后一个 '.' 后的段交 _humanize_label。
+
+    income.cost_rates.sell_exp → 减:销售费用；income.gpm → 整体毛利率；model.revenue_yoy → 营收增速。
+    未知段原样回退，零丢失。
+    """
+    s = str(path)
+    leaf = s.rsplit(".", 1)[-1]
+    return _humanize_label(leaf)
+
 
 def _number_or_none(value: str | None) -> float | None:
     if value is None or value == "":
@@ -299,6 +432,12 @@ def _statement_rows(table_name: str, csv_path: Path) -> dict[str, Any] | None:
         by_field[item["field"]] = item
         by_category.setdefault(item["category"], []).append(item)
 
+    # 会计准则展示顺序：field_order 给出严格会计序，未列出字段回退到字母序排在末尾。
+    field_rank = {field: idx for idx, field in enumerate(meta.get("field_order", []))}
+    fallback_rank = len(field_rank)
+    for category, items in by_category.items():
+        items.sort(key=lambda it: field_rank.get(it["field"], fallback_rank))
+
     values_by_field: dict[str, dict[str, float | None]] = {}
     for field in fields_in_csv:
         values_by_field[field] = {str(int(float(row["period"]))): _number_or_none(row.get(field)) for row in rows if row.get("period")}
@@ -316,7 +455,7 @@ def _statement_rows(table_name: str, csv_path: Path) -> dict[str, Any] | None:
         output_rows.append(
             {
                 "field": field,
-                "label": ref["label"],
+                "label": LABEL_OVERRIDE.get(field, ref["label"]),
                 "category": ref["category"],
                 "category_label": ref["category_label"],
                 "role": role or ("subtotal" if ref["category"] == "subtotal" else "normal"),
@@ -355,6 +494,44 @@ def _statement_sheets(company_dir: Path) -> list[dict[str, Any]]:
         if sheet:
             sheets.append(sheet)
     return sheets
+
+
+def _full_statement_sheets(company_dir: Path) -> list[dict[str, Any]]:
+    """History+forecast concatenated statements (full_*.csv). Same shaping as forecast."""
+    forecast_dir = company_dir / "forecast"
+    sheets = []
+    for table_name in FULL_STATEMENT_TABLES:
+        sheet = _statement_rows(table_name, forecast_dir / table_name)
+        if sheet:
+            sheets.append(sheet)
+    return sheets
+
+
+def _dcf_detail(company_dir: Path) -> list[dict[str, Any]]:
+    """Per-year FCFF build: fcff, discount_factor, pv_fcff, nopat, da, capex, delta_nwc."""
+    rows = _read_csv_rows(company_dir / "forecast" / "dcf_detail.csv")
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        period = row.get("period")
+        if not period:
+            continue
+        try:
+            period_int = int(float(period))
+        except (TypeError, ValueError):
+            continue
+        out.append(
+            {
+                "period": period_int,
+                "fcff": _number_or_none(row.get("fcff")),
+                "discount_factor": _number_or_none(row.get("discount_factor")),
+                "pv_fcff": _number_or_none(row.get("pv_fcff")),
+                "nopat": _number_or_none(row.get("nopat")),
+                "da": _number_or_none(row.get("da")),
+                "capex": _number_or_none(row.get("capex")),
+                "delta_nwc": _number_or_none(row.get("delta_nwc")),
+            }
+        )
+    return out
 
 
 def _cell(value: Any) -> str:
@@ -804,6 +981,210 @@ def _yaml1_sheets(path: Path | None) -> list[dict[str, Any]]:
     return [sheet for sheet in sheets if sheet["rows"]]
 
 
+# ─────────────────────────── yaml1 stash type-dispatch (universal) ───────────────────────────
+# Stash is the most free-form, per-company-different part of yaml1. Render by JSON *shape*
+# (not by company/block name) so any company's stash is displayed with nothing dropped.
+# Mirrors the philosophy of _iter_revenue_leaves: generic traversal + type dispatch.
+
+
+def _is_year_key(key: Any) -> bool:
+    s = str(key)
+    if not s.isdigit():
+        return False
+    n = int(s)
+    return 1900 < n < 2100
+
+
+def _stash_series_items(series: dict) -> tuple[list[dict], bool]:
+    """Return (items, is_year_table). items=[{label, values:{key:value}, note?}]."""
+    items: list[dict] = []
+    is_year_table = True
+    for label, values in series.items():
+        if not isinstance(values, dict):
+            continue
+        entry: dict = {"key": str(label), "label": _humanize_label(label), "values": {}, "note": None}
+        block_year = True
+        has_value = False
+        for k, v in values.items():
+            if k == "note":
+                entry["note"] = _cell(v)
+                continue
+            if k in ("unit", "caveat"):
+                continue
+            entry["values"][str(k)] = v
+            has_value = True
+            if not _is_year_key(k):
+                block_year = False
+        if has_value:
+            items.append(entry)
+            if not block_year:
+                is_year_table = False
+    if not items:
+        is_year_table = False
+    return items, is_year_table
+
+
+def _stash_block(name: str, payload: Any) -> dict:
+    """Classify one stash block by JSON shape → typed block. Universal, never drops."""
+    if isinstance(payload, list):
+        return {"name": name, "type": "list", "items": [x if isinstance(x, str) else _cell(x) for x in payload]}
+    if not isinstance(payload, dict):
+        return {"name": name, "type": "kv", "items": [{"label": "value", "value": _cell(payload)}]}
+
+    note = _cell(payload["note"]) if isinstance(payload.get("note"), str) else None
+    unit = _cell(payload["unit"]) if isinstance(payload.get("unit"), str) else None
+    caveat = _cell(payload["caveat"]) if isinstance(payload.get("caveat"), str) else None
+    base = {"name": name, "note": note, "unit": unit, "caveat": caveat}
+
+    series = payload.get("series")
+    if isinstance(series, dict):
+        items, is_year_table = _stash_series_items(series)
+        # 列头中文化：并集所有 item 的 values 键 → {rawKey: 中文}，前端优先用，缺失回退 raw。
+        col_keys: set[str] = set()
+        for it in items:
+            col_keys.update(it.get("values", {}).keys())
+        col_labels = {k: _humanize_label(k) for k in col_keys}
+        extras = [
+            _stash_block(str(k), v)
+            for k, v in payload.items()
+            if k not in ("note", "unit", "caveat", "series")
+        ]
+        return {
+            **base,
+            "type": "series_table" if is_year_table else "attr_table",
+            "items": items,
+            "col_labels": col_labels,
+            "extras": extras,
+        }
+
+    # dict without series: text_dict / scalar_table / kv (mixed → kv preserves everything)
+    text_items: list[dict] = []
+    scalar_items: list[dict] = []
+    sub_items: list[dict] = []
+    has_string = has_scalar = has_other = False
+    for k, v in payload.items():
+        if k in ("note", "unit", "caveat"):
+            continue
+        if isinstance(v, str):
+            has_string = True
+            text_items.append({"label": str(k), "text": v})
+        elif isinstance(v, (int, float)) and not isinstance(v, bool):
+            has_scalar = True
+            scalar_items.append({"label": str(k), "value": v})
+        else:
+            has_other = True
+            sub_items.append(_stash_block(str(k), v))
+    if has_other or (has_string and has_scalar):
+        return {**base, "type": "kv", "items": text_items + scalar_items + sub_items}
+    if has_string:
+        return {**base, "type": "text_dict", "items": text_items}
+    if has_scalar:
+        return {**base, "type": "scalar_table", "items": scalar_items}
+    return {**base, "type": "kv", "items": []}
+
+
+def _yaml1_stash_view(data: dict[str, Any]) -> list[dict]:
+    stash = data.get("stash")
+    if not isinstance(stash, dict):
+        return []
+    return [_stash_block(str(name), payload) for name, payload in stash.items()]
+
+
+# ─────────────────────────── yaml1 assumptions view (universal knob grouping) ───────────────────────────
+# Group knobs by defaults.yaml standard namespace prefix (universal, not company-specific).
+# Absent paths naturally drop out (absent = falls back to yaml2 default).
+
+ASSUMPTION_SECTION_DEFS = (
+    ("gpm", "毛利率", ("income.gpm",)),
+    ("cost_rates", "费用率", ("income.cost_rates.",)),
+    (
+        "below_op",
+        "营业利润调节 / 营业外收支（绝对值）",
+        ("income.cost_abs.", "income.operating_adjustments_abs.", "income.below_line_abs."),
+    ),
+    ("tax_minority", "税率 / 少数股东", ("income.effective_tax_rate", "income.minority_ratio")),
+)
+OVERRIDE_MARKERS = ("主动覆盖", "查证", "弃模型", "normalized", "主动收缩", "手拍")
+
+
+def _yaml1_base_period(data: dict[str, Any]) -> str:
+    meta = data.get("meta", {})
+    if isinstance(meta, dict) and isinstance(meta.get("horizon"), list) and meta["horizon"]:
+        try:
+            return str(int(meta["horizon"][0]) - 1)
+        except (TypeError, ValueError):
+            return ""
+    return ""
+
+
+def _assumptions_terminal(term: Any) -> dict:
+    if not isinstance(term, dict):
+        return {}
+    fade = term.get("fade") if isinstance(term.get("fade"), dict) else {}
+    return {
+        "explicit_end": term.get("explicit_end"),
+        "to_year": fade.get("to_year"),
+        "kind": fade.get("kind"),
+        "fade_paths": [_humanize_path(p) for p in (fade.get("fade_paths") or [])],
+        "hold_paths": [_humanize_path(p) for p in (fade.get("hold_paths") or [])],
+        "perpetual_growth": term.get("perpetual_growth"),
+        "src": _cell(term.get("src")) or None,
+    }
+
+
+def _assumptions_traceability(data: dict[str, Any]) -> list[dict]:
+    """溯源附注 is a skill-defined standard stash block (yaml1compiler_v5 §6.2)."""
+    stash = data.get("stash")
+    if not isinstance(stash, dict):
+        return []
+    src = stash.get("溯源附注")
+    if not isinstance(src, dict):
+        return []
+    return [{"name": str(k), "text": v} for k, v in src.items() if isinstance(v, str)]
+
+
+def _yaml1_assumptions_view(data: dict[str, Any], years: list[str]) -> dict:
+    skip = {"meta", "terminal", "stash", "income.revenue"}
+    by_section: dict[str, list[dict]] = {key: [] for key, _, _ in ASSUMPTION_SECTION_DEFS}
+    other: list[dict] = []
+    for path, payload in data.items():
+        if path in skip or not isinstance(payload, dict):
+            continue
+        values = payload.get("values")
+        if not isinstance(values, list):
+            continue
+        src = _cell(payload.get("src"))
+        knob = {
+            "path": path,
+            "src": src,
+            "values": [_as_float(v) for v in values],
+            "note": _cell(payload.get("note")) or None,
+            "is_override": any(m in src for m in OVERRIDE_MARKERS),
+        }
+        placed = False
+        for key, _, prefixes in ASSUMPTION_SECTION_DEFS:
+            if any(path == p or path.startswith(p) for p in prefixes):
+                by_section[key].append(knob)
+                placed = True
+                break
+        if not placed:
+            other.append(knob)
+    sections = [
+        {"key": key, "title": title, "knobs": by_section[key]}
+        for key, title, _ in ASSUMPTION_SECTION_DEFS
+        if by_section[key]
+    ]
+    if other:
+        sections.append({"key": "other", "title": "其他覆盖", "knobs": other})
+    return {
+        "years": years,
+        "base_period": _yaml1_base_period(data),
+        "sections": sections,
+        "terminal": _assumptions_terminal(data.get("terminal")),
+        "traceability": _assumptions_traceability(data),
+    }
+
+
 def _presentation_cache_path(company_dir: Path) -> Path:
     return company_dir / ".modelking" / "yaml1_presentation.json"
 
@@ -1097,6 +1478,8 @@ def read_company(company_id: str) -> dict[str, Any]:
     yaml1_path = _latest_yaml1(company_dir)
     core_path = _core_assumption(company_dir)
     forecast_dir = company_dir / "forecast"
+    yaml1_data = _read_yaml(yaml1_path) if yaml1_path else {}
+    yaml1_years = _years_from_yaml1(yaml1_data) if yaml1_data else []
     tables = []
     for name in FORECAST_TABLES:
         path = forecast_dir / name
@@ -1109,11 +1492,15 @@ def read_company(company_id: str) -> dict[str, Any]:
         "yaml1_text": _read_text(yaml1_path) if yaml1_path else None,
         "yaml1_revenue_view": _yaml1_revenue_view(yaml1_path),
         "yaml1_sheets": _yaml1_sheets(yaml1_path),
+        "yaml1_stash_view": _yaml1_stash_view(yaml1_data) if yaml1_data else [],
+        "yaml1_assumptions_view": _yaml1_assumptions_view(yaml1_data, yaml1_years) if yaml1_data else None,
         "yaml1_presentation": _yaml1_presentation_cache(company_dir),
         "dcf_summary": _forecast_summary(company_dir) or None,
         "manifest": _manifest(company_dir) or None,
         "tables": tables,
         "statement_sheets": _statement_sheets(company_dir),
+        "full_statement_sheets": _full_statement_sheets(company_dir),
+        "dcf_detail": _dcf_detail(company_dir),
         "materials": _material_files(company_dir),
     }
 

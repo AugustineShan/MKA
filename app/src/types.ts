@@ -112,6 +112,70 @@ export type FileItem = {
   modified_at?: number | null;
 };
 
+// ───────── stash type-dispatch (universal: any company shape) ─────────
+export type StashBlock = {
+  name: string;
+  type: "list" | "series_table" | "attr_table" | "text_dict" | "scalar_table" | "kv";
+  note?: string | null;
+  unit?: string | null;
+  caveat?: string | null;
+  items: Array<StashItem | StashBlock | string>;
+  extras?: StashBlock[];
+  col_labels?: Record<string, string> | null;
+};
+
+export type StashItem =
+  | { key?: string; label: string; values: Record<string, number | null>; note?: string | null }
+  | { label: string; text: string }
+  | { label: string; value: number | string };
+
+// ───────── assumptions view ─────────
+export type AssumptionsKnob = {
+  path: string;
+  src: string;
+  values: number[];
+  note?: string | null;
+  is_override: boolean;
+};
+
+export type AssumptionsSection = {
+  key: string;
+  title: string;
+  knobs: AssumptionsKnob[];
+};
+
+export type TerminalView = {
+  explicit_end?: number | null;
+  to_year?: number | null;
+  kind?: string | null;
+  fade_paths?: string[];
+  hold_paths?: string[];
+  perpetual_growth?: number | null;
+  src?: string | null;
+};
+
+export type TraceabilityItem = { name: string; text: string };
+
+export type Yaml1AssumptionsView = {
+  years: string[];
+  base_period: string;
+  sections: AssumptionsSection[];
+  terminal: TerminalView;
+  traceability: TraceabilityItem[];
+};
+
+// ───────── dcf detail ─────────
+export type DcfDetailRow = {
+  period: number;
+  fcff: number;
+  discount_factor: number;
+  pv_fcff: number;
+  nopat: number;
+  da: number;
+  capex: number;
+  delta_nwc: number;
+};
+
 export type CompanyDetail = {
   summary: CompanySummary;
   core_assumption_md?: string | null;
@@ -120,11 +184,15 @@ export type CompanyDetail = {
   yaml1_revenue_view?: Yaml1RevenueView | null;
   yaml1_presentation?: Yaml1Presentation | null;
   yaml1_sheets?: WorkbookSheet[];
+  yaml1_stash_view?: StashBlock[];
+  yaml1_assumptions_view?: Yaml1AssumptionsView | null;
   dcf_summary?: Record<string, unknown> | null;
   manifest?: Record<string, unknown> | null;
   tables: TableFile[];
   statement_sheets?: StatementSheet[];
+  full_statement_sheets?: StatementSheet[];
+  dcf_detail?: DcfDetailRow[];
   materials: FileItem[];
 };
 
-export type TabKey = "overview" | "assumptions" | "yaml1" | "dcf" | "materials";
+export type TabKey = "overview" | "yaml1" | "statements" | "dcf" | "materials";

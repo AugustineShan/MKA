@@ -144,6 +144,8 @@ src/workbench.py       # FastAPI 本地壳，读 companies/ 并调用 src.foreca
 
 工作台必须保持 Apple HIG / SF Pro 风格：白与 #F5F5F7 灰底、#1D1D1F 主文字、#0071E3 只用于交互、无渐变、无装饰图标。表格是高风险区域：数字右对齐、SF Mono、负数 #FF3B30、轻 zebra、表头 11px all-caps。YAML 面板是唯一允许多语法色的区域，按 Xcode source editor 处理。
 
+**前端完整设计规范见 `docs/前端设计规范.md`，改前端前必读。** 那份是权威，本节只是速记。注意：实际色值以 `app/src/styles.css` 的 CSS 变量为准（`--blue:#003d7a`、`--red:#b42318`，与上面 `#0071E3/#FF3B30` 不符——上面是设计意向，落地用 CSS 变量）。规范里已固化的关键偏好：五个 tab 固定顺序（Overview / 核心假设展示 / 完整三表 / DCF / Materials，不开单独 Core Assumption、估值桥常驻 DCF 不做子页签）；三表行序严格按会计准则序（`STATEMENT_META.field_order` 覆盖字母序，绝不按字段名字母序展示）；减项标签统一 `减:` 前缀（`LABEL_OVERRIDE` 维护，如 `减:研发费用`/`减:信用减值损失`）；年份表头纯黑底白字 + 预测年份带 E 后缀；历史|预测分界用 2px 蓝竖线（不用灰底/白底色块）；不展示 raw 字段列；完整三表范围开关「近5年+预测(默认，仅显式预测期到 `terminal.explicit_end`，fade 期隐藏)/完整历史」；stash 参考项按 JSON 结构类型分派（6 类+兜底，不按公司名特判，零丢失）；敏感性数值 ≤20px 不挤占主表。禁忌清单与改动纪律（重启 workbench 前先杀 8765 僵尸进程）详见规范文档。
+
 ## 年报 PDF + Markdown 下载 report_downloader.py
 
 直接复用 `vendor/use_cninfo/src/cninfo` 中的 cninfo API 封装，只在项目根目录维护一个业务薄脚本。

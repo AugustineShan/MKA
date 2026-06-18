@@ -1076,6 +1076,7 @@ MKA/
 
 | 日期 | 里程碑 |
 |------|------|
+| 2026-06-19 | 「核心假设展示」(YAML1) tab 重构为**三区一表一轴**：① 收入拆分 / ② 关键假设 / ③ 参考项，每区一张 `UnifiedYearTable`（`table-layout: fixed`、共享年份轴、缺数据留空），彻底解决"多张表各用各的年份轴、对不齐"。① 总收入(营业收入+同比)+主拆分·业务线(各线 收入/同比/销量)+副拆分(地域/子公司)合并进一表，副拆分（stash name 含「拆分」）上移紧跟主拆分；总收入历史从完整 IS 表 `revenue` 补全。② 各 knob section 合并进一表，组标题分隔，+三段式块。③ 历史观测+核对项合并进一表（2014-2024 轴），非年份块（分线 attr/口径/溯源/定性）折叠在表下。`AxisRow.format` 区分 int/num2/decimal/signedDecimal/volume（修比率被 formatNumber 截成 0 的 bug）；`humanizeUnit` 中文化单位（million_cny→百万元、100mn_cny(存疑)→亿元·存疑、pct→%）。后端 `_humanize_label`/`_humanize_path` 中文化 stash 行/列标签与 terminal 路径（复用 FIELD_LABELS+STASH_CODE_LABELS，展示层不碰契约）。纯展示层，不改 yaml1，约定分派非公司特判 |
 | 2026-06-18 | `report_downloader` 标题正则通用化：① `年+` 替代固定"年年"个数，兜住 cninfo 录入重复"年"字整类错误（三一重工 2020 `2020年年年度报告` 三个"年"曾整年漏下），任何重复次数都匹配；② 版本尾缀白名单（全文/正文/修订版/更正版/更新版/取代版/正式版/最终版，裸写或全/半角括号）+ `$` 锚定，容忍正文版本变体同时挡住"…补充公告/更正公告"等非正文尾串；修订类（修订版/更正版/更新版/取代版）→ `_修订版` 命名，正式版/最终版/全文/正文 → 原始版命名；③ `EXCLUDED_TITLE_KEYWORDS` 裸"更新"→"更新公告"、新增"补充公告/更正公告"，避免与正文版本"更新版/更正版"相撞。`KIND_TITLE_TAIL_VARIANTS`→`KIND_TITLE_STEMS`+`BODY_VERSION_*`+`REVISION_VERSIONS`，`_looks_like_periodic_report` 改用 `PERIODIC_REPORT_KEYWORDS` |
 | 2026-06-10 | 数据基座成型：raw_tushare（EAV 官方镜像）+ clean_annual/clean_quarterly 宽表；BS/IS/CF 全字段穷尽分类（`*_FIELD_CATEGORIES`），替代手维护科目清单 |
 | 2026-06-11 | 年报补全闭环：`annual_report_reconciler` + approved override 审计链 + 季度 QA plug；`init.py` 一键编排；默认 LLM 切 GLM |

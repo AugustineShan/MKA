@@ -1,20 +1,25 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import type {
+  AssumptionsKnob,
+  AssumptionsSection,
   CompanyDetail,
   CompanySummary,
+  DcfDetailRow,
   FileItem,
+  StashBlock,
   StatementSheet,
   TabKey,
-  TableFile,
-  WorkbookSheet,
+  TerminalView,
+  TraceabilityItem,
+  Yaml1AssumptionsView,
   Yaml1Presentation,
   Yaml1RevenueView,
 } from "./types";
 
 const tabs: Array<{ key: TabKey; label: string }> = [
   { key: "overview", label: "Overview" },
-  { key: "assumptions", label: "Core Assumption" },
-  { key: "yaml1", label: "YAML1" },
+  { key: "yaml1", label: "核心假设展示" },
+  { key: "statements", label: "完整三表" },
   { key: "dcf", label: "DCF" },
   { key: "materials", label: "Materials" },
 ];
@@ -86,16 +91,6 @@ function statementValue(sheet: StatementSheet | undefined, fields: string[], yea
   return null;
 }
 
-function sheetLabel(name: string): string {
-  const labels: Record<string, string> = {
-    Meta: "模型信息",
-    "Revenue Build": "收入底稿",
-    "DCF Knobs": "估值参数",
-    Stash: "历史观测",
-  };
-  return labels[name] ?? name;
-}
-
 function formatDate(seconds?: number | null): string {
   if (!seconds) return "Not generated";
   return new Intl.DateTimeFormat("zh-CN", {
@@ -105,57 +100,6 @@ function formatDate(seconds?: number | null): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(seconds * 1000));
-}
-
-function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i];
-    const next = text[i + 1];
-    if (char === '"' && inQuotes && next === '"') {
-      cell += '"';
-      i += 1;
-    } else if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === "," && !inQuotes) {
-      row.push(cell);
-      cell = "";
-    } else if ((char === "\n" || char === "\r") && !inQuotes) {
-      if (char === "\r" && next === "\n") i += 1;
-      row.push(cell);
-      if (row.some((item) => item !== "")) rows.push(row);
-      row = [];
-      cell = "";
-    } else {
-      cell += char;
-    }
-  }
-  if (cell || row.length) {
-    row.push(cell);
-    rows.push(row);
-  }
-  return rows;
-}
-
-function isNumericCell(value: string): boolean {
-  if (!value.trim()) return false;
-  return !Number.isNaN(Number(value.replace(/,/g, "")));
-}
-
-function formatHeader(value: string): string {
-  return value.replace(/_/g, " ").toUpperCase();
-}
-
-function formatTableCell(value: unknown, column: string): string {
-  const text = String(value ?? "");
-  if (!text.trim()) return "";
-  if (column.toLowerCase() === "period") return String(Math.round(Number(text)));
-  if (isNumericCell(text)) return formatNumber(Number(text.replace(/,/g, "")));
-  return text;
 }
 
 function statValue(summary: CompanySummary, key: string): unknown {
@@ -270,34 +214,6 @@ function Overview({ detail, running, onRun }: { detail: CompanyDetail; running: 
   );
 }
 
-function MarkdownView({ text }: { text?: string | null }) {
-  if (!text) {
-    return <EmptyState title="No core assumption file" body="This company folder does not contain a core assumption markdown file yet." />;
-  }
-  const blocks = text.split(/\n{2,}/);
-  return (
-    <div className="markdown-card">
-      {blocks.map((block, index) => {
-        const trimmed = block.trim();
-        if (!trimmed) return null;
-        if (trimmed.startsWith("### ")) return <h3 key={index}>{trimmed.slice(4)}</h3>;
-        if (trimmed.startsWith("## ")) return <h2 key={index}>{trimmed.slice(3)}</h2>;
-        if (trimmed.startsWith("# ")) return <h1 key={index}>{trimmed.slice(2)}</h1>;
-        if (trimmed.startsWith("- ")) {
-          return (
-            <ul key={index}>
-              {trimmed.split("\n").map((line) => (
-                <li key={line}>{line.replace(/^- /, "")}</li>
-              ))}
-            </ul>
-          );
-        }
-        return <p key={index}>{trimmed}</p>;
-      })}
-    </div>
-  );
-}
-
 function SheetTabs({
   items,
   active,
@@ -316,60 +232,6 @@ function SheetTabs({
         </button>
       ))}
     </div>
-  );
-}
-
-function SpreadsheetTable({
-  title,
-  description,
-  path,
-  columns,
-  rows,
-}: {
-  title: string;
-  description?: string | null;
-  path?: string | null;
-  columns: string[];
-  rows: Array<Record<string, unknown>>;
-}) {
-  return (
-    <section className="spreadsheet-card">
-      <div className="section-heading compact">
-        <div>
-          <div className="eyebrow">{description ?? "Workbook sheet"}</div>
-          <h2>{title}</h2>
-        </div>
-        {path ? <div className="table-path">{path}</div> : null}
-      </div>
-      <div className="table-scroll workbook-scroll">
-        <table className="financial-table workbook-table">
-          <thead>
-            <tr>
-              {columns.map((column) => (
-                <th key={column}>{formatHeader(column)}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, rowIndex) => (
-              <tr key={`${title}-${rowIndex}`}>
-                {columns.map((column, columnIndex) => {
-                  const raw = row[column];
-                  const text = String(raw ?? "");
-                  const numeric = isNumericCell(text) && column.toLowerCase() !== "period";
-                  const value = Number(text.replace(/,/g, ""));
-                  return (
-                    <td className={numeric ? `numeric ${value < 0 ? "negative" : ""}` : ""} key={`${column}-${columnIndex}`} title={text}>
-                      {formatTableCell(raw, column)}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
   );
 }
 
@@ -561,7 +423,7 @@ function RevenueAssumptions({
         <div className="business-section-heading">
           <div>
             <div className="eyebrow">Business lines</div>
-            <h2>业务线拆分</h2>
+            <h2>主拆分 · 业务线</h2>
           </div>
           <p>历史收入按 YAML1 原始 series 展示；预测只看未来三年。</p>
         </div>
@@ -653,40 +515,730 @@ function RevenueAssumptions({
   );
 }
 
+// ─────────────────────────── Stash type-dispatch view (universal) ───────────────────────────
+
+function isStashBlock(item: unknown): item is StashBlock {
+  return typeof item === "object" && item !== null && "type" in item && "name" in item;
+}
+function isSeriesItem(item: unknown): item is { label: string; values: Record<string, number | null>; note?: string | null } {
+  return typeof item === "object" && item !== null && "values" in item && !("type" in item);
+}
+function isTextItem(item: unknown): item is { label: string; text: string } {
+  return typeof item === "object" && item !== null && "text" in item && !("type" in item);
+}
+function isScalarItem(item: unknown): item is { label: string; value: number | string } {
+  return typeof item === "object" && item !== null && "value" in item && !("type" in item);
+}
+
+function StashSeriesTable({ items, colLabels }: { items: { label: string; values: Record<string, number | null>; note?: string | null }[]; colLabels?: Record<string, string> | null }) {
+  const colSet = new Set<string>();
+  items.forEach((it) => Object.keys(it.values).forEach((k) => colSet.add(k)));
+  const cols = [...colSet].sort((a, b) => {
+    const na = Number(a);
+    const nb = Number(b);
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+    return a.localeCompare(b);
+  });
+  return (
+    <div className="table-scroll workbook-scroll">
+      <table className="financial-table stash-table">
+        <thead>
+          <tr className="year-header-row">
+            <th>项目</th>
+            {cols.map((c) => (
+              <th className="numeric" key={c}>{colLabels?.[c] ?? c}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((it, i) => (
+            <tr key={i}>
+              <td className="statement-label" title={it.note ?? it.label}>{it.label}</td>
+              {cols.map((c) => {
+                const v = it.values[c];
+                return (
+                  <td className={`numeric ${typeof v === "number" && v < 0 ? "negative" : ""}`} key={c}>
+                    {typeof v === "number" ? formatNumber(v) : ""}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const STASH_TYPE_LABEL: Record<StashBlock["type"], string> = {
+  list: "列表",
+  series_table: "序列",
+  attr_table: "属性",
+  text_dict: "文本",
+  scalar_table: "标量",
+  kv: "其它",
+};
+
+function StashBlockBody({ block, depth = 0 }: { block: StashBlock; depth?: number }) {
+  const seriesItems = block.items.filter(isSeriesItem);
+  const textItems = block.items.filter(isTextItem);
+  const scalarItems = block.items.filter(isScalarItem);
+  return (
+    <div className="stash-block-body">
+      {block.note ? <p className="stash-note">{block.note}</p> : null}
+      {block.caveat ? <p className="stash-caveat">⚠ {block.caveat}</p> : null}
+      {block.type === "list" ? (
+        <ul className="stash-list">
+          {block.items.map((it, i) => (
+            <li key={i}>{typeof it === "string" ? it : isTextItem(it) ? it.text : isScalarItem(it) ? it.value : ""}</li>
+          ))}
+        </ul>
+      ) : block.type === "series_table" || block.type === "attr_table" ? (
+        <StashSeriesTable items={seriesItems} colLabels={block.col_labels} />
+      ) : block.type === "text_dict" ? (
+        <div className="stash-text-dict">
+          {textItems.map((it, i) => (
+            <div className="stash-text-row" key={i}>
+              <span className="stash-text-label">{it.label}</span>
+              <span className="stash-text-body">{it.text}</span>
+            </div>
+          ))}
+        </div>
+      ) : block.type === "scalar_table" ? (
+        <div className="stash-scalar-list">
+          {scalarItems.map((it, i) => (
+            <div className="stash-scalar-row" key={i}>
+              <span className="stash-text-label">{it.label}</span>
+              <span className="numeric">{typeof it.value === "number" ? formatNumber(it.value) : it.value}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="stash-kv">
+          {block.items.map((it, i) =>
+            typeof it === "string" ? (
+              <div className="stash-text-row" key={i}><span className="stash-text-body">{it}</span></div>
+            ) : isStashBlock(it) ? (
+              <StashBlockView block={it} depth={depth + 1} key={i} />
+            ) : isTextItem(it) ? (
+              <div className="stash-text-row" key={i}><span className="stash-text-label">{it.label}</span><span className="stash-text-body">{it.text}</span></div>
+            ) : isScalarItem(it) ? (
+              <div className="stash-scalar-row" key={i}><span className="stash-text-label">{it.label}</span><span className="numeric">{typeof it.value === "number" ? formatNumber(it.value) : it.value}</span></div>
+            ) : null,
+          )}
+        </div>
+      )}
+      {block.extras && block.extras.length > 0 ? (
+        <div className="stash-extras">
+          {block.extras.map((sub, i) => (
+            <StashBlockView block={sub} depth={depth + 1} key={i} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function StashBlockView({ block, depth = 0 }: { block: StashBlock; depth?: number }) {
+  const open = block.type === "series_table" || block.type === "attr_table";
+  return (
+    <details className={`stash-block depth-${depth}`} open={open}>
+      <summary className="stash-block-header">
+        <span className="stash-block-name">{block.name}</span>
+        <span className="stash-type-badge">{STASH_TYPE_LABEL[block.type]}</span>
+        <span className="stash-block-count">{block.items.length}</span>
+        {block.unit ? <span className="stash-unit">{block.unit}</span> : null}
+      </summary>
+      <StashBlockBody block={block} depth={depth} />
+    </details>
+  );
+}
+
+// 参考项分组：按 compiler 命名约定（非公司身份）把同类 block 收进一个折叠伞，减少视觉块数。
+// 约定：name 含「历史」→ 历史观测；含「核对」→ 核对项；含「说明/附注/情报」→ 口径与情报；其余 → 其他参考。
+type RefGroup = { key: string; title: string; open: boolean; blocks: StashBlock[] };
+const REF_GROUP_DEFS: Array<{ key: string; title: string; open: boolean; match: (name: string) => boolean }> = [
+  { key: "history", title: "历史观测（照搬外部模型）", open: true, match: (n) => n.includes("历史") },
+  { key: "check", title: "核对项", open: false, match: (n) => n.includes("核对") },
+  { key: "notes", title: "口径说明 · 溯源附注 · 定性情报", open: false, match: (n) => n.includes("说明") || n.includes("附注") || n.includes("情报") },
+];
+
+function groupRefBlocks(blocks: StashBlock[]): RefGroup[] {
+  const groups: RefGroup[] = REF_GROUP_DEFS.map((g) => ({ key: g.key, title: g.title, open: g.open, blocks: [] as StashBlock[] }));
+  const rest: StashBlock[] = [];
+  for (const b of blocks) {
+    const def = REF_GROUP_DEFS.find((gg) => gg.match(b.name));
+    if (def) groups.find((g) => g.key === def.key)!.blocks.push(b);
+    else rest.push(b);
+  }
+  const result = groups.filter((g) => g.blocks.length > 0);
+  if (rest.length > 0) result.push({ key: "other", title: "其他参考", open: false, blocks: rest });
+  return result;
+}
+
+function StashGroupView({ title, blocks, defaultOpen }: { title: string; blocks: StashBlock[]; defaultOpen: boolean }) {
+  return (
+    <details className="stash-group" open={defaultOpen}>
+      <summary className="stash-group-header">
+        <span className="stash-block-name">{title}</span>
+        <span className="stash-block-count">{blocks.length}</span>
+      </summary>
+      <div className="stash-group-body">
+        {blocks.map((b, i) => (
+          <div className="stash-subblock" key={i}>
+          <h4 className="stash-subblock-title">
+            {b.name}
+            {b.unit ? <span className="stash-unit">{b.unit}</span> : null}
+          </h4>
+          <StashBlockBody block={b} />
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function StashView({ blocks }: { blocks: StashBlock[] }) {
+  if (!blocks.length) {
+    return <EmptyState title="无参考项" body="这份 yaml1 没有 stash 收纳区。" />;
+  }
+  const groups = groupRefBlocks(blocks);
+  return (
+    <section className="card stash-view">
+      <div className="section-heading">
+        <div>
+          <div className="eyebrow">③ Reference items · stash</div>
+          <h2>参考项（不进 DCF，留作研究）</h2>
+          <p>历史观测 / 核对项 / 口径说明 / 溯源附注 / 定性情报 —— 按 yaml1 原始结构展开，无删减。点击标题展开/折叠。</p>
+        </div>
+        <StatusPill label={`${blocks.length} 块`} />
+      </div>
+      <div className="stash-blocks">
+        {groups.map((g) =>
+          g.blocks.length === 1 && g.key === "other" ? (
+            <StashBlockView block={g.blocks[0]} key={g.key} />
+          ) : (
+            <StashGroupView title={g.title} blocks={g.blocks} defaultOpen={g.open} key={g.key} />
+          ),
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ─────────────────────────── Assumptions panel ───────────────────────────
+
+function KnobRow({ knob, years }: { knob: AssumptionsKnob; years: string[] }) {
+  const label = knob.src.replace(/^#/, "").replace(/\(.*\)$/, "").trim() || knob.path;
+  return (
+    <tr className={knob.is_override ? "override-row" : ""}>
+      <td className="statement-label" title={`${knob.path}${knob.note ? " · " + knob.note : ""}`}>
+        {knob.is_override ? <span className="override-dot" title="主动覆盖 / 查证" /> : null}
+        {label}
+      </td>
+      {years.map((y, i) => {
+        const v = knob.values[i];
+        const isRate = knob.path.includes("gpm") || knob.path.includes("cost_rates") || knob.path.includes("tax_rate") || knob.path.includes("minority");
+        return (
+          <td className={`numeric ${typeof v === "number" && v < 0 ? "negative" : ""}`} key={y}>
+            {typeof v === "number" ? (isRate ? formatPercent(v, 2) : formatNumber(v)) : "-"}
+          </td>
+        );
+      })}
+    </tr>
+  );
+}
+
+function TerminalBlock({ terminal }: { terminal: TerminalView }) {
+  if (!terminal || terminal.explicit_end == null) return null;
+  return (
+    <div className="terminal-block">
+      <div className="eyebrow">三段式</div>
+      <div className="terminal-grid">
+        <div><span>显式期末</span><strong>{terminal.explicit_end}</strong></div>
+        <div><span>衰减至</span><strong>{terminal.to_year ?? "-"}</strong></div>
+        <div><span>衰减方式</span><strong>{terminal.kind ?? "-"}</strong></div>
+        <div><span>永续增速</span><strong>{formatPercent(terminal.perpetual_growth ?? 0, 1)}</strong></div>
+      </div>
+      {terminal.fade_paths && terminal.fade_paths.length ? (
+        <div className="terminal-paths"><span className="path-tag-label">fade</span>{terminal.fade_paths.map((p) => <code key={p}>{p}</code>)}</div>
+      ) : null}
+      {terminal.hold_paths && terminal.hold_paths.length ? (
+        <div className="terminal-paths"><span className="path-tag-label">hold</span>{terminal.hold_paths.map((p) => <code key={p}>{p}</code>)}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function AssumptionsPanel({ view }: { view: Yaml1AssumptionsView | null | undefined }) {
+  if (!view) return <EmptyState title="无假设旋钮" body="这份 yaml1 没有结构化假设视图。" />;
+  const base = Number(view.base_period);
+  const yearLabel = (y: string) => (Number(y) > base ? `${y}E` : y);
+  return (
+    <section className="card assumptions-panel">
+      <div className="section-heading">
+        <div>
+          <div className="eyebrow">② Key assumptions · knobs</div>
+          <h2>关键假设</h2>
+          <p>老板拍板的旋钮：毛利率、费用率、营业利润调节项、税率、少数股东。蓝点 = 主动覆盖/查证。缺失 = 落 yaml2 平推。</p>
+        </div>
+        <StatusPill label={`${view.years.join(" · ")}`} />
+      </div>
+      <div className="assumptions-sections">
+        {view.sections.map((sec: AssumptionsSection) => (
+          <div className="assumptions-section" key={sec.key}>
+            <h3>{sec.title}</h3>
+            <div className="table-scroll workbook-scroll">
+              <table className="financial-table assumption-table">
+                <thead>
+                  <tr className="year-header-row">
+                    <th>科目</th>
+                    {view.years.map((y) => <th className="numeric" key={y}>{yearLabel(y)}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sec.knobs.map((k) => <KnobRow key={k.path} knob={k} years={view.years} />)}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+        <TerminalBlock terminal={view.terminal} />
+        {view.traceability.length > 0 ? (
+          <details className="traceability-block">
+            <summary>
+              <span>溯源附注</span>
+              <small>{view.traceability.length}</small>
+            </summary>
+            <div className="stash-text-dict">
+              {view.traceability.map((t: TraceabilityItem, i) => (
+                <div className="stash-text-row" key={i}>
+                  <span className="stash-text-label">{t.name}</span>
+                  <span className="stash-text-body">{t.text}</span>
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+// ─────────────────────────── Valuation bridge ───────────────────────────
+
+function num(d: Record<string, unknown> | null | undefined, key: string): number | null {
+  if (!d) return null;
+  const v = d[key];
+  return typeof v === "number" ? v : null;
+}
+
+function ValuationBridge({ dcf, detail }: { dcf: Record<string, unknown> | null | undefined; detail: DcfDetailRow[] }) {
+  const pvFcff = num(dcf, "pv_fcff");
+  const terminalPv = num(dcf, "terminal_pv");
+  const ev = num(dcf, "enterprise_value");
+  const netDebt = num(dcf, "net_debt");
+  const equity = num(dcf, "equity_value");
+  const shares = num(dcf, "total_shares");
+  const perShare = num(dcf, "per_share_value");
+  const terminalShare = ev && terminalPv ? Math.round((terminalPv / ev) * 100) : null;
+  const highTerminal = terminalShare != null && terminalShare >= 60;
+  if (perShare == null) return null;
+  return (
+    <section className="card valuation-bridge-card">
+      <div className="section-heading">
+        <div>
+          <div className="eyebrow">How 17.03 is built</div>
+          <h2>估值桥</h2>
+        </div>
+        {terminalShare != null ? (
+          <span className={`terminal-share-warning ${highTerminal ? "warn" : ""}`}>终值占比 {terminalShare}%{highTerminal ? " · 估值高度依赖永续" : ""}</span>
+        ) : null}
+      </div>
+      <div className="valuation-bridge">
+        <div className="bridge-step"><span className="bridge-label">PV(FCFF)</span><strong>{formatNumber(pvFcff)}</strong></div>
+        <span className="bridge-op">+</span>
+        <div className="bridge-step"><span className="bridge-label">终值 PV</span><strong>{formatNumber(terminalPv)}</strong></div>
+        <span className="bridge-op">=</span>
+        <div className="bridge-step bridge-result"><span className="bridge-label">企业价值 EV</span><strong>{formatNumber(ev)}</strong></div>
+        <span className="bridge-op">−</span>
+        <div className="bridge-step"><span className="bridge-label">净负债</span><strong>{formatNumber(netDebt)}</strong></div>
+        <span className="bridge-op">=</span>
+        <div className="bridge-step"><span className="bridge-label">权益价值</span><strong>{formatNumber(equity)}</strong></div>
+        <span className="bridge-op">÷</span>
+        <div className="bridge-step"><span className="bridge-label">总股本</span><strong>{formatNumber(shares)}</strong></div>
+        <span className="bridge-op">=</span>
+        <div className="bridge-step bridge-final"><span className="bridge-label">每股</span><strong>{formatNumber(perShare, 2)}</strong></div>
+      </div>
+      {detail.length > 0 ? (
+        <div className="fcff-build">
+          <div className="eyebrow">FCFF 逐年构建 = NOPAT + 折旧摊销 − Capex − Δ营运资金</div>
+          <div className="table-scroll workbook-scroll">
+            <table className="financial-table fcff-build-table">
+              <thead>
+                <tr>
+                  <th>年</th>
+                  <th className="numeric">NOPAT</th>
+                  <th className="numeric">+ DA</th>
+                  <th className="numeric">− Capex</th>
+                  <th className="numeric">− ΔNWC</th>
+                  <th className="numeric">= FCFF</th>
+                  <th className="numeric">× 折现</th>
+                  <th className="numeric">PV</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.map((r) => (
+                  <tr key={r.period}>
+                    <td>{r.period}</td>
+                    <td className="numeric">{formatNumber(r.nopat)}</td>
+                    <td className="numeric">{formatNumber(r.da)}</td>
+                    <td className="numeric">{formatNumber(r.capex)}</td>
+                    <td className={`numeric ${r.delta_nwc < 0 ? "negative" : ""}`}>{formatNumber(r.delta_nwc)}</td>
+                    <td className="numeric">{formatNumber(r.fcff)}</td>
+                    <td className="numeric">{r.discount_factor.toFixed(3)}</td>
+                    <td className="numeric">{formatNumber(r.pv_fcff)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+// ─────────────────────────── Full statement table (history | forecast) ───────────────────────────
+
+const IS_KEY_ROWS = new Set(["revenue", "oper_cost", "operate_profit", "total_profit", "n_income", "n_income_attr_p"]);
+
+function FullStatementTable({ sheet, basePeriod, showZeroRows, years }: { sheet: StatementSheet; basePeriod: string; showZeroRows: boolean; years?: string[] }) {
+  const visibleYears = years ?? sheet.years;
+  const historyYears = useMemo(() => {
+    const base = Number(basePeriod);
+    return new Set(visibleYears.filter((y) => (Number(y) || 0) <= base));
+  }, [visibleYears, basePeriod]);
+  const rows = sheet.rows.filter((row) => showZeroRows || !row.is_zero || row.role !== "normal");
+  const yearLabel = (year: string) => (historyYears.has(year) ? year : `${year}E`);
+  return (
+    <section className="spreadsheet-card statement-card">
+      <div className="section-heading compact">
+        <div>
+          <div className="eyebrow">{sheet.unit} · 历史 + 预测</div>
+          <h2>{sheet.title}</h2>
+        </div>
+        <div className="legend-row">
+          <span className="legend-chip history">历史</span>
+          <span className="legend-chip forecast">预测 E</span>
+        </div>
+      </div>
+      <div className="table-scroll workbook-scroll">
+        <table className="financial-table statement-table full-statement-table">
+          <thead>
+            <tr className="year-header-row">
+              <th>科目</th>
+              {visibleYears.map((year) => (
+                <th className={`numeric year-th ${historyYears.has(year) ? "history-year" : "forecast-year"}`} key={year}>{yearLabel(year)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr className={`${row.role} level-${row.level} ${IS_KEY_ROWS.has(row.field) ? "key-row" : ""}`} key={row.field}>
+                <td className="statement-label" title={`${row.label} (${row.field})`}><span>{row.label}</span></td>
+                {visibleYears.map((year) => {
+                  const value = row.values[year];
+                  return (
+                    <td className={`numeric ${historyYears.has(year) ? "history-year" : "forecast-year"} ${typeof value === "number" && value < 0 ? "negative" : ""}`} key={`${row.field}-${year}`}>
+                      {typeof value === "number" ? formatNumber(value) : ""}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+// ─────────────────────────── 统一时间轴表（一区一表，列对齐，缺数据留空） ───────────────────────────
+// 三个区域各用一张表、一个共享年份轴：所有行共享同一组年份列 → 时间轴严格对齐。
+// 没有数据的格子留空（空字符串），不另起表、不另起轴。
+
+type AxisRow = {
+  label: string;
+  values: Record<string, number | null>;
+  note?: string | null;
+  bold?: boolean;
+  override?: boolean;
+  muted?: boolean;
+  // int=整数金额(百万元) · num2=2位小数(参考项通用) · decimal=小数比率×100+%(旋钮) ·
+  // signedDecimal=带符号同比% · volume=1位小数(万吨)
+  format?: "int" | "num2" | "decimal" | "signedDecimal" | "volume";
+};
+type AxisGroup = {
+  title: string;
+  unit?: string | null;
+  caveat?: string | null;
+  note?: string | null;
+  rows: AxisRow[];
+};
+
+const isYearKeyStr = (k: string) => /^\d{4}$/.test(k) && Number(k) > 1900 && Number(k) < 2100;
+
+function formatAxisCell(v: number | null | undefined, format: AxisRow["format"]): string {
+  if (typeof v !== "number" || Number.isNaN(v)) return "";
+  switch (format) {
+    case "decimal":
+      return formatPercent(v, 2);
+    case "signedDecimal":
+      return formatSignedPercent(v, 1);
+    case "num2":
+      return formatNumber(v, 2);
+    case "volume":
+      return formatNumber(v, 1);
+    default:
+      return formatNumber(v);
+  }
+}
+
+function humanizeUnit(u?: string | null): string {
+  if (!u) return "";
+  const s = u.trim();
+  if (s === "pct" || s === "%") return "%";
+  if (s.includes("100mn")) return `亿元${s.includes("存疑") ? " · 存疑" : ""}`;
+  if (s.includes("cny_per_ton")) return "元/吨";
+  if (s.includes("million") || s.includes("cny")) return "百万元";
+  return s;
+}
+
+function yearLabel(y: string, baseYear: number): string {
+  return Number(y) > baseYear ? `${y}E` : y;
+}
+
+function unionYears(sets: Array<Iterable<string> | undefined | null>): string[] {
+  const s = new Set<string>();
+  for (const set of sets) {
+    if (!set) continue;
+    for (const y of set) if (isYearKeyStr(String(y))) s.add(String(y));
+  }
+  return [...s].sort((a, b) => Number(a) - Number(b));
+}
+
+// 历史序列 → {年: yoy}（有前年才算）；容忍 null 值
+function yoySeries(history: Record<string, number | null> | undefined): Record<string, number | null> {
+  const out: Record<string, number | null> = {};
+  if (!history) return out;
+  const clean: Record<string, number> = {};
+  for (const [k, v] of Object.entries(history)) {
+    if (typeof v === "number") clean[k] = v;
+  }
+  for (const y of Object.keys(clean)) {
+    if (!isYearKeyStr(y)) continue;
+    out[y] = yearOverYear(clean, y);
+  }
+  return out;
+}
+
+// 一个 stash block 是否为纯年份序列表（值键全为年份）→ 可并入统一年份轴表
+function blockIsYearSeries(block: StashBlock): boolean {
+  if (block.type !== "series_table" && block.type !== "attr_table") return false;
+  const items = block.items.filter(isSeriesItem);
+  if (!items.length) return false;
+  for (const it of items) {
+    for (const k of Object.keys(it.values)) {
+      if (!isYearKeyStr(k)) return false;
+    }
+  }
+  return true;
+}
+
+function UnifiedYearTable({ years, baseYear, groups }: { years: string[]; baseYear: number; groups: AxisGroup[] }) {
+  return (
+    <div className="table-scroll workbook-scroll">
+      <table className="financial-table unified-table">
+        <thead>
+          <tr className="year-header-row">
+            <th>项目</th>
+            {years.map((y) => (
+              <th className="numeric" key={y}>{yearLabel(y, baseYear)}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {groups.map((g, gi) => (
+            <Fragment key={gi}>
+              <tr className="group-header-row">
+                <th colSpan={years.length + 1}>
+                  <span className="group-title">{g.title}</span>
+                  {g.unit ? <span className="axis-unit">{humanizeUnit(g.unit)}</span> : null}
+                </th>
+              </tr>
+              {g.note ? (
+                <tr className="group-note-row">
+                  <td colSpan={years.length + 1}>{g.note}</td>
+                </tr>
+              ) : null}
+              {g.caveat ? (
+                <tr className="group-note-row caveat">
+                  <td colSpan={years.length + 1}>⚠ {g.caveat}</td>
+                </tr>
+              ) : null}
+              {g.rows.map((r, ri) => (
+                <tr key={ri} className={`${r.bold ? "key-row" : ""} ${r.muted ? "muted-row" : ""}`}>
+                  <td className="statement-label" title={r.note ?? r.label}>
+                    {r.override ? <span className="override-dot" title="主动覆盖 / 查证" /> : null}
+                    {r.label}
+                  </td>
+                  {years.map((y) => {
+                    const v = r.values[y];
+                    return (
+                      <td className={`numeric ${typeof v === "number" && v < 0 ? "negative" : ""}`} key={y}>
+                        {formatAxisCell(v, r.format)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── 区域分组构建器 ──
+
+function knobLabel(k: AssumptionsKnob): string {
+  return k.src.replace(/^#/, "").replace(/\(.*\)$/, "").trim() || k.path;
+}
+function knobIsRate(path: string): boolean {
+  return path.includes("gpm") || path.includes("cost_rates") || path.includes("tax_rate") || path.includes("minority");
+}
+
+function buildRevenueGroups(view: Yaml1RevenueView, presentation: Yaml1Presentation | null | undefined, secondaryBlocks: StashBlock[], fullStatementSheets?: StatementSheet[]): AxisGroup[] {
+  const groups: AxisGroup[] = [];
+  // 总收入：历史从完整 IS 表 revenue 补全，base+预测来自 revenueView，拼成完整时间轴
+  const fullIs = fullStatementSheets?.find((s) => s.key === "is");
+  const totalValues: Record<string, number | null> = {};
+  if (fullIs) {
+    for (const y of fullIs.years) {
+      if (Number(y) <= view.base_year) totalValues[y] = statementValue(fullIs, ["revenue"], y);
+    }
+  }
+  totalValues[String(view.base_year)] = view.base_revenue;
+  for (const y of view.years) totalValues[y] = view.revenues[y] ?? null;
+  const totalYoy: Record<string, number | null> = yoySeries(totalValues);
+  groups.push({
+    title: "总收入",
+    unit: "百万元",
+    rows: [
+      { label: "营业收入", bold: true, values: totalValues, format: "int" },
+      { label: "同比增长", muted: true, values: totalYoy, format: "signedDecimal" },
+    ],
+  });
+  // 主拆分 · 业务线
+  const wanted = presentation?.segment_order ?? [];
+  const orderedSegments = wanted.length
+    ? [...view.segments].sort((a, b) => {
+        const ra = wanted.indexOf(a.name);
+        const rb = wanted.indexOf(b.name);
+        return (ra < 0 ? Number.MAX_SAFE_INTEGER : ra) - (rb < 0 ? Number.MAX_SAFE_INTEGER : rb);
+      })
+    : view.segments;
+  const segRows: AxisRow[] = [];
+  for (const seg of orderedSegments) {
+    const revValues: Record<string, number | null> = { ...(seg.history_revenues ?? {}), ...seg.revenues };
+    segRows.push({ label: `${seg.name} · 收入`, values: revValues, note: seg.note, format: "int" });
+    const yoyValues: Record<string, number | null> = { ...yoySeries(seg.history_revenues), ...seg.yoys };
+    segRows.push({ label: `${seg.name} · 同比`, muted: true, values: yoyValues, format: "signedDecimal" });
+    if (seg.history_volumes || seg.volumes) {
+      const volValues: Record<string, number | null> = { ...(seg.history_volumes ?? {}), ...(seg.volumes ?? {}) };
+      segRows.push({ label: `${seg.name} · 销量(万吨)`, muted: true, values: volValues, format: "volume" });
+    }
+  }
+  groups.push({ title: "主拆分 · 业务线", unit: "百万元", rows: segRows });
+  // 副拆分
+  for (const b of secondaryBlocks) {
+    const sub = b.name.replace(/^副拆分[_]?/, "") || b.name;
+    groups.push({
+      title: `副拆分 · ${sub}`,
+      unit: b.unit,
+      caveat: b.caveat,
+      note: b.note,
+      rows: b.items.filter(isSeriesItem).map((it) => ({ label: it.label, values: it.values, note: it.note, format: "int" })),
+    });
+  }
+  return groups;
+}
+
+function buildAssumptionsGroups(view: Yaml1AssumptionsView): AxisGroup[] {
+  return view.sections.map((sec) => ({
+    title: sec.title,
+    rows: sec.knobs.map((k) => {
+      const values: Record<string, number | null> = {};
+      view.years.forEach((y, i) => { values[y] = k.values[i] ?? null; });
+      return { label: knobLabel(k), values, note: k.note, override: k.is_override, bold: k.is_override, format: knobIsRate(k.path) ? "decimal" : "int" };
+    }),
+  }));
+}
+
+function buildReferenceGroups(refBlocks: StashBlock[]): { groups: AxisGroup[]; rest: StashBlock[] } {
+  const groups: AxisGroup[] = [];
+  const rest: StashBlock[] = [];
+  for (const b of refBlocks) {
+    if (blockIsYearSeries(b)) {
+      groups.push({
+        title: b.name,
+        unit: b.unit,
+        caveat: b.caveat,
+        note: b.note,
+        // 参考项单位混杂（百万元/pct/甚至同行不同单位如液体乳核对项），统一 2 位小数保留精度，单位在组头显示
+        rows: b.items.filter(isSeriesItem).map((it) => ({ label: it.label, values: it.values, note: it.note, format: "num2" as const })),
+      });
+    } else {
+      rest.push(b);
+    }
+  }
+  return { groups, rest };
+}
+
 function YamlWorkbook({
   companyId,
   initialPresentation,
   revenueView,
-  sheets,
   statementSheets,
+  fullStatementSheets,
+  stashView,
+  assumptionsView,
+  yaml1Text,
   path,
 }: {
   companyId: string;
   initialPresentation?: Yaml1Presentation | null;
   revenueView?: Yaml1RevenueView | null;
-  sheets?: WorkbookSheet[];
   statementSheets?: StatementSheet[];
+  fullStatementSheets?: StatementSheet[];
+  stashView?: StashBlock[];
+  assumptionsView?: Yaml1AssumptionsView | null;
+  yaml1Text?: string | null;
   path?: string | null;
 }) {
-  const available = sheets ?? [];
-  const defaultSheet = available[0]?.name ?? "";
-  const [active, setActive] = useState(defaultSheet);
   const [presentation, setPresentation] = useState<Yaml1Presentation | null>(initialPresentation ?? null);
   const [presentationStatus, setPresentationStatus] = useState<string[]>([]);
   const [presentationError, setPresentationError] = useState<string | null>(null);
   const [presentationRunning, setPresentationRunning] = useState(false);
-  const [businessPage, setBusinessPage] = useState<"summary" | "detail">("summary");
-  const sheet = available.find((item) => item.name === active) ?? available[0];
-  const auxiliary = available.map((item) => ({ key: item.name, label: sheetLabel(item.name), count: item.rows.length }));
 
   useEffect(() => {
-    setActive(defaultSheet);
     setPresentation(initialPresentation ?? null);
     setPresentationStatus([]);
     setPresentationError(null);
     setPresentationRunning(false);
-    setBusinessPage("summary");
-  }, [defaultSheet, initialPresentation, path]);
+  }, [initialPresentation, path]);
 
   function generatePresentation() {
     setPresentationRunning(true);
@@ -711,113 +1263,138 @@ function YamlWorkbook({
     };
   }
 
-  if (!revenueView && !sheet) {
-    return <EmptyState title="No YAML1 workbook" body="Compiler output yaml1_*.yaml was not found or could not be parsed." />;
+  if (!revenueView && !assumptionsView && !stashView?.length) {
+    return <EmptyState title="No YAML1" body="Compiler output yaml1_*.yaml was not found or could not be parsed." />;
   }
 
-  if (revenueView) {
-    return (
-      <div className="workbook-shell business-workbook">
-        <section className="business-pagebar">
-          <div className="business-switcher" aria-label="YAML1 business sections">
-            {[
-              ["summary", "结论"],
-              ["detail", "经营明细"],
-            ].map(([key, label]) => (
-              <button className={businessPage === key ? "active" : ""} key={key} onClick={() => setBusinessPage(key as "summary" | "detail")} type="button">
-                {label}
-              </button>
-            ))}
+  const insightItems = presentation?.insights?.filter(Boolean) ?? [];
+  const riskItems = presentation?.risks?.filter(Boolean) ?? [];
+
+  // 三区一轴：每区一张表、一个共享年份轴，缺数据留空。约定分派，非公司特判。
+  const allStash = stashView ?? [];
+  const secondaryBlocks = allStash.filter((b) => b.name.includes("拆分"));
+  const refBlocks = allStash.filter((b) => !b.name.includes("拆分"));
+
+  // ① 收入拆分区
+  const revenueBase = revenueView ? Number(revenueView.base_year) : 0;
+  const revenueYears = revenueView
+    ? unionYears([
+        ...revenueView.segments.map((s) => Object.keys(s.history_revenues ?? {})),
+        revenueView.years,
+        ...secondaryBlocks.map((b) => b.items.filter(isSeriesItem).flatMap((it) => Object.keys(it.values))),
+        [String(revenueView.base_year)],
+      ])
+    : [];
+  const revenueGroups = revenueView ? buildRevenueGroups(revenueView, presentation, secondaryBlocks, fullStatementSheets) : [];
+
+  // ② 关键假设区
+  const asmBase = assumptionsView ? Number(assumptionsView.base_period) : 0;
+  const asmYears = assumptionsView ? assumptionsView.years.filter((y) => isYearKeyStr(y)) : [];
+  const asmGroups = assumptionsView ? buildAssumptionsGroups(assumptionsView) : [];
+  const terminal = assumptionsView?.terminal;
+
+  // ③ 参考区
+  const refBase = revenueBase || asmBase;
+  const { groups: refGroups, rest: refRest } = buildReferenceGroups(refBlocks);
+  const refYears = unionYears(refGroups.map((g) => g.rows.flatMap((r) => Object.keys(r.values))));
+
+  return (
+    <div className="view-stack yaml1-spec">
+      <section className="hero-block">
+        <div>
+          <div className="eyebrow">YAML1 · 模型说明书</div>
+          <h1>{presentation?.title || "收入拆分 + 关键假设 + 参考项"}</h1>
+          <div className="hero-meta">
+            <span>{path ?? "yaml1_*.yaml"}</span>
           </div>
-          <button disabled={presentationRunning} onClick={generatePresentation} type="button">
-            {presentationRunning ? "生成中..." : presentation ? "重新生成" : "生成业务展示"}
-          </button>
+          {presentation?.subtitle ? <p className="hero-subtitle">{presentation.subtitle}</p> : null}
+        </div>
+        <button className="primary-button" disabled={presentationRunning} onClick={generatePresentation} type="button">
+          {presentationRunning ? "生成中..." : presentation ? "重新生成业务解读" : "生成业务解读"}
+        </button>
+      </section>
+
+      {presentationStatus.length || presentationError ? (
+        <section className="ai-stream">
+          {presentationStatus.map((item, index) => (
+            <div className={index === presentationStatus.length - 1 && presentationRunning ? "active" : ""} key={`${item}-${index}`}>
+              {item}
+            </div>
+          ))}
+          {presentationError ? <div className="error">{presentationError}</div> : null}
         </section>
-        {presentationStatus.length || presentationError ? (
-          <section className="ai-stream">
-            {presentationStatus.map((item, index) => (
-              <div className={index === presentationStatus.length - 1 && presentationRunning ? "active" : ""} key={`${item}-${index}`}>
-                {item}
-              </div>
-            ))}
-            {presentationError ? <div className="error">{presentationError}</div> : null}
-          </section>
-        ) : null}
-        <RevenueAssumptions page={businessPage} presentation={presentation} statementSheets={statementSheets} view={revenueView} />
-      </div>
-    );
-  }
+      ) : null}
 
-  return (
-    <div className="workbook-shell">
-      <div className="workbook-header">
-        <div>
-          <div className="eyebrow">YAML1 workbook</div>
-          <h2>业务假设</h2>
-          <p>{path ?? "yaml1_*.yaml"}</p>
-        </div>
-        <StatusPill label={`${available.length} sheets`} />
-      </div>
-      <SheetTabs active={active} items={auxiliary} onSelect={setActive} />
-      {sheet ? <SpreadsheetTable columns={sheet.columns} description={sheet.description} rows={sheet.rows} title={sheetLabel(sheet.name)} /> : null}
-    </div>
-  );
-}
+      {insightItems.length || riskItems.length ? (
+        <section className="presentation-notes">
+          {insightItems.length ? (
+            <div className="business-read">
+              <div className="eyebrow">Business read</div>
+              <ul>{insightItems.map((item) => <li key={item}>{item}</li>)}</ul>
+            </div>
+          ) : null}
+          {riskItems.length ? (
+            <aside className="risk-footnote">
+              <div className="eyebrow">Things to review</div>
+              <ul>{riskItems.map((item) => <li key={item}>{item}</li>)}</ul>
+            </aside>
+          ) : null}
+        </section>
+      ) : null}
 
-function FinancialTable({ table }: { table: TableFile }) {
-  const rows = useMemo(() => parseCsv(table.csv), [table.csv]);
-  const headers = rows[0] ?? [];
-  const body = rows.slice(1, 100).map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ""])));
-  return <SpreadsheetTable columns={headers} description="Financial statement" path={table.path} rows={body} title={table.name} />;
-}
+      {revenueGroups.length > 0 ? (
+        <section className="card yaml-region">
+          <div className="yaml-region-heading">
+            <div className="eyebrow">① Revenue breakdown</div>
+            <h2>收入拆分</h2>
+            <p>总收入 · 主拆分（业务线）· 副拆分（地域 / 子公司）共享同一时间轴；无数据留空。副拆分来自外部模型，不参与营收计算。</p>
+          </div>
+          <UnifiedYearTable years={revenueYears} baseYear={revenueBase} groups={revenueGroups} />
+        </section>
+      ) : null}
 
-function StatementTable({ sheet, showZeroRows }: { sheet: StatementSheet; showZeroRows: boolean }) {
-  const rows = sheet.rows.filter((row) => showZeroRows || !row.is_zero || row.role !== "normal");
-  return (
-    <section className="spreadsheet-card statement-card">
-      <div className="section-heading compact">
-        <div>
-          <div className="eyebrow">{sheet.unit}</div>
-          <h2>{sheet.title}</h2>
-        </div>
-        <div className="table-path">{sheet.path}</div>
-      </div>
-      <div className="table-scroll workbook-scroll">
-        <table className="financial-table statement-table">
-          <thead>
-            <tr>
-              <th>科目</th>
-              {sheet.years.map((year) => (
-                <th className="numeric" key={year}>
-                  {year}
-                </th>
+      {asmGroups.length > 0 ? (
+        <section className="card yaml-region">
+          <div className="yaml-region-heading">
+            <div className="eyebrow">② Key assumptions · knobs</div>
+            <h2>关键假设</h2>
+            <p>毛利率 · 费用率 · 营业利润调节 · 税率少数股东，共享同一预测期时间轴。蓝点 = 主动覆盖 / 查证；缺失 = 落 yaml2 平推。</p>
+          </div>
+          <UnifiedYearTable years={asmYears} baseYear={asmBase} groups={asmGroups} />
+          {terminal && terminal.explicit_end != null ? <TerminalBlock terminal={terminal} /> : null}
+        </section>
+      ) : null}
+
+      {refGroups.length > 0 || refRest.length > 0 ? (
+        <section className="card yaml-region">
+          <div className="yaml-region-heading">
+            <div className="eyebrow">③ Reference items · stash</div>
+            <h2>参考项</h2>
+            <p>历史观测 · 核对项共享同一时间轴；口径说明 / 溯源附注 / 定性情报见下方折叠。无删减，无数据留空。</p>
+          </div>
+          {refGroups.length > 0 ? (
+            <UnifiedYearTable years={refYears} baseYear={refBase} groups={refGroups} />
+          ) : null}
+          {refRest.length > 0 ? (
+            <div className="stash-blocks stash-rest">
+              {refRest.map((b, i) => (
+                <StashBlockView block={b} key={i} />
               ))}
-              <th>字段</th>
-              <th>分类</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr className={`${row.role} level-${row.level}`} key={row.field}>
-                <td className="statement-label" title={`${row.label} (${row.field})`}>
-                  <span>{row.label}</span>
-                </td>
-                {sheet.years.map((year) => {
-                  const value = row.values[year];
-                  return (
-                    <td className={`numeric ${typeof value === "number" && value < 0 ? "negative" : ""}`} key={`${row.field}-${year}`}>
-                      {typeof value === "number" ? formatNumber(value) : ""}
-                    </td>
-                  );
-                })}
-                <td className="statement-field">{row.field}</td>
-                <td>{row.category_label}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {yaml1Text ? (
+        <details className="raw-yaml-block">
+          <summary>
+            <span>原始 YAML1</span>
+            <small>{path ?? ""}</small>
+          </summary>
+          <pre className="raw-yaml-pre">{yaml1Text}</pre>
+        </details>
+      ) : null}
+    </div>
   );
 }
 
@@ -991,23 +1568,65 @@ function SensitivityPanel({
   );
 }
 
+function StatementsView({ detail }: { detail: CompanyDetail }) {
+  const sheets = detail.full_statement_sheets?.length ? detail.full_statement_sheets : detail.statement_sheets ?? [];
+  const [active, setActive] = useState(sheets[0]?.key ?? "is");
+  const [showZeroRows, setShowZeroRows] = useState(false);
+  const [rangeMode, setRangeMode] = useState<"full" | "recent">("recent");
+  const activeSheet = sheets.find((sheet) => sheet.key === active);
+  const basePeriod = String(detail.dcf_summary?.base_period ?? detail.summary.base_period ?? "");
+  // 显式预测期上限：yaml1 terminal.explicit_end。近5年模式下只展示到该年，丢掉 fade 期。
+  const explicitEnd = detail.yaml1_assumptions_view?.terminal?.explicit_end ?? null;
+
+  const visibleYears = useMemo(() => {
+    if (!activeSheet) return [] as string[];
+    const base = Number(basePeriod);
+    const all = activeSheet.years;
+    if (rangeMode === "full") return all;
+    const hist = all.filter((y) => (Number(y) || 0) <= base).slice(-5);
+    let fcst = all.filter((y) => (Number(y) || 0) > base);
+    if (explicitEnd != null) {
+      fcst = fcst.filter((y) => (Number(y) || 0) <= Number(explicitEnd));
+    }
+    return [...hist, ...fcst];
+  }, [activeSheet, basePeriod, rangeMode, explicitEnd]);
+
+  if (!sheets.length) {
+    return <EmptyState title="No forecast tables" body="Run the DCF model to generate forecast/ outputs." />;
+  }
+
+  return (
+    <div className="view-stack">
+      <div className="workbook-shell">
+        <div className="workbook-header">
+          <div>
+            <div className="eyebrow">完整三表 · 历史 + 预测</div>
+            <h2>Income Statement / Balance Sheet / Cash Flow</h2>
+          </div>
+          <div className="workbook-toggles">
+            <div className="range-toggle" role="group">
+              <button className={rangeMode === "recent" ? "active" : ""} onClick={() => setRangeMode("recent")} type="button">近5年 + 预测</button>
+              <button className={rangeMode === "full" ? "active" : ""} onClick={() => setRangeMode("full")} type="button">完整历史</button>
+            </div>
+            <label className="zero-toggle">
+              <input checked={showZeroRows} onChange={(event) => setShowZeroRows(event.currentTarget.checked)} type="checkbox" />
+              Show zero rows
+            </label>
+          </div>
+        </div>
+        <SheetTabs active={active} items={sheets.map((sheet) => ({ key: sheet.key, label: sheet.name, count: sheet.rows.length }))} onSelect={setActive} />
+        {activeSheet ? (
+          <FullStatementTable basePeriod={basePeriod} sheet={activeSheet} showZeroRows={showZeroRows} years={visibleYears} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function DcfView({ detail }: { detail: CompanyDetail }) {
   const [dcf, setDcf] = useState(detail.dcf_summary);
   const [sensitivityLoading, setSensitivityLoading] = useState(false);
   const [sensitivityError, setSensitivityError] = useState<string | null>(null);
-  const sheets = detail.statement_sheets ?? [];
-  const [active, setActive] = useState(sheets[0]?.key ?? "is");
-  const [showZeroRows, setShowZeroRows] = useState(false);
-  const activeSheet = sheets.find((sheet) => sheet.key === active) ?? sheets[0];
-  const ordered = [
-    { key: "forecast_is.csv", label: "IS" },
-    { key: "forecast_bs.csv", label: "BS" },
-    { key: "forecast_cf.csv", label: "CF" },
-  ];
-  const fallbackTables = ordered
-    .map((item) => ({ ...item, table: detail.tables.find((table) => table.name === item.key) }))
-    .filter((item): item is { key: string; label: string; table: TableFile } => Boolean(item.table));
-  const activeFallbackTable = fallbackTables.find((item) => item.key === active)?.table ?? fallbackTables[0]?.table;
 
   useEffect(() => {
     setDcf(detail.dcf_summary);
@@ -1043,47 +1662,18 @@ function DcfView({ detail }: { detail: CompanyDetail }) {
   return (
     <div className="view-stack">
       <section className="metric-grid">
-        <MetricCard label="Per-share value" value={formatNumber(dcf?.per_share_value)} />
+        <MetricCard label="Per-share value" value={formatNumber(dcf?.per_share_value)} caption="DCF 输出" />
         <MetricCard label="Enterprise value" value={formatNumber(dcf?.enterprise_value)} />
         <MetricCard label="Equity value" value={formatNumber(dcf?.equity_value)} />
         <MetricCard label="Terminal PV" value={formatNumber(dcf?.terminal_pv)} />
       </section>
+      <ValuationBridge dcf={dcf} detail={detail.dcf_detail ?? []} />
       <SensitivityPanel
         error={sensitivityError}
         initial={initialSensitivity}
         loading={sensitivityLoading}
         onChange={handleSensitivityChange}
       />
-      {activeSheet ? (
-        <div className="workbook-shell">
-          <div className="workbook-header">
-            <div>
-              <div className="eyebrow">Forecast workbook</div>
-              <h2>Income Statement / Balance Sheet / Cash Flow</h2>
-            </div>
-            <label className="zero-toggle">
-              <input checked={showZeroRows} onChange={(event) => setShowZeroRows(event.currentTarget.checked)} type="checkbox" />
-              Show zero rows
-            </label>
-          </div>
-          <SheetTabs active={activeSheet.key} items={sheets.map((sheet) => ({ key: sheet.key, label: sheet.name, count: sheet.rows.length }))} onSelect={setActive} />
-          <StatementTable sheet={activeSheet} showZeroRows={showZeroRows} />
-        </div>
-      ) : activeFallbackTable ? (
-        <div className="workbook-shell">
-          <div className="workbook-header">
-            <div>
-              <div className="eyebrow">Forecast workbook</div>
-              <h2>Raw CSV fallback</h2>
-            </div>
-            <StatusPill label="forecast/" />
-          </div>
-          <SheetTabs active={activeFallbackTable.name} items={fallbackTables.map((item) => ({ key: item.key, label: item.label }))} onSelect={setActive} />
-          <FinancialTable table={activeFallbackTable} />
-        </div>
-      ) : (
-        <EmptyState title="No forecast tables" body="Run the DCF model to generate forecast/ outputs." />
-      )}
     </div>
   );
 }
@@ -1139,7 +1729,7 @@ function DetailView({
   onRun: () => void;
 }) {
   if (tab === "overview") return <Overview detail={detail} running={running} onRun={onRun} />;
-  if (tab === "assumptions") return <MarkdownView text={detail.core_assumption_md} />;
+  if (tab === "statements") return <StatementsView detail={detail} />;
   if (tab === "yaml1") {
     return (
       <YamlWorkbook
@@ -1147,8 +1737,11 @@ function DetailView({
         initialPresentation={detail.yaml1_presentation}
         path={detail.yaml1_path}
         revenueView={detail.yaml1_revenue_view}
-        sheets={detail.yaml1_sheets}
         statementSheets={detail.statement_sheets}
+        fullStatementSheets={detail.full_statement_sheets}
+        stashView={detail.yaml1_stash_view}
+        assumptionsView={detail.yaml1_assumptions_view}
+        yaml1Text={detail.yaml1_text}
       />
     );
   }
