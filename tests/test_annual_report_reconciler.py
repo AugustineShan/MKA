@@ -262,3 +262,87 @@ def test_substring_alias_collision_is_suppressed():
 
     fields = {s["candidate_tushare_field"] for s in suggestions}
     assert fields == {"receiv_financing"}  # acc_receivable substring match dropped
+
+
+def _failure_from_message(message):
+    return ar.parse_failure_message(message)
+
+
+def test_failure_candidate_fields_exclude_subtotal_targets():
+    """subtotal 字段（total_cogs/operate_profit/total_revenue 等）是被校验等式的
+    汇总目标本身，不是待补明细。把它们纳入 candidate 会让 LLM 提议"把汇总目标改成
+    残差值"——永远脏配平（贵州茅台 IS 1.1：total_cogs 被改成"信用减值损失"值）。
+    所有 IS/CF check 的 candidate 集一律不得含 subtotal。"""
+    from src import clean
+
+    subtotal_is = {f for f, c in clean.IS_FIELD_CATEGORIES.items() if c == "subtotal"}
+    subtotal_cf = {f for f, c in clean.CF_FIELD_CATEGORIES.items() if c == "subtotal"}
+    all_subtotal = subtotal_is | subtotal_cf
+    assert "total_cogs" in all_subtotal  # 守卫：测试前提成立
+
+    cases = {
+        "IS 1.1": "IS 1.1 2024 营业总成本: total_cogs=29817.5665 cost_items=29812.2530 residual=5.3135",
+        "IS 1.2": "IS 1.2 2024 营业利润: operate_profit=119688.5795 calc=119690.2096 residual=-1.6301",
+        "IS 1.6": "IS 1.6 2024 综合收益: total_compre_income=100.0 calc=95.0 residual=5.0",
+        "CF 5.4": "CF 5.4 2024 现金净增加: n_incr_cash_cash_equ=100.0 calc=95.0 residual=5.0",
+    }
+    for code, msg in cases.items():
+        failure = _failure_from_message(msg)
+        _bucket, fields = ar.failure_candidate_fields(failure)
+        leak = [f for f in fields if f in all_subtotal]
+        assert not leak, f"{code} candidate 集泄漏 subtotal: {leak}"
+
+
+def test_llm_propose_fallback_rejects_nonzero_old_value(monkeypatch):
+    """add_override 语义只补 TuShare 漏录/为 0 字段，不得覆盖已有非 0 值。
+    贵州茅台 IS 1.1 的脏 override 就是 LLM 把"信用减值损失 -5.31 百万"写进
+    total_cogs（old=29817≠0）。fallback 必须对齐 rule_based 既有守卫：old_value
+    非 0 一律拒绝，即使 LLM 自报 diff<TOLERANCE 也不批。"""
+    analysis = {
+        "failure": {
+            "period": "2024",
+            "code": "IS 1.1",
+            "residual": 5.3135,
+            "direction": "target_gt_calc",
+        },
+        "annual_report_context": {
+            "markdown_path": "fake.md",
+            "snippets": [{"text": "5271: 信用减值损失\n5272: -5,313,489.80"}],
+        },
+        "candidate_tushare_fields": [
+            # 一个已有非 0 值的成本明细字段——LLM 企图覆盖它即脏配平
+            {"field": "sell_exp", "description": "销售费用", "value_million_cny": 3340.0, "clean_category": None},
+        ],
+    }
+
+    def fake_call_llm(messages):
+        return {
+            "suspected_tushare_issue": True,
+            "confidence": "high",
+            "recommended_action": "add_override",
+            "missing_or_suspicious_items": [
+                {
+                    "candidate_tushare_field": "sell_exp",
+                    "annual_report_item": "销售费用",
+                    "value_million_cny": -5.3135,
+                    "residual_difference_million_cny": 0.0,  # LLM 自报闭合——不可信
+                }
+            ],
+            "_provider": "glm",
+        }
+
+    monkeypatch.setattr(ar, "call_llm", fake_call_llm)
+
+    adjustments = ar._llm_propose_fallback(
+        "600519.SH",
+        None,  # company_dir 未使用（call_llm 已 mock，不读盘）
+        None,  # reconciliation_path
+        [analysis],
+        approve_high_confidence=True,
+    )
+
+    # sell_exp 的 old_value=3340≠0，add_override 守卫拒绝，不得生成任何 adjustment
+    fields = [a.get("field") for a in adjustments]
+    assert "sell_exp" not in fields
+    assert adjustments == []
+

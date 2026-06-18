@@ -12,7 +12,7 @@ CLI:
 退出码:
     0  成功
     2  输入无法解析为唯一公司目录
-    3  缺少核心观点.md
+    3  缺少公司判断和最新观点.md
     1  其他 IO 异常
 """
 
@@ -136,12 +136,12 @@ def copy_to_webclaude(company_dir: Path) -> dict[str, str]:
 
     report: dict[str, str] = {}
 
-    # 1. 核心观点.md（必须）
-    core_view = company_dir / "核心观点.md"
+    # 1. 公司判断和最新观点.md（必须）
+    core_view = company_dir / "公司判断和最新观点.md"
     if not core_view.exists():
-        raise FileNotFoundError(f"缺少核心观点.md: {core_view}")
-    shutil.copy2(core_view, webclaude_dir / "00_核心观点.md")
-    report["核心观点.md"] = "✅"
+        raise FileNotFoundError(f"缺少公司判断和最新观点.md: {core_view}")
+    shutil.copy2(core_view, webclaude_dir / "00_公司判断和最新观点.md")
+    report["公司判断和最新观点.md"] = "✅"
 
     # 2. 现有核心假设底稿（可选，取最新修改）
     core_assumption_files = list(company_dir.glob("*核心假设*.md"))

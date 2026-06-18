@@ -220,6 +220,16 @@ def call_llm(messages: list[dict[str, str]]) -> dict[str, Any]:
     if provider != "kimi":
         body["temperature"] = float(os.environ.get("LLM_TEMPERATURE", "0"))
 
+    # glm-5.2 is a reasoning model: without disabling, it spends the max_tokens
+    # budget on reasoning_tokens and returns empty content (finish=length). The
+    # reconciliation tasks here are deterministic table reading / structured
+    # extraction, not reasoning, so disable thinking by default. Gate precisely
+    # on the model name so glm-5-turbo / glm-4-long (non-reasoning) are untouched
+    # — sending `thinking` to them is either ignored or rejected. Override with
+    # GLM_THINKING=enabled for genuinely hard disambiguation calls.
+    if provider == "glm" and "5.2" in model and os.environ.get("GLM_THINKING", "disabled").lower() != "enabled":
+        body["thinking"] = {"type": "disabled"}
+
     # Transient failures (network blips, empty/truncated bodies, malformed JSON)
     # must not silently drop an entire confirmation chunk. Retry with backoff;
     # only return the error after the final attempt.
@@ -231,7 +241,15 @@ def call_llm(messages: list[dict[str, str]]) -> dict[str, Any]:
             return result
         last_error = result
         if attempt < attempts - 1:
-            time.sleep(2 * (attempt + 1))
+            if result.get("_status") == 429:
+                # GLM's rate limit is a per-minute request cap, so the default
+                # 2-4s backoff just re-trips 429 and silently drops the chunk as
+                # "no proposal". Wait for the window to reset (30/60/90s) before
+                # retrying. Combined with bounded fallback concurrency this keeps
+                # heavy full-context propose calls under the limit.
+                time.sleep(30 * (attempt + 1))
+            else:
+                time.sleep(2 * (attempt + 1))
     last_error.setdefault("_provider", provider)
     last_error["_attempts"] = attempts
     return last_error
@@ -253,6 +271,13 @@ def _call_llm_once(
         )
     except requests.RequestException as exc:
         return {"error": f"{provider} request failed: {type(exc).__name__}", "detail": str(exc), "_provider": provider}
+    if response.status_code == 429:
+        # Rate limited. The default short retry backoff (2-4s) is far too short
+        # for GLM's per-minute request cap — it just re-trips 429 and the whole
+        # chunk silently degrades to "no proposal" (which reads as "LLM found
+        # nothing" when really it was never answered). Surface the status so
+        # call_llm can apply a long backoff instead of swallowing the failure.
+        return {"error": f"{provider} HTTP 429 rate limited", "_provider": provider, "_status": 429, "_retryable": True}
     if response.status_code >= 400:
         return {"error": f"{provider} HTTP {response.status_code}", "body": response.text[:1000], "_provider": provider}
 

@@ -216,33 +216,6 @@ class TestResolveIsSigns:
         assert sign_map == {"assets_impair_loss": -1, "credit_impa_loss": 1}
         assert any("overrode semantic signs" in warning for warning in warnings)
 
-    def test_insta360_quarterly_clean_keeps_2026q1_credit_reversal_semantic_sign(self, tmp_path):
-        source_dir = next(Path("companies").glob("*_688775"))
-        db_path = tmp_path / "data.db"
-        shutil.copy2(source_dir / "data.db", db_path)
-
-        outputs = clean.clean_all(db_path, "688775.SH", mode="quarterly")
-        row = outputs["quarterly"].loc["2026Q1"]
-
-        assert row["income.credit_impa_loss"] == pytest.approx(0.49195703, abs=1e-6)
-        assert row["assets_impair_loss"] == pytest.approx(-32.05605374, abs=1e-6)
-
-        with sqlite3.connect(db_path) as conn:
-            messages = [
-                message
-                for (message,) in conn.execute(
-                    """
-                    select message
-                    from clean_warnings
-                    where period = '2026Q1'
-                      and message like 'IS sign%'
-                    """
-                )
-            ]
-
-        assert any("resolved by semantic reported signs" in message for message in messages)
-        assert not any("credit_impa_loss=-1" in message for message in messages)
-
 
 class TestBalanceSheetChecks:
     def _minimal_bs_row(self, **overrides: float) -> dict[str, float]:

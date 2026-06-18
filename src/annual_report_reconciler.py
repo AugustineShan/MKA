@@ -65,6 +65,22 @@ COMMON_ANNUAL_ALIASES = {
     "total_nca": "非流动资产合计",
     "total_cur_liab": "流动负债合计",
     "total_ncl": "非流动负债合计",
+    # 非流动负债段常见 TuShare 漏报/为 0 的明细科目（BYD lease_liab 等实测）
+    "lease_liab": "租赁负债",
+    "estimated_liab": "预计负债",
+    "lt_borr": "长期借款",
+    "bond_payable": "应付债券",
+    "defer_tax_liab": "递延所得税负债",
+    "oth_ncl": "其他非流动负债",
+    "lt_payable": "长期应付款",
+    "long_pay_total": "长期应付款",
+    "specific_payables": "专项应付款",
+    "lt_payroll_payable": "长期应付职工薪酬",
+    # 非流动资产段常见漏报（BYD 多年 override 实测）
+    "use_right_assets": "使用权资产",
+    "receiv_financing": "应收款项融资",
+    "oth_eq_invest": "其他权益工具投资",
+    "oth_illiq_fin_assets": "其他非流动金融资产",
 }
 
 
@@ -135,17 +151,50 @@ def parse_failure_message(message: str) -> Failure:
     )
 
 
-def collect_failures(wide: pd.DataFrame, present_by_period: dict[str, set[str]]) -> list[Failure]:
+def collect_failures(
+    wide: pd.DataFrame,
+    present_by_period: dict[str, set[str]],
+    *,
+    only_period: str | None = None,
+    only_code: str | None = None,
+) -> list[Failure]:
+    """Run hard-check failures across periods.
+
+    With ``only_period`` set, non-target periods skip the heavy check_* calls
+    entirely — we only carry forward each period's CF ending cash so the target
+    period's 跨表 7.4 (prior-end vs current-begin cash) still resolves. This
+    avoids re-running IS/BS/CF checks for every year when the caller asked for
+    one year (the IS 1.2 "uses official operate_profit" spam for 2016-2025 on a
+    single-year run came from here). ``only_code`` filters within the target
+    period(s) after the checks run.
+    """
     failures: list[Failure] = []
     prev_period_end_cash: float | None = None
+
+    # 与 clean.validate_wide 同步推断面值：TuShare total_share 是股数，权益校验需
+    # par×total_share 折算股本元，否则 BS 4.1 会被误报为失败（面值≠1 的公司）。
+    bs_reclass_by_period = wide.attrs.get("bs_reclass", {})
+    par_value = clean.infer_par_value(wide, present_by_period, bs_reclass_by_period)
 
     for period in sorted(str(period) for period in wide.index.tolist()):
         row = wide.loc[period].to_dict()
         present = present_by_period.get(period, set())
 
+        # Skip heavy checks for non-target periods (only_period) AND for any
+        # pre-RECONCILE_MIN_YEAR period: 2010 之前的年度披露稀疏、不对年报核对，
+        # clean 已把它们直接入库，reconciler 也不分析。仍携带期末现金，保证目标
+        # 年/2010+ 的跨表 7.4（上期期末 vs 本期期初）能解析。
+        skip_period = (
+            (only_period and period != only_period)
+            or clean.period_year(period) < clean.RECONCILE_MIN_YEAR
+        )
+        if skip_period:
+            prev_period_end_cash = clean.get_cashflow_value(row, "c_cash_equ_end_period")
+            continue
+
         messages: list[str] = []
         messages.extend(clean.check_is(row, present, period))
-        messages.extend(clean.check_bs(row, present, period)[0])
+        messages.extend(clean.check_bs(row, present, period, par=par_value)[0])
         messages.extend(clean.check_cf(row, present, period))
         messages.extend(clean.check_is_supplement(row, present, period))
         messages.extend(clean.check_cross_table(row, present, period))
@@ -160,7 +209,11 @@ def collect_failures(wide: pd.DataFrame, present_by_period: dict[str, set[str]])
                 )
         prev_period_end_cash = clean.get_cashflow_value(row, "c_cash_equ_end_period")
 
-        failures.extend(parse_failure_message(message) for message in messages)
+        for message in messages:
+            failure = parse_failure_message(message)
+            if only_code and failure.code != only_code:
+                continue
+            failures.append(failure)
 
     return failures
 
@@ -211,24 +264,31 @@ def failure_candidate_fields(failure: Failure) -> tuple[str, list[str]]:
     if code == "BS 4.1":
         return "equity", bs_fields_for_bucket("equity")
 
+    # subtotal 字段（total_cogs/total_opcost/operate_profit/total_profit/n_income/
+    # total_cur_assets/total_nca/...）是被校验等式的汇总目标本身，不是待补的明细科目。
+    # 把 subtotal 纳入 candidate 会让 LLM 提议"把汇总目标改成残差值"——这永远是脏配平
+    # （贵州茅台 IS 1.1：LLM 把"信用减值损失 -5.31 百万"塞给 total_cogs，脏 override
+    # 覆盖了 adaptation 已修好的明细和）。故所有 IS/CF check 的 candidate 集一律排除
+    # subtotal；要补的是明细科目（cost_item/revenue_item/operating_adjustment/...）。
+    # BS check 走 bs_fields_for_bucket，本就只取明细 bucket 字段，不含 subtotal。
     if code == "IS 1.1":
-        return "cost_item", fields_by_category(clean.IS_FIELD_CATEGORIES, {"cost_item", "subtotal"})
+        return "cost_item", fields_by_category(clean.IS_FIELD_CATEGORIES, {"cost_item"})
     if code in {"IS 1.2", "IS 1.3", "IS 1.4", "IS 1.5", "IS 6.1", "IS 6.2", "IS 6.3"}:
         return "income_formula", fields_by_category(
             clean.IS_FIELD_CATEGORIES,
-            {"revenue_item", "cost_item", "operating_adjustment", "below_line", "tax", "attribution", "comprehensive", "subtotal", "sub_item"},
+            {"revenue_item", "cost_item", "operating_adjustment", "below_line", "tax", "attribution", "comprehensive", "sub_item"},
         )
     if code == "IS 1.6":
-        return "revenue_item", fields_by_category(clean.IS_FIELD_CATEGORIES, {"revenue_item", "subtotal"})
+        return "revenue_item", fields_by_category(clean.IS_FIELD_CATEGORIES, {"revenue_item"})
 
     if code == "CF 5.1":
-        return "cfo", fields_by_category(clean.CF_FIELD_CATEGORIES, {"cfo_inflow", "cfo_outflow", "subtotal"})
+        return "cfo", fields_by_category(clean.CF_FIELD_CATEGORIES, {"cfo_inflow", "cfo_outflow"})
     if code == "CF 5.2":
-        return "cfi", fields_by_category(clean.CF_FIELD_CATEGORIES, {"cfi_inflow", "cfi_outflow", "subtotal"})
+        return "cfi", fields_by_category(clean.CF_FIELD_CATEGORIES, {"cfi_inflow", "cfi_outflow"})
     if code == "CF 5.3":
-        return "cff", fields_by_category(clean.CF_FIELD_CATEGORIES, {"cff_inflow", "cff_outflow", "subtotal"})
+        return "cff", fields_by_category(clean.CF_FIELD_CATEGORIES, {"cff_inflow", "cff_outflow"})
     if code in {"CF 5.4", "CF 5.5"}:
-        return "cashflow_formula", fields_by_category(clean.CF_FIELD_CATEGORIES, {"subtotal", "balance"})
+        return "cashflow_formula", fields_by_category(clean.CF_FIELD_CATEGORIES, {"balance"})
 
     return "all_relevant", []
 
@@ -435,24 +495,41 @@ def slim_field_context_for_llm(field_context: list[dict[str, Any]]) -> list[dict
     return slim[:80]
 
 
-def slim_markdown_context_for_llm(markdown_context: dict[str, Any]) -> dict[str, Any]:
+def slim_markdown_context_for_llm(markdown_context: dict[str, Any], *, full: bool = False) -> dict[str, Any]:
     snippets = markdown_context.get("snippets")
     if not isinstance(snippets, list):
         return markdown_context
     # glm-5-turbo carries 150–200k context, so there is no reason to collapse to
     # a single truncated snippet. Keep the full statement snippet plus a generous
     # set of term snippets; only bound the total to stay well within context.
+    #
+    # `full` is the LLM-propose fallback path for failures the rule path could
+    # not close (no candidate explained the residual). Those residuals live in
+    # the NCA / equity tail of the consolidated BS, which a 900-line statement
+    # snippet captures fully in raw form (~36–60k chars) — but the default
+    # 24k per-snippet cap silently cut that tail off, so the LLM never saw the
+    # matching line. In full mode we keep the statement snippet UNcapped and
+    # raise the total budget to 200k (glm-5.2 carries 1M context with thinking
+    # disabled, so this is not the binding constraint; precision is).
     MAX_SNIPPETS = 24
-    PER_SNIPPET_CHARS = 24000
-    TOTAL_CHARS = 160000
+    PER_SNIPPET_CHARS = 200000 if full else 24000
+    TOTAL_CHARS = 200000 if full else 160000
     compact_snippets: list[dict[str, Any]] = []
     total = 0
     for snippet in snippets:
         if not isinstance(snippet, dict):
             continue
-        text = str(snippet.get("text", ""))[:PER_SNIPPET_CHARS]
+        text = str(snippet.get("text", ""))
+        if not full:
+            text = text[:PER_SNIPPET_CHARS]
         if total + len(text) > TOTAL_CHARS:
-            break
+            if full:
+                # In full mode the statement snippet is the one that matters;
+                # if even the raised budget can't hold it, keep it truncated
+                # rather than dropping it entirely.
+                text = text[: TOTAL_CHARS - total] if total < TOTAL_CHARS else ""
+            else:
+                break
         compact = dict(snippet)
         compact["text"] = text
         compact_snippets.append(compact)
@@ -479,26 +556,37 @@ def extract_markdown_context(
     # 1. Statement-level snippet (balance sheet / income / cashflow).
     #    A full consolidated statement can run several hundred extracted lines —
     #    e.g. companies with financial subsidiaries push receivables/financing
-    #    lines 250+ lines below the heading. A short window silently cut those
-    #    off, so the residual-matching line was never seen. glm-5-turbo carries
-    #    150–200k context, so capture the whole statement generously.
+    #    lines 250+ lines below the heading, and large groups (紫金矿业) push the
+    #    non-current-asset / equity section 530+ lines below the BS heading. A
+    #    short window silently cut those off, so the residual-matching line was
+    #    never seen (BS 2.2 NCA items fell beyond the old 520-line window). 900
+    #    covers the entire consolidated BS (assets+liabilities+equity) for any
+    #    realistic filer; glm-5-turbo carries 150–200k context, and in
+    #    --write-overrides mode this snippet is only used for rule matching +
+    #    evidence (not fed to the LLM), so size is not the binding constraint.
     for marker in section_markers(failure):
         idx = find_line(lines, marker)
         if idx is not None:
-            window = compact_window(lines, idx, before=10, after=520)
+            window = compact_window(lines, idx, before=10, after=900)
             snippets.append({"kind": "statement", "patterns": marker, **window})
             used_ranges.append((window["start_line"], window["end_line"]))
             break
 
-    # 2. Term-level snippets: generate one for *every* occurrence so the LLM
-    #    can pick the context where the matching number actually appears.
-    #    glm-5-turbo context is 150–200k; 40 snippets of ~120 lines each is
-    #    well within budget and avoids dropping the relevant occurrence.
+    # 2. Term-level snippets: supplementary occurrences beyond the statement
+    #    snippet. The statement snippet (530-line window above) already covers
+    #    the main consolidated table where residual-closing line items live, so
+    #    term snippets only need to catch items mentioned elsewhere. 40 per
+    #    failure was over-collection: it bloated the evidence JSON (6.2MB for one
+    #    company) and, more importantly, inflated `matched_items` in
+    #    rule_based_override_suggestions enough to make the group
+    #    itertools.combinations search quadratic-to-cubic. 6 is plenty for a
+    #    supplement; glm-5-turbo's 150–200k context is not the binding limit
+    #    here, CPU is.
     terms = add_known_defect_search_terms(
         search_terms_for_failure(failure, field_context),
         known_defect_hints or [],
     )
-    MAX_TERM_SNIPPETS = 40
+    MAX_TERM_SNIPPETS = 6
     for term in terms:
         indices = find_all_lines(lines, [term])
         for idx in indices:
@@ -530,6 +618,8 @@ def llm_prompt(
     field_context: list[dict[str, Any]],
     markdown_context: dict[str, Any],
     known_defect_hints: list[dict[str, Any]],
+    *,
+    full_context: bool = False,
 ) -> list[dict[str, str]]:
     payload = {
         "ticker": ticker,
@@ -539,7 +629,7 @@ def llm_prompt(
         "annual_report_unit": "通常为千元人民币；如片段另有说明，以片段为准。换算到 TuShare 口径需除以 1000。",
         "known_tushare_defect_hints": known_defect_hints,
         "candidate_tushare_fields": slim_field_context_for_llm(field_context),
-        "annual_report_markdown_context": slim_markdown_context_for_llm(markdown_context),
+        "annual_report_markdown_context": slim_markdown_context_for_llm(markdown_context, full=full_context),
     }
 
     system = (
@@ -663,6 +753,62 @@ def numbered_lines(text: str) -> list[tuple[int, str]]:
 
 def compact_text(text: str) -> str:
     return re.sub(r"\s+", "", text)
+
+
+def _normalize_item_name(name: str) -> str:
+    """Normalize a 科目名 for fuzzy matching: strip whitespace/punct/space.
+
+    年报科目名与 TuShare description 之间可能有空格、括号单位、破折号差异，
+    归一化后做包含匹配，避免 LLM 把『租赁负债』映射到不存在的 lease_ncl。
+    """
+    return re.sub(r"[\s（）()\-—－·、,，.。]", "", str(name or "")).strip()
+
+
+def resolve_candidate_field(
+    proposed_field: str | None,
+    annual_report_item: str | None,
+    candidates: list[dict[str, Any]],
+) -> str | None:
+    """Map an LLM-proposed field to a real candidate field, anti-hallucination.
+
+    LLM 经常把科目名映射到不存在或拼错的字段（如『租赁负债』→ lease_ncl 而非
+    lease_liab，或直接给 null）。本函数只用当前 failure 的 candidate 集做确定性
+    反向映射，映射不到就返回 None（由调用方拒绝），绝不接受 candidate 集外的字段。
+
+    顺序：① 提议字段精确命中 candidate → 直接用；
+          ② 用 annual_report_item 反向匹配 candidate 的 field/annual_report_alias/description
+            （归一化包含匹配，长名优先）。
+    """
+    candidates = [c for c in candidates if isinstance(c, dict) and c.get("field")]
+    if proposed_field:
+        for c in candidates:
+            if str(c["field"]) == str(proposed_field):
+                return str(c["field"])
+
+    item = _normalize_item_name(annual_report_item)
+    if not item:
+        return None
+
+    # 收集每个 candidate 的归一化别名，按长度降序优先匹配更具体的科目名
+    # （避免『非流动负债』误命中『其他非流动负债』的子串）。
+    scored: list[tuple[int, str]] = []
+    for c in candidates:
+        names = [
+            str(c.get("annual_report_alias") or ""),
+            str(c.get("description") or ""),
+            str(c.get("field") or ""),
+        ]
+        for raw in names:
+            norm = _normalize_item_name(raw)
+            if not norm:
+                continue
+            if norm == item or item in norm or norm in item:
+                scored.append((len(norm), str(c["field"])))
+                break
+    if scored:
+        scored.sort(reverse=True)
+        return scored[0][1]
+    return None
 
 
 def annual_report_aliases_for_field(field: dict[str, Any], hint_aliases: list[str]) -> list[str]:
@@ -857,9 +1003,37 @@ def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, 
     # when no single exact-residual match exists for this failure.
     has_exact_single = any(s.get("source") == "rule:alias_exact_residual" for s in suggestions)
     grouped_fields: set[str] = set()
-    group_range = range(0) if has_exact_single else range(2, min(5, len(matched_items) + 1))
+
+    # Bound the group search input. matched_items comes from collecting every
+    # number near every alias across all snippets; for a large statement it can
+    # reach dozens of mostly-irrelevant entries, and itertools.combinations over
+    # sizes 2-4 is O(C(N,4)) — the real CPU killer behind slow candidate
+    # generation. A group member that helps close a target_gt_calc residual must
+    # be a positive amount no larger than the residual (a summand cannot exceed
+    # the total), so drop anything larger as noise, then cap to a fixed ceiling
+    # keeping the largest remaining values (the significant line items). This is
+    # only reached when no single exact-residual match exists (has_exact_single
+    # is False), and target_lt_calc failures produce zero candidates before now.
+    MAX_GROUP_ITEMS = 16
+    group_pool = matched_items
+    if not has_exact_single:
+        residual_mag = abs(signed_residual)
+        plausible = [
+            it for it in matched_items
+            if abs(float(it.get("value_million_cny") or 0.0)) <= residual_mag + clean.TOLERANCE
+        ]
+        if plausible:
+            group_pool = plausible
+        if len(group_pool) > MAX_GROUP_ITEMS:
+            group_pool = sorted(
+                group_pool,
+                key=lambda it: abs(float(it.get("value_million_cny") or 0.0)),
+                reverse=True,
+            )[:MAX_GROUP_ITEMS]
+
+    group_range = range(0) if has_exact_single else range(2, min(5, len(group_pool) + 1))
     for size in group_range:
-        for group in itertools.combinations(matched_items, size):
+        for group in itertools.combinations(group_pool, size):
             fields = tuple(str(item.get("candidate_tushare_field")) for item in group)
             if len(set(fields)) != len(fields):
                 continue
@@ -905,36 +1079,181 @@ def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     if llm.get("confidence") != "high":
         return []
+    # Respect the LLM's own action recommendation. The propose path can return a
+    # missing item whose value happens to match the residual (diff<TOLERANCE) but
+    # whose recommended_action is fix_classification / fix_combo_resolve /
+    # manual_review — those are clean.py mapping or formula issues, NOT TuShare
+    # data gaps, and overriding them is 脏配平 (e.g. 资产减值损失's value written
+    # to the rd_exp field). Only accept an explicit add_override recommendation.
+    if llm.get("recommended_action") != "add_override":
+        return []
 
     out: list[dict[str, Any]] = []
     provider = str(llm.get("_provider") or llm_provider())
+    candidates = analysis.get("candidate_tushare_fields", []) or []
     for item in llm.get("missing_or_suspicious_items", []):
         if not isinstance(item, dict):
             continue
-        field = item.get("candidate_tushare_field")
+        # ① 服务端字段映射：LLM 常把科目名映射到不存在/拼错的字段（lease_ncl、
+        # null）。只用 candidate 集反向映射，映射不到就跳过，绝不接受集外字段。
+        field = resolve_candidate_field(
+            item.get("candidate_tushare_field"),
+            item.get("annual_report_item"),
+            candidates,
+        )
         value = item.get("value_million_cny")
         diff = item.get("residual_difference_million_cny")
         if not field or value is None:
             continue
         if diff is not None and abs(float(diff)) >= clean.TOLERANCE:
             continue
-        out.append({"source": provider, "confidence": llm.get("confidence"), **item})
+        mapped = {**item, "candidate_tushare_field": field}
+        out.append({"source": provider, "confidence": llm.get("confidence"), **mapped})
     return out
 
 
-def collect_rule_candidates(reconciliation: dict[str, Any]) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    for analysis in reconciliation.get("analyses", []):
-        failure = analysis.get("failure", {})
-        for candidate in rule_based_override_suggestions(analysis):
-            candidates.append(
-                {
-                    "period": str(failure.get("period")),
-                    "failure": failure,
-                    "candidate": candidate,
-                }
+def _llm_propose_fallback(
+    ticker: str,
+    company_dir: Path,
+    reconciliation_path: Path,
+    residue_analyses: list[dict[str, Any]],
+    *,
+    approve_high_confidence: bool,
+) -> list[dict[str, Any]]:
+    """Second tier: LLM PROPOSES the missing field for failures rule+confirm closed.
+
+    The rule path (rule_based_override_suggestions + Phase B confirm) is precise
+    and cheap, but it cannot recover a line item when PyMuPDF has jumbled the
+    consolidated statement badly enough that no alias+amount regex combination
+    sums to the residual (期末/期初/母公司/附注 occurrences all collide). Those
+    residue failures never reach the LLM in --write-overrides mode, because Phase
+    B only CONFIRMS rule candidates — it never proposes.
+
+    This fallback closes that gap. For each residue analysis it asks the LLM to
+    PROPOSE the missing/zero TuShare field whose annual-report value explains the
+    residual, feeding the FULL statement context (uncapped via full_context=True,
+    so the NCA/equity tail that the 24k slim cap was cutting off is visible). It
+    reuses the field_context + markdown_context already extracted in Phase A — no
+    re-extraction, the only cost is the LLM call. Mutates each analysis in place
+    (sets `analysis["llm"]`) so the proposal is persisted into the evidence JSON.
+
+    Same guardrails as llm_override_suggestions: only suspected_tushare_issue +
+    confidence=high + |residual_difference|<TOLERANCE become overrides. No
+    relaxing the 脏配平 discipline — the LLM proposing is fine, but the value must
+    still cite an annual-report number that matches the residual.
+    """
+    def _one(analysis: dict[str, Any]) -> dict[str, Any]:
+        failure_dict = analysis.get("failure", {}) or {}
+        try:
+            failure = Failure(**failure_dict)
+        except Exception as exc:  # reconstruct failure for prompt building
+            analysis["llm"] = {"error": f"cannot reconstruct Failure: {exc!r}"}
+            return analysis
+        field_context = analysis.get("candidate_tushare_fields", []) or []
+        markdown_context = analysis.get("annual_report_context", {}) or {}
+        if markdown_context.get("error") or not markdown_context.get("snippets"):
+            analysis["llm"] = {"error": markdown_context.get("error", "no annual-report snippet")}
+            return analysis
+        known_hints = analysis.get("known_tushare_defect_hints", []) or []
+        messages = llm_prompt(
+            ticker, company_dir, failure, field_context, markdown_context, known_hints,
+            full_context=True,
+        )
+        analysis["llm"] = call_llm(messages)
+        analysis["llm_propose_source"] = "fallback"
+        return analysis
+
+    # Full-context propose calls are heavy (uncapped statement snippet) and the
+    # residue batch can be large (every IS 1.1 + BS gap failure that rule didn't
+    # close). Default LLM_MAX_WORKERS (10) tripped GLM's per-minute rate cap and
+    # silently degraded 3 of 4 hard failures into empty "no proposal" via 429.
+    # Cap to 3 so the long 429 backoff in call_llm actually has room to recover.
+    parallel_map(_one, residue_analyses, max_workers=3)  # mutates each in place
+
+    provider = llm_provider()
+    adjustments: list[dict[str, Any]] = []
+    for analysis in residue_analyses:
+        failure = analysis.get("failure", {}) or {}
+        period = str(failure.get("period"))
+        md_path = (analysis.get("annual_report_context") or {}).get("markdown_path")
+        field_value_by: dict[str, float] = {}
+        clean_cat_by: dict[str, str] = {}
+        for item in analysis.get("candidate_tushare_fields", []) or []:
+            if isinstance(item, dict) and item.get("field"):
+                field_value_by[str(item["field"])] = float(item.get("value_million_cny") or 0.0)
+                if item.get("clean_category"):
+                    clean_cat_by[str(item["field"])] = str(item["clean_category"])
+        for sug in llm_override_suggestions(analysis):
+            field = str(sug.get("candidate_tushare_field"))
+            value = sug.get("value_million_cny")
+            if not field or value is None:
+                continue
+            # The proposed field MUST be a real TuShare field in this failure's
+            # bucket sum set (field_value_by is keyed by exactly the candidate
+            # fields from build_field_context). Two reasons: (1) anti-hallucination
+            # — glm-5.2 invented "impair_imp_loss_or_rd_exp", a non-existent field,
+            # and writing 2220.9 to it is 脏配平; (2) correctness — only fields in
+            # the bucket sum can actually close a bucket residual, so a proposal
+            # outside the set cannot fix the failure even if applied.
+            if field not in field_value_by:
+                continue
+            new_value = float(value)
+            old_value = field_value_by.get(field, float(sug.get("tushare_value_million_cny") or 0.0))
+            # add_override 语义只补 TuShare 漏录/为 0 的明细字段，不得覆盖已有非 0 值。
+            # rule_based 路径已有此守卫（见 rule_based_override_suggestions），fallback
+            # 必须对齐：否则 LLM 会把残差值塞给一个已有值的 subtotal/明细（贵州茅台
+            # IS 1.1：把"信用减值损失 -5.31 百万"写入 total_cogs，old=29817≠0），那是
+            # 用 override 改写被校验目标本身，永远脏配平。old_value 非 0 一律拒绝。
+            if abs(old_value) >= clean.TOLERANCE:
+                continue
+            status = "approved" if approve_high_confidence else "candidate"
+            adjustments.append(
+                _build_adjustment_record(
+                    ticker=ticker,
+                    period=period,
+                    field=field,
+                    new_value=new_value,
+                    old_value=old_value,
+                    failure=failure,
+                    status=status,
+                    approved_by=f"{provider}:high_confidence" if status == "approved" else None,
+                    source=provider,
+                    confidence=sug.get("confidence"),
+                    annual_report_item=sug.get("annual_report_item"),
+                    annual_report_value_raw=sug.get("annual_report_value_raw"),
+                    annual_report_unit=sug.get("annual_report_unit"),
+                    evidence_lines=sug.get("evidence_lines"),
+                    reason="LLM-propose fallback: rule path yielded no approved candidate explaining residual",
+                    source_markdown_path=md_path,
+                    source_reconciliation_path=str(reconciliation_path),
+                    clean_category=clean_cat_by.get(field),
+                )
             )
-    return candidates
+    return adjustments
+
+
+def collect_rule_candidates(reconciliation: dict[str, Any]) -> list[dict[str, Any]]:
+    """Collect rule-based override candidates from every analysis.
+
+    rule_based_override_suggestions is the CPU hotspot (alias+amount regex
+    matching over large snippets, plus itertools.combinations group search), so
+    run analyses concurrently via parallel_map. Order is preserved
+    (result[i] ↔ analyses[i]) so the candidate stream stays deterministic.
+    """
+
+    def _one(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+        failure = analysis.get("failure", {})
+        return [
+            {
+                "period": str(failure.get("period")),
+                "failure": failure,
+                "candidate": candidate,
+            }
+            for candidate in rule_based_override_suggestions(analysis)
+        ]
+
+    per_analysis = parallel_map(_one, reconciliation.get("analyses", []))
+    return [c for batch in per_analysis for c in batch]
 
 
 def format_known_defects_for_prompt(known_defects: list[dict[str, Any]]) -> str:
@@ -1187,21 +1506,30 @@ def build_override_file_from_batch_llm(
     *,
     approve_high_confidence: bool,
 ) -> dict[str, Any]:
-    failure_by_period = {
-        str(analysis.get("failure", {}).get("period")): analysis.get("failure", {})
-        for analysis in reconciliation.get("analyses", [])
-    }
+    # A period has multiple failures (BS 2.1/2.2/3.2/4.1 all for the same year),
+    # so keying the failure lookup by period alone stamps every override with
+    # whichever failure happened to be last for that period (e.g. all of 2022's
+    # overrides mislabeled failure_code=BS 4.1). Key by (period, field) instead:
+    # each approved TuShare field belongs to exactly one failure's candidate
+    # set, so the analysis whose candidate_tushare_fields contains that field is
+    # the correct failure. Fall back to period-level only if no field match.
+    failure_by_period_field: dict[tuple[str, str], dict[str, Any]] = {}
+    failure_by_period: dict[str, dict[str, Any]] = {}
     field_values: dict[tuple[str, str], float] = {}
     clean_category_by: dict[tuple[str, str], str] = {}
     markdown_by_period: dict[str, str | None] = {}
     for analysis in reconciliation.get("analyses", []):
-        period = str(analysis.get("failure", {}).get("period"))
+        failure = analysis.get("failure", {})
+        period = str(failure.get("period"))
+        failure_by_period.setdefault(period, failure)
         markdown_by_period[period] = analysis.get("annual_report_context", {}).get("markdown_path")
         for item in analysis.get("candidate_tushare_fields", []):
-            if isinstance(item, dict):
-                field_values[(period, str(item.get("field")))] = float(item.get("value_million_cny") or 0.0)
+            if isinstance(item, dict) and item.get("field"):
+                field_key = (period, str(item.get("field")))
+                field_values[field_key] = float(item.get("value_million_cny") or 0.0)
+                failure_by_period_field.setdefault(field_key, failure)
                 if item.get("clean_category"):
-                    clean_category_by[(period, str(item.get("field")))] = str(item["clean_category"])
+                    clean_category_by[field_key] = str(item["clean_category"])
 
     adjustments: list[dict[str, Any]] = []
     provider = str(llm_confirmation.get("_provider") or llm_provider())
@@ -1216,7 +1544,7 @@ def build_override_file_from_batch_llm(
         if not field or value is None:
             continue
 
-        failure = failure_by_period.get(period, {})
+        failure = failure_by_period_field.get((period, str(field))) or failure_by_period.get(period, {})
         old_value = field_values.get((period, str(field)), float(item.get("tushare_value_million_cny") or 0.0))
         new_value = float(value)
         status = "approved" if approve_high_confidence else "candidate"
@@ -1399,12 +1727,39 @@ def main(argv: list[str] | None = None) -> int:
     db_path = default_db_path(company_dir, args.db)
 
     wide, present_by_period = collect_annual_wide(db_path, ticker)
-    failures = collect_failures(wide, present_by_period)
 
-    if args.only_year:
-        failures = [failure for failure in failures if failure.period == args.only_year]
-    if args.only_code:
-        failures = [failure for failure in failures if failure.code == args.only_code]
+    # 与 clean.py 主流程顺序对齐：先跑 annual income subtotal adaptation（把
+    # total_cogs 等与稳定成本明细冲突的 subtotal 改用明细重算值），再应用 approved
+    # overrides，最后 collect_failures。否则 reconciler 会把 adaptation 已兜底的
+    # IS 1.1 小残差（official total_cogs vs 明细和的四舍五入/未归项成本差异）误报为
+    # failure，触发 LLM-propose fallback 对 total_cogs 等 subtotal 字段造脏 override
+    # （贵州茅台 2019/2022/2024 实测：脏 override 把 adaptation 修好的 total_cogs
+    # 覆盖成"信用减值损失"值，反而在 clean 重跑时制造 IS 1.1 失败）。复用 clean 自己
+    # 的 adaptation，保证 reconciler 看到的失败 = clean.py 实际会遇到的失败。
+    clean.apply_annual_income_subtotal_adaptations(wide, present_by_period, ticker)
+
+    # Two-round support: apply already-approved overrides from prior rounds
+    # BEFORE collecting failures, so this run sees only the residual that prior
+    # rounds did not close. init.py invokes the reconciler up to twice per
+    # company: round 1 (no override file yet) applies nothing and proposes on
+    # the full failure set; round 2 applies round 1's overrides and proposes only
+    # on what remains — the LLM then sees round 1's filled values in field_context
+    # and attacks the smaller residual. This also recovers gaps a 429-truncated
+    # fallback silently dropped on a prior run (re-running picks up where it left
+    # off instead of re-proposing the already-closed failures). Uses clean's own
+    # load_approved_overrides + apply_annual_overrides so the reconciler applies
+    # exactly the set clean.py would apply (same source/status filter).
+    override_path = company_dir / "recon" / "annual_report_overrides.json"
+    existing_overrides = clean.load_approved_overrides(override_path, ticker)
+    if existing_overrides:
+        clean.apply_annual_overrides(wide, present_by_period, ticker, existing_overrides)
+
+    failures = collect_failures(
+        wide,
+        present_by_period,
+        only_period=args.only_year,
+        only_code=args.only_code,
+    )
 
     total_failures = len(failures)
     failures = failures[: max(args.max_failures, 0)]
@@ -1413,23 +1768,30 @@ def main(argv: list[str] | None = None) -> int:
 
     analyses: list[dict[str, Any]] = []
     use_llm = not args.no_llm and not args.write_overrides
-    for failure in failures:
+
+    def _analyze_one(failure):
         row = wide.loc[failure.period].to_dict()
         present = present_by_period.get(failure.period, set())
         if args.verbose:
             print(f"Analyzing {failure.code} {failure.period}: {failure.title}", file=sys.stderr)
-        analyses.append(
-            analyze_failure(
-                ticker,
-                company_dir,
-                failure,
-                row,
-                present,
-                field_docs,
-                known_defects,
-                use_llm=use_llm,
-            )
+        return analyze_failure(
+            ticker,
+            company_dir,
+            failure,
+            row,
+            present,
+            field_docs,
+            known_defects,
+            use_llm=use_llm,
         )
+
+    # Phase A: analyze each failure concurrently. parallel_map preserves order
+    # (analyses[i] ↔ failures[i]) and propagates the first exception after
+    # in-flight tasks settle, identical semantics to the former serial loop.
+    # Each analyze_failure owns its LLM timeout + retry; concurrency only
+    # collapses wall-clock from sum(calls) to ~max(call). Same pattern as
+    # Phase B (per-chunk confirm) below.
+    analyses = parallel_map(_analyze_one, failures)
 
     out = {
         "version": EVIDENCE_VERSION,
@@ -1466,6 +1828,53 @@ def main(argv: list[str] | None = None) -> int:
             llm_confirmation,
             approve_high_confidence=args.approve_high_confidence,
         )
+
+        # --- LLM-propose fallback (second tier) ---------------------------------
+        # Rule + Phase B confirm close what they can. For failures they did NOT
+        # close (no approved adjustment covers any of the failure's candidate
+        # fields), ask the LLM to PROPOSE the missing field from the full
+        # statement context. residue elements are references into out["analyses"],
+        # so the LLM result is persisted into the evidence JSON we re-write below.
+        approved_keys = {
+            (adj.get("period"), adj.get("field"))
+            for adj in overrides.get("adjustments", [])
+            if adj.get("status") == "approved"
+        }
+        residue: list[dict[str, Any]] = []
+        for analysis in out["analyses"]:
+            failure = analysis.get("failure", {}) or {}
+            period = str(failure.get("period"))
+            cand_fields = {
+                str(it.get("field"))
+                for it in (analysis.get("candidate_tushare_fields") or [])
+                if isinstance(it, dict) and it.get("field")
+            }
+            if cand_fields and any((period, fld) in approved_keys for fld in cand_fields):
+                continue
+            residue.append(analysis)
+        if residue:
+            if args.verbose:
+                print(
+                    f"LLM-propose fallback ({llm_provider()}) for {len(residue)} "
+                    f"unclosed failure(s)...",
+                    file=sys.stderr,
+                )
+            fallback_adjustments = _llm_propose_fallback(
+                ticker,
+                company_dir,
+                path,
+                residue,
+                approve_high_confidence=args.approve_high_confidence,
+            )
+            overrides["adjustments"].extend(fallback_adjustments)
+            out["llm_propose_fallback"] = {
+                "residue_count": len(residue),
+                "approved_proposals": sum(1 for x in fallback_adjustments if x.get("status") == "approved"),
+                "candidate_proposals": sum(1 for x in fallback_adjustments if x.get("status") == "candidate"),
+            }
+            write_json(path, out)
+            write_json(latest_path, out)
+
         overrides = merge_existing_overrides(override_path, overrides, ticker)
         write_json(override_path, overrides)
 

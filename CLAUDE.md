@@ -179,7 +179,11 @@ python -m src.report_downloader --ticker 000333.SZ
 
 ## 年报 Markdown 智能核对 annual_report_reconciler.py
 
-这是 `clean.py` 的外置补全/诊断能力，只在年度硬校验失败且本地已有年报 Markdown 时使用。脚本复用 `clean.py` 的年度透视、字段分类、combo resolve 与 `check_*()` 校验函数收集失败，再切出对应年报片段，必要时调用配置好的 LLM（默认 GLM `glm-5-turbo`）输出结构化 evidence。它不修改 `data.db`、`raw_tushare`、`clean_annual` 或 `clean_quarterly`。
+这是 `clean.py` 的外置补全/诊断能力，只在年度硬校验失败且本地已有年报 Markdown 时使用。脚本复用 `clean.py` 的年度透视、字段分类、combo resolve、`apply_annual_income_subtotal_adaptations` 与 `check_*()` 校验函数收集失败（**与 clean.py 主流程 adaptation→overrides→check 顺序对齐**，确保 reconciler 看到的失败 = clean.py 实际会遇到的失败），再切出对应年报片段，必要时调用配置好的 LLM（默认 GLM `glm-5.2`）输出结构化 evidence。它不修改 `data.db`、`raw_tushare`、`clean_annual` 或 `clean_quarterly`。
+
+**LLM 模型与两层 fallback（2026-06-18）**：`GLM_MODEL=glm-5.2`（智谱官方 API，裸串；`[1m]` 只是 Claude Code 显示标签非 API 参数）。glm-5.2 是推理模型，`call_llm` 对 model 含 "5.2" 自动发 `thinking:{"type":"disabled"}`——否则它烧 reasoning_tokens 导致 max_tokens 截断返回空（`GLM_THINKING=enabled` 可覆写）；glm-5-turbo/glm-4-long 不受影响。补全走两层：① rule-first（`rule_based_override_suggestions` 别名+金额正则组合 + Phase B LLM 确认，精确便宜）；② rule 未闭合的残余进 `_llm_propose_fallback`，用 `full_context=True`（statement snippet 不截、总额 200K，让 NCA/权益尾部可见）让 LLM 提议缺失字段，复用 Phase A 已抽 context。防脏配平闸门：提议必须 `recommended_action=="add_override"`（LLM 自判 fix_classification/manual_review 不批）、提议字段必须在 failure 的 candidate 字段集内（挡 LLM 编造字段名）、`|残差差|<TOLERANCE`。429 用 30/60/90s 长退避（GLM 按分钟限流，短退避会把整片静默吞成"无提议"假阴性）；fallback 并发降到 3。紫金矿业实测：25 approved override，年度 clean 仍剩 4 硬失败（BS 2.1 2025 多字段缺口、BS 2.2 2020/2024/2025 jumbled 文本找不到单一吻合项 + 2024 缺 cninfo 年报）——与 glm-5-turbo 基线一致，fallback 未突破这 4 个但守卫正确拒绝脏配平。
+
+**三层防脏 override 守卫（2026-06-18，贵州茅台 600519 驱动）**：reconciler 曾对 IS 1.1（营业总成本）造脏 override——LLM 把年报"信用减值损失"值（≈残差量级的负数）塞给 `total_cogs` 这个 subtotal 字段本身，clean 应用后覆盖了 adaptation 已修好的明细和，反而制造 IS 1.1 失败。三层防御：① **`failure_candidate_fields` 所有 IS/CF 分支排除 `"subtotal"`**——subtotal（total_cogs/total_opcost/operate_profit/total_profit/n_income/total_revenue 等被校验汇总目标）不是待补明细，纳入 candidate 即允许改写校验目标=脏配平（BS 走 `bs_fields_for_bucket` 本就不含 subtotal）；② **reconciler `collect_failures` 前先跑 `apply_annual_income_subtotal_adaptations`**——IS 1.1 的 official total_cogs vs 明细和小残差本就被 adaptation 兜底，不再误报为 failure、不进 LLM fallback；③ **`_llm_propose_fallback` 的 `add_override` 拒绝非 0 `old_value`**（与 `rule_based_override_suggestions` 既有守卫对齐）——add_override 只补漏录/为 0 字段，不得覆盖已有非 0 值。茅台删 3 条脏 override 后 clean 年度 10 期+季度 48 期全过；重跑 reconciler `--no-llm` 0 failure。
 
 ### CLI
 
@@ -200,6 +204,8 @@ python -m src.annual_report_reconciler --ticker 000333.SZ --write-overrides --ap
 
 当 `clean.py` 在 annual 或 all 模式下遇到年度 hard check 失败，必须把它当作 clean-data blocker：这不是 soft warning，当前年度 clean 输出不能被信任。默认行为是自动调用：
 
+> **2010 闸门**：强触发与年报核对只对 **2010 年及以后**的年度硬校验失败生效。`clean.py` 把 2010 之前年度的硬校验失败**降级为 warning 直接入库**（写进 `clean_annual`，不阻塞、不触发 reconciler）；`annual_report_reconciler.py` 的 `collect_failures` 也跳过 2010 之前的年度。原因：A 股 2010 前披露稀疏、格式早期，对年报核对得不偿失。`RECONCILE_MIN_YEAR=2010` 是 clean.py 的唯一闸门常量。
+
 ```bash
 python -m src.annual_report_reconciler --ticker {ticker} --db {data.db} --max-failures 20 --write-overrides --approve-high-confidence
 ```
@@ -207,6 +213,18 @@ python -m src.annual_report_reconciler --ticker {ticker} --db {data.db} --max-fa
 终端要清楚告诉用户：哪里失败导致 clean 停止；系统正在用本地年报 Markdown + LLM evidence 判断是否为 TuShare 字段缺失/口径问题；`raw_tushare` 不会被修改；本次失败运行不会被改判成功。若 LLM 生成新的 approved override，用户重跑 `clean.py` 后才会由正常流程应用补数，并写入 `clean_adjustments`/`clean_warnings`。
 
 可用 `--no-auto-reconcile` 关闭强触发，用 `--auto-reconcile-max-failures N` 控制自动分析条数。`annual_report_reconciler.py` 写默认 override 文件时会合并旧记录，不能覆盖掉已有 approved LLM 证据。
+
+### 两轮补数 + 年度 plug 兜底（init.py 编排，2026-06-18）
+
+`init.py` 的 `stage_clean` 把年度补全做成**两轮 + plug 兜底**（`MAX_BACKFILL_CYCLES=2`）：
+
+1. **第一轮**：clean 失败 → 内部强触发 reconciler（rule + LLM fallback）提议 override。
+2. **第二轮（核对第一轮）**：reconciler 在 `collect_failures` 前先用 `clean.load_approved_overrides`+`apply_annual_overrides` 应用已有 approved override——第二次跑天然只见第一轮补完后的残差，LLM 在 field_context 看到 round 1 已补的值、专攻更小残差。每轮 = 应用新 override 重跑 clean +（非末轮）再强触发 reconciler。
+3. **两轮都不过 → plug 提示**：`_offer_annual_plug` 交互问用户是否对残余硬失败塞年度 QA plug。用户同意 → 写 `companies/{公司}/recon/annual_plugs.json`（`period` 为**纯年份**，匹配 annual wide.index）→ 重跑 `clean.py --mode annual --allow-annual-plug`。
+
+`clean.py` 年度 plug：`apply_annual_bs_plugs`（镜像季度 `apply_quarterly_bs_plugs`，但**只在用户指令的 (period, code) 生效**，非自动全期）+ `--allow-annual-plug` flag + `load_annual_plugs`/`default_plugs_path`。`bs_bucket_sum` 已含 `qa_bs_*_plug` 故 check_bs 自动吸收残差；写 `annual_bs_plug` warning（带公式 + "硬问题 plug，非披露不完整" + 建议人工核对后改用 LLM override 并删 plug）。年度 plug 是诚实逃生通道，不是常规兜底——关键科目建议拒绝 plug、如实留 exit 3。
+
+`_run_clean` 捕获 stderr 解析 `HARD CHECK FAIL: BS 2.2 2020 ... residual=...` 行，供 plug 提示向用户展示确切残差。
 
 ## 季度 QA plug 收纳科目
 
@@ -228,10 +246,19 @@ python -m src.annual_report_reconciler --ticker {ticker} --db {data.db} --max-fa
 `knowledge/known_tushare_defects.json` 是给 `annual_report_reconciler.py` 的轻量 LLM 检索提示，不是补丁库。索引用“触发条件 + 字段”，不要用公司名；命中后只把 hint 写入 reconciliation JSON 并加入年报 Markdown 检索词。
 
 当前条目：
-1. `BS 2.1` / `balancesheet` / `current_asset` / `lending_funds`（美的集团 2016-2025）：`total_cur_assets` 大于流动资产明细和且 `lending_funds` 缺失/为 0 时，提示 LLM 查“发放贷款和垫款 / 发放贷款 / 垫款 / 贷款”。
-2. `BS 3.1` / `balancesheet` / `current_liab` / `estimated_liab`（比亚迪 2016-2025）：`total_cur_liab` 大于流动负债明细和且 `estimated_liab` 缺失/为 0 时，提示 LLM 查流动负债段的“预计负债-流动 / 预计负债”。该条带 `clean_category=current_liab`：TuShare 只有一个 `estimated_liab` 字段且默认按非流动归类，当公司把预计负债列在流动负债时，override 用 `clean_category` 把补数在本期重分类到流动负债 bucket（见下「override clean_category 重分类」）。
+1. `BS 2.1` / `balancesheet` / `current_asset` / `receiv_financing`（格力电器 2019-2025）：`total_cur_assets` 大于流动资产明细和且 `receiv_financing` 缺失/为 0 时，提示 LLM 查“应收款项融资”（2019 新金融工具准则新增行项目）。
+2. `BS 2.1` / `balancesheet` / `current_asset` / `lending_funds`（美的集团 2016-2025）：`total_cur_assets` 大于流动资产明细和且 `lending_funds` 缺失/为 0 时，提示 LLM 查“发放贷款和垫款 / 发放贷款 / 垫款 / 贷款”。
+3. `BS 3.1` / `balancesheet` / `current_liab` / `estimated_liab`（比亚迪 2016-2025）：`total_cur_liab` 大于流动负债明细和且 `estimated_liab` 缺失/为 0 时，提示 LLM 查流动负债段的“预计负债-流动 / 预计负债”。该条带 `clean_category=current_liab`：TuShare 只有一个 `estimated_liab` 字段且默认按非流动归类，当公司把预计负债列在流动负债时，override 用 `clean_category` 把补数在本期重分类到流动负债 bucket（见下「override clean_category 重分类」）。
+4. **NCA/NCL 新准则科目（最常见、跨公司系统性漏录）**——`BS 2.2` 非流动资产 / `BS 3.2` 非流动负债 `target_gt_calc` 失败时优先查这几个字段，TuShare 对它们按公司全年留空，年报却披露了：
+   - `BS 2.2` / `noncurrent_asset` / `oth_eq_invest`（其他权益工具投资，2017 新金融工具准则，A+H 2018 起执行）
+   - `BS 2.2` / `noncurrent_asset` / `oth_illiq_fin_assets`（其他非流动金融资产，同上）
+   - `BS 2.2` / `noncurrent_asset` / `use_right_assets`（使用权资产，新租赁准则，A+H 2019 起执行；房地产/租赁密集公司体量数百亿）
+   - `BS 3.2` / `noncurrent_liab` / `lease_liab`（租赁负债，新租赁准则，与 `use_right_assets` 成对出现；取非流动部分，流动部分在“一年内到期的非流动负债”勿重复计）
+   - 2018/2019 前这些科目真值为 0（准则未生效），TuShare 的 NULL 恰好≈真值不产生残差；故 BS 2.2 失败从 2018、BS 3.2 从 2019 起。单字段闭合不了时考虑 2-3 项之和（如紫金 BS 2.2 2025 = 三项联合闭合）。确认案例：万科A 000002（2018-2025）、紫金矿业 601899。
 
 这些来自确认案例，但不能作为自动补数依据，仍须年报片段金额 + LLM high confidence 确认。
+
+**另一类 TuShare 口径问题（clean.py 内修复，不进提示卡）**：TuShare balancesheet `total_share` 是**股数（百万股）**，不是股本(元)，且无独立股本(元)字段。clean.py 权益 bucket 求和需用股本(元)，故 `infer_par_value` 按权益恒等式跨年推断面值（离散法定常量 1/0.1/0.5/...，平票归 1.0），`check_bs` 的 BS 4.1 按 `股本(元)=par×total_share` 折算参与求和——**仅校验折算，`total_share` 存储值不变**（下游每股计算仍用股数）。面值 1 元公司 par=1.0 零影响；面值≠1（如紫金矿业 0.1）由此配平。属 target_lt_calc 的 clean.py 字段口径修复，不走 reconciler。
 
 ### override clean_category 重分类（处理 TuShare 字段归类与公司列报口径不一致）
 

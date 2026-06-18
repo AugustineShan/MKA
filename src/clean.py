@@ -25,6 +25,69 @@ TOLERANCE = 1.0  # 百万元，残差容差
 ANNUAL_TOLERANCE = 1.0
 QUARTERLY_TOLERANCE = 1.0
 
+# 年度硬校验失败只对 2010 及以后触发年报核对（annual_report_reconciler）；
+# 2010 之前的年度披露稀疏、格式早期，不值得对年报核对，clean 直接入库
+# （硬错误降级为 warning，不阻塞、不触发 reconciler）。
+RECONCILE_MIN_YEAR = 2010
+
+
+def period_year(period) -> int:
+    """Leading 4-digit year of a period label ('2022' or '20221231' → 2022).
+
+    Unparseable labels return a large int so they are never treated as pre-min-year.
+    """
+    try:
+        return int(str(period)[:4])
+    except (ValueError, TypeError):
+        return 9999
+
+
+# TuShare balancesheet total_share 是股数（百万股），不是股本(元)。权益校验需
+# 股本(元)=par×total_share。面值是公司级离散法定常量，按权益恒等式跨年推断。
+COMMON_PAR_VALUES = (1.0, 0.1, 0.5, 0.2, 0.05, 0.02, 0.01)
+
+
+def infer_par_value(
+    wide: pd.DataFrame,
+    present_by_period: dict[str, set[str]],
+    bs_reclass_by_period: dict[str, dict[str, str]] | None = None,
+) -> float:
+    """Infer the company's share par value (面值).
+
+    TuShare ``total_share`` is the share COUNT (百万股), not 股本(元); the equity
+    bucket must use 股本(元) = par × total_share. For par=1 companies (most
+    A-shares) shares numerically equal 股本(元) so BS 4.1 balances; for par≠1
+    (e.g. 紫金矿业 par 0.1) it fails by (1-par)×total_share. par is a discrete
+    legal constant, so infer it by picking the value that makes the equity
+    identity (Σ equity leaves, with total_share scaled by par) hold for the most
+    periods. Returns 1.0 when no alternative strictly beats 1.0, so par=1
+    companies are unaffected and genuine component errors (no par fits) still
+    fail the check naturally.
+    """
+    bs_reclass_by_period = bs_reclass_by_period or {}
+    samples: list[tuple[float, float, float]] = []  # (equity_raw, total_share, target)
+    for period in sorted(str(p) for p in wide.index.tolist()):
+        row = wide.loc[period].to_dict()
+        present = present_by_period.get(period, set())
+        reclass = bs_reclass_by_period.get(period)
+        equity_raw = bs_bucket_sum("equity", row, present, reclass)
+        total_share = float(row.get("total_share") or 0.0)
+        target = float(row.get("total_hldr_eqy_inc_min_int") or 0.0)
+        if total_share and target:
+            samples.append((equity_raw, total_share, target))
+    if not samples:
+        return 1.0
+    best_par, best_count = 1.0, 0
+    for p in COMMON_PAR_VALUES:
+        count = sum(
+            1
+            for equity_raw, ts, target in samples
+            if abs((equity_raw + (p - 1.0) * ts) - target) < TOLERANCE
+        )
+        if count > best_count:
+            best_par, best_count = p, count
+    return best_par
+
 QUARTER_BY_SUFFIX = {
     "0331": "Q1",
     "0630": "Q2",
@@ -42,7 +105,10 @@ QA_BS_PLUG_FIELDS: dict[str, str] = {
 
 QA_CF_CASH_PLUG_FIELD = "qa_cf_cash_reconcile_plug"
 QA_FIELDS = sorted([*QA_BS_PLUG_FIELDS.values(), QA_CF_CASH_PLUG_FIELD])
-APPROVED_OVERRIDE_SOURCES = {"glm", "kimi"}
+APPROVED_OVERRIDE_SOURCES = {"glm", "kimi", "claude"}
+# "claude" 来源的 override 由 init skill 的 subagent 升级通道产出（见
+# src/recon_subagent_bridge.py）：subagent 读年报干净 Markdown 定位科目金额，
+# bridge 服务端按净残差验闭合后才标 approved。与 glm/kimi 同等审计可追溯。
 
 # ── 跨端点同名字段（需在 pivot 时消歧） ───────────────────────
 # credit_impa_loss 同时存在于 income 和 cashflow，值可能不同
@@ -1353,12 +1419,18 @@ def check_bs(
     present: set[str],
     year: str,
     reclass: dict[str, str] | None = None,
+    par: float = 1.0,
 ) -> tuple[list[str], list[str]]:
     """Balance sheet hard checks using exhaustive field categorisation.
 
     Returns (errors, warnings).  ``reclass`` 是本期 override 重分类映射
     （field -> bucket），用于把如 estimated_liab 这类 TuShare 默认非流动、
     但本公司本年列报为流动的科目，在 bucket 加总时移到正确的 bucket。
+
+    ``par`` 是股票面值（默认 1.0）。TuShare balancesheet 的 ``total_share`` 是
+    股数（百万股），不是股本(元)；权益 bucket 求和需用股本(元)=par×total_share。
+    面值 1 元的公司 par=1.0 不受影响；面值≠1（如紫金 0.1）按 par 折算后 BS 4.1
+    才配平。仅校验折算，不改 total_share 存储值（下游每股计算仍用股数）。
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -1423,6 +1495,11 @@ def check_bs(
 
     # 4.1 权益明细加总
     equity_calc = bs_bucket_sum("equity", row, present, reclass)
+    # total_share 在 TuShare 是股数（百万股），权益 bucket 需要股本(元)。
+    # 按 par 折算：股本(元) = par × total_share。par=1 时无影响。
+    total_share_val = get_value(row, "total_share")
+    if total_share_val:
+        equity_calc += (par - 1.0) * total_share_val
     total_hldr_eqy_inc_min_int = get_value(row, "total_hldr_eqy_inc_min_int")
     residual = abs(total_hldr_eqy_inc_min_int - equity_calc)
 
@@ -1533,6 +1610,109 @@ def apply_quarterly_bs_plugs(
             LOGGER.warning("⚠️  %s", message)
 
     return records
+
+
+# 年度 QA plug 的 bucket 规格：code → (bucket, target_field, label)。
+# 年度 plug 与季度 plug 共用 qa_bs_*_plug 字段（bs_bucket_sum 已把它们计入
+# bucket 求和），但年度 plug 不是披露不完整的兜底，而是"两轮 reconciler 都
+# 无法用年报证据解释的硬残差"的逃生通道，只在用户明确同意时对指定 (period,
+# code) 生效，带 warning + 审计，透明可追溯。
+ANNUAL_PLUG_SPECS: dict[str, tuple[str, str, str]] = {
+    "BS 2.1": ("current_asset", "total_cur_assets", "流动资产"),
+    "BS 2.2": ("noncurrent_asset", "total_nca", "非流动资产"),
+    "BS 3.1": ("current_liab", "total_cur_liab", "流动负债"),
+    "BS 3.2": ("noncurrent_liab", "total_ncl", "非流动负债"),
+    "BS 4.1": ("equity", "total_hldr_eqy_inc_min_int", "权益合计"),
+}
+
+
+def apply_annual_bs_plugs(
+    wide: pd.DataFrame,
+    present_by_period: dict[str, set[str]],
+    ticker: str,
+    plug_directives: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Apply user-approved annual QA plugs for hard residuals two reconciler
+    rounds could not close.
+
+    Unlike ``apply_quarterly_bs_plugs`` (automatic for every period — quarterly
+    disclosure is routinely incomplete), annual plugs fire ONLY for the
+    (period, code) pairs the user explicitly approved in ``annual_plugs.json``
+    via init.py's plug prompt. The plug absorbs the post-override residual into
+    the bucket's qa_bs_*_plug field so check_bs passes; a warning records the
+    unexplained residual so it stays auditable, not silently swallowed.
+    """
+    records: list[dict[str, object]] = []
+    if not plug_directives:
+        return records
+    created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    directive_keys = {
+        (str(d.get("period")), str(d.get("code")))
+        for d in plug_directives
+        if isinstance(d, dict)
+    }
+    bs_reclass_by_period = wide.attrs.get("bs_reclass", {})
+
+    for period in sorted(str(period) for period in wide.index.tolist()):
+        present = present_by_period.get(period, set())
+        row = wide.loc[period].to_dict()
+        reclass = bs_reclass_by_period.get(period, {})
+        for code, (bucket, target_field, label) in ANNUAL_PLUG_SPECS.items():
+            if (period, code) not in directive_keys:
+                continue
+            target = get_value(row, target_field)
+            calc = bs_bucket_sum(bucket, row, present, reclass=reclass)
+            residual = target - calc
+            if abs(residual) < TOLERANCE:
+                continue
+            plug_field = QA_BS_PLUG_FIELDS[bucket]
+            raw_plug = wide.loc[period, plug_field]
+            old_plug = 0.0 if pd.isna(raw_plug) else float(raw_plug)
+            new_plug = old_plug + residual
+            wide.loc[period, plug_field] = new_plug
+            message = (
+                f"{period} {code} {label}两轮年报核对（rule + LLM fallback）均无法用"
+                f"年报证据解释残差，按用户指令用 {plug_field}={residual:.4f} 吸收差额"
+                f"（硬问题 plug，非披露不完整）；公式: {target_field}({target:.4f}) - "
+                f"明细和({calc:.4f}) = {residual:.4f}。建议人工核对年报/口径，定位具体"
+                f"科目后改用 LLM evidence override 并删除本 plug。"
+            )
+            records.append(
+                {
+                    "created_at": created_at,
+                    "ticker": ticker,
+                    "period": period,
+                    "severity": "warning",
+                    "code": "annual_bs_plug",
+                    "message": message,
+                    "source": "clean.py:annual_bs_plug",
+                    "evidence": (
+                        f"check={code}; target_field={target_field}; bucket={bucket}; "
+                        f"target={target:.4f}; detail_sum_before_plug={calc:.4f}; "
+                        f"plug_field={plug_field}; plug_delta={residual:.4f}; plug_total={new_plug:.4f}; "
+                        f"approved_via=annual_plugs.json"
+                    ),
+                }
+            )
+            LOGGER.warning("⚠️  %s", message)
+
+    return records
+
+
+def default_plugs_path(db_path: Path) -> Path:
+    return db_path.parent / "recon" / "annual_plugs.json"
+
+
+def load_annual_plugs(path: Path | None, ticker: str) -> list[dict[str, object]]:
+    """Load user-approved annual plug directives (written by init.py's plug prompt)."""
+    if path is None or not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("ticker") not in {ticker, None}:
+        raise ValueError(f"Annual plug ticker mismatch: {data.get('ticker')} != {ticker}")
+    plugs = [p for p in data.get("plugs", []) if isinstance(p, dict)]
+    LOGGER.info("Loaded %d annual plug directive(s) from %s", len(plugs), path)
+    return plugs
 
 
 def apply_annual_income_subtotal_adaptations(
@@ -1854,7 +2034,13 @@ def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]
 
 # ── 主入口 ─────────────────────────────────────────────────────
 
-def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *, label: str) -> list[str]:
+def validate_wide(
+    wide: pd.DataFrame,
+    present_by_period: dict[str, set[str]],
+    *,
+    label: str,
+    restatement_exemptions: list[dict[str, object]] | None = None,
+) -> list[str]:
     """Run hard and soft checks on a wide table."""
     all_errors: list[str] = []
     all_warnings: list[str] = []
@@ -1862,6 +2048,24 @@ def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *,
     sorted_periods = sorted(str(period) for period in wide.index.tolist())
     prev_period_end_cash: float | None = None
     bs_reclass_by_period: dict[str, dict[str, str]] = wide.attrs.get("bs_reclass", {})
+
+    # 跨表 7.4 重述豁免：经 subagent 读年报确认属披露重述的边界，降级为软 warning。
+    # key 为本期 period（期初现金所在年），与 7.4 失败行的 period 一致。
+    exempted_periods: dict[str, dict[str, object]] = {
+        str(e.get("period")): e
+        for e in (restatement_exemptions or [])
+        if e.get("check_code") == "跨表 7.4"
+    }
+
+    # 推断股票面值：TuShare total_share 是股数，权益校验需股本(元)=par×total_share。
+    par_value = infer_par_value(wide, present_by_period, bs_reclass_by_period)
+    if label == "annual" and abs(par_value - 1.0) > 1e-9:
+        msg = (
+            f"BS 权益面值推断 par={par_value}（TuShare total_share 为股数百万股，"
+            f"权益校验按 par×total_share 折算股本元；total_share 存储值不变）"
+        )
+        all_warnings.append(msg)
+        LOGGER.warning("⚠️  %s", msg)
 
     for period in sorted_periods:
         row = wide.loc[period].to_dict()
@@ -1879,7 +2083,7 @@ def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *,
             period_warnings.extend(check_is(row, present, period, sign_map=sign_map))
         else:
             period_errors.extend(check_is(row, present, period, sign_map=sign_map))
-        bs_errors, bs_warnings = check_bs(row, present, period, reclass)
+        bs_errors, bs_warnings = check_bs(row, present, period, reclass, par=par_value)
         period_errors.extend(bs_errors)
         period_warnings.extend(bs_warnings)
         period_errors.extend(check_cf(row, present, period))
@@ -1895,9 +2099,24 @@ def validate_wide(wide: pd.DataFrame, present_by_period: dict[str, set[str]], *,
         if label != "quarterly" and prev_period_end_cash is not None and c_cash_equ_beg != 0:
             residual = abs(prev_period_end_cash - c_cash_equ_beg)
             if residual >= TOLERANCE:
-                period_errors.append(
-                    f"跨表 7.4 {period} 上期CF期末({prev_period_end_cash:.4f}) ≠ 本期CF期初({c_cash_equ_beg:.4f})"
+                # 残差需与豁免记录吻合（防脏豁免：TuShare 值变动后旧豁免不再适用）
+                ex = exempted_periods.get(period)
+                ex_matches = (
+                    ex is not None
+                    and abs(float(ex.get("prev_end_cash") or 0.0) - prev_period_end_cash) < TOLERANCE
+                    and abs(float(ex.get("cur_beg_cash") or 0.0) - c_cash_equ_beg) < TOLERANCE
                 )
+                if ex_matches:
+                    period_warnings.append(
+                        f"跨表 7.4 {period} 重述豁免：上期CF期末({prev_period_end_cash:.4f}) "
+                        f"≠ 本期CF期初({c_cash_equ_beg:.4f})，差额 {residual:.4f}，"
+                        f"经年报确认属披露重述（exemption source={ex.get('source')}，"
+                        f"prev_period={ex.get('prev_period')}）。重述非数据错误，降级为 warning。"
+                    )
+                else:
+                    period_errors.append(
+                        f"跨表 7.4 {period} 上期CF期末({prev_period_end_cash:.4f}) ≠ 本期CF期初({c_cash_equ_beg:.4f})"
+                    )
 
         prev_period_end_cash = get_cashflow_value(row, "c_cash_equ_end_period")
 
@@ -2002,6 +2221,34 @@ def override_column_name(endpoint: str, field: str) -> str:
     if field in CROSS_ENDPOINT_FIELDS and endpoint in {"income", "cashflow"}:
         return f"{endpoint}.{field}"
     return field
+
+
+def default_restatement_exemptions_path(db_path: Path) -> Path:
+    """跨表 7.4 重述豁免文件：由 subagent 升级通道确认后写入，clean 加载后把对应边界降级为软 warning。"""
+    return db_path.parent / "recon" / "restatement_exemptions.json"
+
+
+def load_restatement_exemptions(path: Path | None, ticker: str) -> list[dict[str, object]]:
+    """Load approved 跨表 7.4 restatement exemptions.
+
+    与 override 不同：重述豁免不补数、不重分类，只是把『上期CF期末 ≠ 本期CF期初』这条
+    经年报确认属披露重述的边界从硬校验降级为软 warning。多年连续重述无法用 override 干净
+    闭合（会级联破坏 CF 5.5/5.4/5.1-5.3），重述是公司披露的会计事件、非数据错误，故走豁免。
+    """
+    if path is None or not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("ticker") not in {ticker, None}:
+        raise ValueError(f"Restatement exemption ticker mismatch: {data.get('ticker')} != {ticker}")
+    exemptions = [
+        item
+        for item in data.get("exemptions", [])
+        if isinstance(item, dict) and item.get("status") == "approved"
+    ]
+    if exemptions:
+        LOGGER.info("Loaded %d approved restatement exemption(s) from %s", len(exemptions), path)
+    return exemptions
+
 
 
 def apply_annual_overrides(
@@ -2285,6 +2532,8 @@ def clean_dataset(
     annual_overrides: list[dict[str, object]] | None = None,
     applied_adjustments: list[dict[str, object]] | None = None,
     warning_records: list[dict[str, object]] | None = None,
+    annual_plugs: list[dict[str, object]] | None = None,
+    restatement_exemptions: list[dict[str, object]] | None = None,
     max_quarters: int = 48,
 ) -> pd.DataFrame:
     """Clean one report_type/mode pair and write its wide table."""
@@ -2318,11 +2567,20 @@ def clean_dataset(
             applied = apply_annual_overrides(wide, present_by_period, ticker, annual_overrides)
             if applied_adjustments is not None:
                 applied_adjustments.extend(applied)
+        # 年度 QA plug：两轮 reconciler 都无法解释的硬残差，用户明确同意后才塞。
+        # 在 override 之后、validate 之前应用，plug 字段进 bs_bucket_sum 让 check_bs 通过。
+        if annual_plugs:
+            plug_warnings = apply_annual_bs_plugs(wide, present_by_period, ticker, annual_plugs)
+            if warning_records is not None:
+                warning_records.extend(plug_warnings)
 
     old_tolerance = TOLERANCE
     TOLERANCE = tolerance
     try:
-        validation_warnings = validate_wide(wide, present_by_period, label=mode)
+        validation_warnings = validate_wide(
+            wide, present_by_period, label=mode,
+            restatement_exemptions=restatement_exemptions if mode == "annual" else None,
+        )
     finally:
         TOLERANCE = old_tolerance
 
@@ -2356,6 +2614,10 @@ def clean_all(
     apply_overrides: bool = True,
     mode: str = "all",
     max_quarters: int = 48,
+    allow_annual_plug: bool = False,
+    plugs_path: str | Path | None = None,
+    restatement_exemptions_path: str | Path | None = None,
+    apply_restatement_exemptions: bool = True,
 ) -> dict[str, pd.DataFrame]:
     """Clean annual and quarterly data and write SQLite tables."""
     db_path = Path(db_path)
@@ -2368,6 +2630,21 @@ def clean_all(
     annual_overrides = (
         load_approved_overrides(override_file, ticker)
         if apply_overrides and mode in {"annual", "all"}
+        else []
+    )
+    exemption_file = (
+        Path(restatement_exemptions_path) if restatement_exemptions_path
+        else default_restatement_exemptions_path(db_path)
+    )
+    restatement_exemptions = (
+        load_restatement_exemptions(exemption_file, ticker)
+        if apply_restatement_exemptions and mode in {"annual", "all"}
+        else []
+    )
+    plug_file = Path(plugs_path) if plugs_path else default_plugs_path(db_path)
+    annual_plugs = (
+        load_annual_plugs(plug_file, ticker)
+        if allow_annual_plug and mode in {"annual", "all"}
         else []
     )
     applied_adjustments: list[dict[str, object]] = []
@@ -2386,6 +2663,8 @@ def clean_all(
                     annual_overrides=annual_overrides,
                     applied_adjustments=applied_adjustments,
                     warning_records=warning_records,
+                    annual_plugs=annual_plugs,
+                    restatement_exemptions=restatement_exemptions,
                 )
             except CheckError as exc:
                 raise CheckError(f"annual validation failed: {exc}") from exc
@@ -2421,6 +2700,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default=None, help="Path to data.db (auto-detected if omitted)")
     parser.add_argument("--overrides", default=None, help="Approved annual-report override JSON (default: company/recon/annual_report_overrides.json)")
     parser.add_argument("--no-overrides", action="store_true", help="Do not apply approved annual-report overrides")
+    parser.add_argument("--allow-annual-plug", action="store_true", help="Apply user-approved annual QA plugs (annual_plugs.json) for hard residuals two reconciler rounds could not close. Written by init.py's plug prompt.")
+    parser.add_argument("--plugs", default=None, help="Annual plug directive JSON (default: company/recon/annual_plugs.json)")
+    parser.add_argument("--no-restatement-exemptions", action="store_true", help="Do not apply approved 跨表 7.4 restatement exemptions (restatement_exemptions.json)")
+    parser.add_argument("--restatement-exemptions", default=None, help="Restatement exemption JSON (default: company/recon/restatement_exemptions.json)")
     parser.add_argument("--mode", choices=["annual", "quarterly", "all"], default="all", help="Which clean table(s) to build")
     parser.add_argument("--no-auto-reconcile", action="store_true", help="Do not run annual_report_reconciler.py after annual hard-check failure")
     parser.add_argument("--auto-reconcile-max-failures", type=int, default=60, help="Maximum annual failures to analyze when auto-reconciliation is triggered. Complex companies (financial subsidiaries, recurring missing fields) can exceed 30 failures; the cap must cover the full annual history so they reconcile fully rather than silently leaving later years unbalanced.")
@@ -2453,6 +2736,10 @@ def main(argv: list[str] | None = None) -> int:
             apply_overrides=not args.no_overrides,
             mode=args.mode,
             max_quarters=args.max_quarters,
+            allow_annual_plug=args.allow_annual_plug,
+            plugs_path=args.plugs,
+            restatement_exemptions_path=args.restatement_exemptions,
+            apply_restatement_exemptions=not args.no_restatement_exemptions,
         )
     except CheckError as exc:
         print(f"\nValidation failed: {exc}", file=sys.stderr)

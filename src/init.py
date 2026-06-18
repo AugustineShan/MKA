@@ -34,12 +34,13 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 import src.data_fetcher as df_mod
-from src.clean import approved_override_count, default_overrides_path
+from src.clean import approved_override_count, default_overrides_path, default_plugs_path, RECONCILE_MIN_YEAR
 from src.financial_expense_analyzer import (
     analyze_all_periods,
     default_yaml_path,
@@ -57,7 +58,7 @@ from cninfo.api import guess_plate  # noqa: E402
 
 TICKER_RE = re.compile(r"^\d{6}\.(SH|SZ|BJ)$")
 BARE_CODE_RE = re.compile(r"^\d{6}$")
-MAX_BACKFILL_CYCLES = 1  # 一次 reconcile + 一次重跑应用，足够；多于此视为真失败
+MAX_BACKFILL_CYCLES = 2  # 两轮 reconcile+apply：第一轮补数，第二轮核对第一轮残差；仍不过→plug 提示
 
 
 class TickerResolutionError(RuntimeError):
@@ -171,10 +172,13 @@ def stage_reports(
     no_markdown: bool,
     force_markdown: bool,
     no_quarterly: bool,
+    min_year: int = RECONCILE_MIN_YEAR,
 ) -> str:
     """阶段年报/季报下载（必须在 clean 之前）。report_downloader 自身幂等，已有文件跳过。
 
     默认下载年报+季报；加 --no-quarterly 时仅下载年报。
+    2010 闸门：只下载 min_year（默认 clean.RECONCILE_MIN_YEAR=2010）及以后的报告——
+    2010 前披露稀疏、reconciler 也不核对，下载纯浪费 cninfo 请求与磁盘。
     失败不致命：仅当后续 clean 需要年报补全时才会暴露为真问题。
     """
     annuals_dir = db_path.parent / "annuals"
@@ -187,6 +191,11 @@ def stage_reports(
         md_before += q_md_before
 
     cmd = [sys.executable, str(BASE_DIR / "src" / "report_downloader.py"), "--ticker", ticker]
+    # 报告落到 data_fetcher 已建的公司目录（db_path.parent），避免 cninfo 与 TuShare
+    # 公司名口径不一致（半角万科A vs 全角万科Ａ）导致 annuals/ 与 data.db 分家、
+    # find_company_dir 命中多个目录而崩溃。
+    cmd.extend(["--company-dir", str(db_path.parent)])
+    cmd.extend(["--min-year", str(min_year)])
     if not no_quarterly:
         cmd.append("--all-reports")
     if no_markdown:
@@ -217,7 +226,31 @@ def stage_reports(
     return status
 
 
-def _run_clean(ticker: str, db_path: Path, *, mode: str, no_auto_reconcile: bool, verbose: bool) -> int:
+def _fmt_dur(seconds: float) -> str:
+    """格式化耗时：'1m 23s' / '45s'。供阶段计时展示。"""
+    s = max(0, int(round(seconds)))
+    if s >= 60:
+        return f"{s // 60}m {s % 60}s"
+    return f"{s}s"
+
+
+def _run_clean(
+    ticker: str,
+    db_path: Path,
+    *,
+    mode: str,
+    no_auto_reconcile: bool,
+    verbose: bool,
+    allow_plug: bool = False,
+) -> tuple[int, list[tuple[str, str, float]]]:
+    """Run clean.py, returning (returncode, hard_failures).
+
+    Streams clean/reconciler stderr **line-by-line as it happens** (PYTHONUNBUFFERED=1
+    + line-buffered pipe), so during the long 2-round reconcile the user sees
+    'Analyzing BS 2.2 2018...' / '第 1 轮...' live instead of a multi-minute
+    black screen. Also accumulates stderr to parse 'HARD CHECK FAIL' lines for
+    the plug prompt. stdout (clean only prints 'All checks passed!') is discarded.
+    """
     cmd = [
         sys.executable, str(BASE_DIR / "src" / "clean.py"),
         "--ticker", ticker,
@@ -226,12 +259,43 @@ def _run_clean(ticker: str, db_path: Path, *, mode: str, no_auto_reconcile: bool
     ]
     if no_auto_reconcile:
         cmd.append("--no-auto-reconcile")
+    if allow_plug:
+        cmd.append("--allow-annual-plug")
     if verbose:
         cmd.append("--verbose")
-    return subprocess.run(cmd, cwd=BASE_DIR).returncode
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+    proc = subprocess.Popen(
+        cmd, cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
+    )
+    stderr_parts: list[str] = []
+    assert proc.stderr is not None
+    for line in proc.stderr:
+        stderr_parts.append(line)
+        sys.stderr.write(line)
+        sys.stderr.flush()
+    rc = proc.wait()
+    return rc, _parse_hard_failures("".join(stderr_parts))
 
 
-CORE_VIEW_TEMPLATE = """# 核心观点
+_HARD_FAIL_RE = re.compile(r"HARD CHECK FAIL:\s+(BS \d\.\d)\s+(\d{4})\b.*?residual=([-\d.]+)")
+
+
+def _parse_hard_failures(stderr_text: str) -> list[tuple[str, str, float]]:
+    """Parse 'HARD CHECK FAIL: BS 2.2 2020 ... residual=6758.08' → (code, period, residual).
+
+    period is the bare year ('2020') — that is the annual wide-table index format
+    (TuShare end_date normalized to year), which is what annual_plugs.json and
+    apply_annual_bs_plugs key on. NOT 'YYYY-12-31'.
+    """
+    fails: list[tuple[str, str, float]] = []
+    for m in _HARD_FAIL_RE.finditer(stderr_text):
+        code, year, res = m.group(1), m.group(2), float(m.group(3))
+        fails.append((code, year, res))
+    return fails
+
+
+CORE_VIEW_TEMPLATE = """# 公司判断和最新观点
 
 请在此文件填写对这家公司的核心投资观点。
 
@@ -244,7 +308,7 @@ CORE_VIEW_TEMPLATE = """# 核心观点
 
 
 def ensure_company_artifacts(db_path: Path) -> str:
-    """确保公司根目录存在人工维护入口：核心观点.md 与 active_vore/ 文件夹。
+    """确保公司根目录存在人工维护入口：公司判断和最新观点.md 与 active_vore/ 文件夹。
 
     若文件/文件夹已存在则跳过，不覆盖已有内容。
     返回状态描述供报告使用。
@@ -257,10 +321,10 @@ def ensure_company_artifacts(db_path: Path) -> str:
         active_vore_dir.mkdir(parents=True, exist_ok=True)
         created.append("active_vore/")
 
-    core_view_path = company_dir / "核心观点.md"
+    core_view_path = company_dir / "公司判断和最新观点.md"
     if not core_view_path.exists():
         core_view_path.write_text(CORE_VIEW_TEMPLATE, encoding="utf-8")
-        created.append("核心观点.md")
+        created.append("公司判断和最新观点.md")
 
     if created:
         return f"✅ 已创建 {', '.join(created)}"
@@ -268,38 +332,128 @@ def ensure_company_artifacts(db_path: Path) -> str:
 
 
 def stage_clean(ticker: str, db_path: Path, *, mode: str, verbose: bool) -> tuple[bool, str]:
-    """阶段②清洗校验，含年报补全的"失败→生成override→重跑应用"两段式。
+    """阶段②清洗校验：两轮年报补全 + plug 兜底。
+
+    流程：
+      第一轮 — clean 失败时内部强触发 reconciler（reconciler 先应用已有 override 再提议）。
+      循环 MAX_BACKFILL_CYCLES 轮 — 每轮：应用新 override 重跑 clean；（非末轮）再强触发
+        reconciler 在残差上提议下一轮。reconciler 应用已有 override 后只看残差，故第二轮
+        天然"核对第一轮"——LLM 看到 round 1 已补的值，专攻更小残差。
+      两轮仍不过 — 问用户是否塞年度 QA plug（吸收残差入库，带 warning+审计）。
 
     返回 (是否最终通过, 状态描述)。最终未通过 → 调用方返回退出码 3。
     """
     override_path = default_overrides_path(db_path)
     approved_before = approved_override_count(override_path)
+    # 既有 plug 指令 = 用户已批准的硬残差兜底。重跑时 clean 自动沿用（--allow-annual-plug），
+    # 这些残差被吸收不再触发提示；只有新出现的、plug 文件未覆盖的硬失败才进 plug 提示。
+    plug_path = default_plugs_path(db_path)
+    plug_exists = plug_path.exists()
+    allow_plug = plug_exists
 
     LOGGER.info("[3/4] clean 配平校验 %s (mode=%s) ...", ticker, mode)
-    rc = _run_clean(ticker, db_path, mode=mode, no_auto_reconcile=False, verbose=verbose)
+    # 第一轮提议：clean 失败 → 内部强触发 reconciler
+    rc, fails = _run_clean(ticker, db_path, mode=mode, no_auto_reconcile=False, verbose=verbose, allow_plug=allow_plug)
     if rc == 0:
-        # 首跑即通过：可能是纯 TuShare 配平，也可能是已存在的 approved override 被自动应用。
         if approved_before > 0:
             return True, f"✅ 通过（含 {approved_before} 项既有年报补数，详见下方科目）"
         return True, "✅ 全部通过（纯 TuShare 数据已配平）"
 
-    # 年度硬校验失败：clean 内部已强触发 reconciler，可能生成新 approved override。
-    approved_after = approved_override_count(override_path)
-    if approved_after <= approved_before:
+    # 两轮 reconcile+apply
+    for cycle in range(MAX_BACKFILL_CYCLES):
+        approved_after = approved_override_count(override_path)
+        if approved_after <= approved_before:
+            LOGGER.info("年报核对未产生新 approved override，停止重跑。")
+            break
+        new_count = approved_after - approved_before
+        approved_before = approved_after
+        LOGGER.info("第 %d 轮：年报核对累计 %d 条 approved override（新增 %d），重跑 clean 应用 ...",
+                    cycle + 1, approved_after, new_count)
+        rc, fails = _run_clean(ticker, db_path, mode=mode, no_auto_reconcile=True, verbose=verbose, allow_plug=allow_plug)
+        if rc == 0:
+            return True, f"✅ 通过（其中 {approved_after} 项经年报确认后补全，详见 clean_adjustments）"
+        if cycle < MAX_BACKFILL_CYCLES - 1:
+            # 非末轮：再强触发 reconciler，在残差上提议下一轮
+            LOGGER.info("第 %d 轮应用后仍有硬失败，强触发 reconciler 核对残差 ...", cycle + 1)
+            rc, fails = _run_clean(ticker, db_path, mode=mode, no_auto_reconcile=False, verbose=verbose, allow_plug=allow_plug)
+            if rc == 0:
+                return True, "✅ 通过（年报核对补全）"
+
+    # 两轮都不过 → plug 提示（fails 只含 plug 未覆盖的新硬失败，既有 plug 已被 allow_plug 吸收）
+    return _offer_annual_plug(ticker, db_path, mode, fails, verbose)
+
+
+def _offer_annual_plug(
+    ticker: str,
+    db_path: Path,
+    mode: str,
+    hard_failures: list[tuple[str, str, float]],
+    verbose: bool,
+) -> tuple[bool, str]:
+    """两轮年报核对后仍有硬失败 → 问用户是否塞年度 QA plug。
+
+    hard_failures: (code, period, residual) 来自最后一次 clean 的 HARD CHECK FAIL 行，
+    即 override 全部应用后的真残差。用户同意 → 写 annual_plugs.json → 重跑 clean
+    用 qa_bs_*_plug 吸收残差（带 warning + 审计）。不同意 → 如实留 exit 3。
+    """
+    if mode not in {"annual", "all"} or not hard_failures:
         return False, (
-            "❌ 年度硬校验失败，且年报核对未能生成可应用的补数证据"
-            f"（approved override 仍为 {approved_after}）"
+            f"❌ 年度硬校验失败，两轮年报核对（rule + LLM fallback）均未能解释残差"
+            f"（{len(hard_failures)} 个）；需人工核对年报/口径"
         )
 
-    new_count = approved_after - approved_before
-    LOGGER.info("年报核对新增 %s 条 approved override；重跑 clean 应用补数 ...", new_count)
-    rc2 = _run_clean(ticker, db_path, mode=mode, no_auto_reconcile=True, verbose=verbose)
-    if rc2 == 0:
-        return True, f"✅ 通过（其中 {new_count} 项经年报确认后补全）"
-    return False, (
-        f"❌ 应用 {new_count} 条年报补数后仍有年度硬校验失败 —— 这不是已知 TuShare "
-        "缺陷能解释的残差，需人工核对年报/口径"
+    plug_path = default_plugs_path(db_path)
+    # 既有 plug 指令（用户此前已批准）——只追加新硬失败，不覆盖，保证重跑幂等。
+    existing_plugs: list[dict[str, object]] = []
+    if plug_path.exists():
+        try:
+            existing_plugs = json.loads(plug_path.read_text(encoding="utf-8")).get("plugs", []) or []
+        except (json.JSONDecodeError, OSError):
+            existing_plugs = []
+    existing_keys = {(str(p.get("period")), str(p.get("code"))) for p in existing_plugs if isinstance(p, dict)}
+    new_plugs = [
+        {"period": period, "code": code}
+        for code, period, _ in hard_failures
+        if (period, code) not in existing_keys
+    ]
+
+    print("\n" + "=" * 64)
+    print(f"⚠️  {ticker} 两轮年报核对后仍有 {len(new_plugs)} 个未被既有 plug 覆盖的年度硬失败：")
+    for code, period, residual in hard_failures:
+        tag = "（既有 plug 已覆盖，跳过）" if (period, code) in existing_keys else ""
+        print(f"    {code} {period}: 残差 {residual:.2f} 百万元 {tag}")
+    if not new_plugs:
+        # 既有 plug 应已吸收全部残差（allow_plug 路径）；走到这里说明 plug 没生效，如实报失败。
+        return False, "❌ 残差均已被既有 plug 覆盖但仍未通过（不应发生，请检查 annual_plugs.json）"
+    print("\n两轮 reconciler（rule + LLM fallback，glm-5.2，全上下文）都无法用年报证据解释这些残差。")
+    print("  y = 塞年度 QA plug：吸收残差入库（带 warning + 审计），clean 通过；")
+    print("      建议后续人工核对年报/口径，定位科目后改用 LLM override 并删除本 plug。")
+    print("  n = 不塞：保持 exit 3，如实留硬失败（关键科目推荐）。")
+    try:
+        ans = input("是否对这些硬失败塞年度 plug？[y/N]: ").strip().lower()
+    except EOFError:
+        ans = ""
+
+    if ans != "y":
+        return False, (
+            f"❌ 用户未同意 plug，{len(new_plugs)} 个硬失败如实保留（exit 3）"
+        )
+
+    all_plugs = existing_plugs + new_plugs
+    plug_path.parent.mkdir(parents=True, exist_ok=True)
+    plug_path.write_text(
+        json.dumps({"ticker": ticker, "plugs": all_plugs}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
+    LOGGER.info("已写 %s（追加 %d 条新 plug，累计 %d 条），重跑 clean 应用年度 plug ...",
+                plug_path, len(new_plugs), len(all_plugs))
+    rc, _ = _run_clean(ticker, db_path, mode="annual", no_auto_reconcile=True, verbose=verbose, allow_plug=True)
+    if rc == 0:
+        return True, (
+            f"✅ 通过（新增 {len(new_plugs)} 个硬失败用年度 QA plug 吸收，累计 {len(all_plugs)} 条 plug；"
+            "详见 clean_warnings annual_bs_plug；建议人工核对后改用 LLM override 并删 plug）"
+        )
+    return False, "❌ 塞年度 plug 后仍失败（不应发生，请检查 annual_plugs.json 与残差方向）"
 
 
 def stage_financial_expense(
@@ -414,6 +568,7 @@ def run_one(
     no_quarterly: bool,
     mode: str,
     verbose: bool,
+    min_year: int = RECONCILE_MIN_YEAR,
 ) -> int:
     try:
         ticker = resolve_ticker(raw_input)
@@ -430,18 +585,42 @@ def run_one(
 
     LOGGER.info("输入 %r → 解析为 %s", raw_input, ticker)
 
+    t_total = time.monotonic()
+    t0 = time.monotonic()
     db_path, fetch_status = stage_fetch(ticker, force=force)
+    t_fetch = time.monotonic() - t0
+    LOGGER.info("⏱ 阶段① TuShare 取数用时 %s", _fmt_dur(t_fetch))
+
     artifacts_status = ensure_company_artifacts(db_path)
+
+    t0 = time.monotonic()
     report_status = stage_reports(
         ticker,
         db_path,
         no_markdown=no_markdown,
         force_markdown=force_markdown,
         no_quarterly=no_quarterly,
+        min_year=min_year,
     )
+    t_report = time.monotonic() - t0
+    LOGGER.info("⏱ 阶段② 年报/季报下载用时 %s", _fmt_dur(t_report))
+
+    t0 = time.monotonic()
     ok, clean_status = stage_clean(ticker, db_path, mode=mode, verbose=verbose)
+    t_clean = time.monotonic() - t0
+    LOGGER.info("⏱ 阶段③ clean 配平+年报核对用时 %s", _fmt_dur(t_clean))
+
+    t0 = time.monotonic()
     fin_exp_status, _evidence = stage_financial_expense(
         ticker, db_path, force=force, verbose=verbose
+    )
+    t_finexp = time.monotonic() - t0
+    LOGGER.info("⏱ 阶段④ 财务费用细则用时 %s", _fmt_dur(t_finexp))
+
+    LOGGER.info(
+        "⏱ 总用时 %s（取数 %s / 下载 %s / clean %s / 财务费用 %s）",
+        _fmt_dur(time.monotonic() - t_total), _fmt_dur(t_fetch), _fmt_dur(t_report),
+        _fmt_dur(t_clean), _fmt_dur(t_finexp),
     )
 
     print("\n" + build_report(
@@ -462,6 +641,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force-markdown", action="store_true", help="即使已存在也重抽 Markdown")
     parser.add_argument("--no-quarterly", action="store_true",
                         help="跳过季报下载，仅下载年报（默认下载年报+季报）")
+    parser.add_argument("--min-year", type=int, default=RECONCILE_MIN_YEAR,
+                        help=f"年报/季报只下载该年及以后（默认 {RECONCILE_MIN_YEAR}，"
+                        "与 clean.RECONCILE_MIN_YEAR 对齐；2010 前不核对不值得下载）")
     parser.add_argument("--mode", choices=["annual", "quarterly", "all"], default="all",
                         help="clean 生成哪些表，默认 all")
     parser.add_argument("--verbose", action="store_true", help="调试日志")
@@ -490,6 +672,7 @@ def main(argv: list[str] | None = None) -> int:
                 no_quarterly=args.no_quarterly,
                 mode=args.mode,
                 verbose=args.verbose,
+                min_year=args.min_year,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"\n❌ {raw}: 处理异常: {exc}", file=sys.stderr)

@@ -102,6 +102,148 @@
           "note": "TuShare estimated_liab 全为空；年报流动负债段“预计负债-流动”逐年解释 BS 3.1 残差，需计入 current_liab。"
         }
       ]
+    },
+    {
+      "id": "balancesheet.bs_2_2.noncurrent_asset.oth_eq_invest.missing_or_zero",
+      "status": "active",
+      "endpoint": "balancesheet",
+      "check_code": "BS 2.2",
+      "bucket_or_scope": "noncurrent_asset",
+      "field": "oth_eq_invest",
+      "field_cn": "其他权益工具投资",
+      "trigger": {
+        "direction": "target_gt_calc",
+        "target_field": "total_nca",
+        "field_value_pattern": "missing_or_zero",
+        "residual_should_match_annual_report_item": true
+      },
+      "llm_hint": {
+        "annual_report_statement": "合并资产负债表",
+        "search_aliases": [
+          "其他权益工具投资"
+        ],
+        "unit_conversion": "年报通常为元；除以 1000000 换成百万元与 clean.py 残差比较。",
+        "diagnosis_hint": "2017 新金融工具准则新增的非流动资产科目，A+H 上市公司 2018 年起执行。TuShare 对该字段系统性漏录（多家公司全年为空）。当 total_nca 大于非流动资产明细和且 oth_eq_invest 为空/0 时，应优先查年报合并资产负债表非流动资产段的『其他权益工具投资』，其金额常恰好等于（或与其他新准则科目合计等于）BS 2.2 残差。"
+      },
+      "confirmed_examples": [
+        {
+          "ticker": "601899.SH",
+          "company": "紫金矿业",
+          "periods": "2025",
+          "note": "TuShare oth_eq_invest 为空；BS 2.2 2025 残差由 oth_eq_invest + oth_illiq_fin_assets + use_right_assets 三项联合闭合。"
+        },
+        {
+          "ticker": "000002.SZ",
+          "company": "万科A",
+          "periods": "2018-2025",
+          "note": "TuShare oth_eq_invest 全 18 年为空；年报『其他权益工具投资』逐年解释 BS 2.2 残差（2018-2025 共 8 期，2018 起对应新金融工具准则 A+H 生效）。"
+        }
+      ]
+    },
+    {
+      "id": "balancesheet.bs_2_2.noncurrent_asset.oth_illiq_fin_assets.missing_or_zero",
+      "status": "active",
+      "endpoint": "balancesheet",
+      "check_code": "BS 2.2",
+      "bucket_or_scope": "noncurrent_asset",
+      "field": "oth_illiq_fin_assets",
+      "field_cn": "其他非流动金融资产",
+      "trigger": {
+        "direction": "target_gt_calc",
+        "target_field": "total_nca",
+        "field_value_pattern": "missing_or_zero",
+        "residual_should_match_annual_report_item": true
+      },
+      "llm_hint": {
+        "annual_report_statement": "合并资产负债表",
+        "search_aliases": [
+          "其他非流动金融资产"
+        ],
+        "unit_conversion": "年报通常为元；除以 1000000 换成百万元与 clean.py 残差比较。",
+        "diagnosis_hint": "2017 新金融工具准则新增的非流动资产科目，A+H 上市公司 2018 年起执行。TuShare 系统性漏录。当 total_nca 大于非流动资产明细和且 oth_illiq_fin_assets 为空/0 时，优先查年报合并资产负债表非流动资产段的『其他非流动金融资产』。常与 oth_eq_invest、use_right_assets 联合闭合 BS 2.2 残差（单字段闭合不了时考虑多项之和）。"
+      },
+      "confirmed_examples": [
+        {
+          "ticker": "601899.SH",
+          "company": "紫金矿业",
+          "periods": "2025",
+          "note": "TuShare oth_illiq_fin_assets 为空；与 oth_eq_invest + use_right_assets 联合闭合 BS 2.2 2025。"
+        },
+        {
+          "ticker": "000002.SZ",
+          "company": "万科A",
+          "periods": "2018-2025",
+          "note": "TuShare oth_illiq_fin_assets 全 18 年为空；年报『其他非流动金融资产』逐年参与 BS 2.2 残差闭合（8 期）。"
+        }
+      ]
+    },
+    {
+      "id": "balancesheet.bs_2_2.noncurrent_asset.use_right_assets.missing_or_zero",
+      "status": "active",
+      "endpoint": "balancesheet",
+      "check_code": "BS 2.2",
+      "bucket_or_scope": "noncurrent_asset",
+      "field": "use_right_assets",
+      "field_cn": "使用权资产",
+      "trigger": {
+        "direction": "target_gt_calc",
+        "target_field": "total_nca",
+        "field_value_pattern": "missing_or_zero",
+        "residual_should_match_annual_report_item": true
+      },
+      "llm_hint": {
+        "annual_report_statement": "合并资产负债表",
+        "search_aliases": [
+          "使用权资产"
+        ],
+        "unit_conversion": "年报通常为元；除以 1000000 换成百万元与 clean.py 残差比较。",
+        "diagnosis_hint": "新租赁准则（CAS21 修订）新增的非流动资产科目，A+H 上市公司 2019 年起执行；房地产/租赁密集型公司体量巨大（数百亿）。TuShare 系统性漏录。当 total_nca 大于非流动资产明细和且 use_right_assets 为空/0 时，优先查年报合并资产负债表非流动资产段的『使用权资产』。2019 年前该科目不存在（真值为 0，不会产生残差）；2019 起才可能触发。常与租赁负债（lease_liab，BS 3.2）成对出现。"
+      },
+      "confirmed_examples": [
+        {
+          "ticker": "601899.SH",
+          "company": "紫金矿业",
+          "periods": "2025",
+          "note": "TuShare use_right_assets 为空；与 oth_eq_invest + oth_illiq_fin_assets 联合闭合 BS 2.2 2025。"
+        },
+        {
+          "ticker": "000002.SZ",
+          "company": "万科A",
+          "periods": "2019-2025",
+          "note": "TuShare use_right_assets 全 18 年为空；年报『使用权资产』逐年参与 BS 2.2 残差闭合（7 期，2019 起对应新租赁准则 A+H 生效）。"
+        }
+      ]
+    },
+    {
+      "id": "balancesheet.bs_3_2.noncurrent_liab.lease_liab.missing_or_zero",
+      "status": "active",
+      "endpoint": "balancesheet",
+      "check_code": "BS 3.2",
+      "bucket_or_scope": "noncurrent_liab",
+      "field": "lease_liab",
+      "field_cn": "租赁负债",
+      "trigger": {
+        "direction": "target_gt_calc",
+        "target_field": "total_ncl",
+        "field_value_pattern": "missing_or_zero",
+        "residual_should_match_annual_report_item": true
+      },
+      "llm_hint": {
+        "annual_report_statement": "合并资产负债表",
+        "search_aliases": [
+          "租赁负债"
+        ],
+        "unit_conversion": "年报通常为元；除以 1000000 换成百万元与 clean.py 残差比较。",
+        "diagnosis_hint": "新租赁准则（CAS21 修订）新增的非流动负债科目，A+H 上市公司 2019 年起执行；与使用权资产（use_right_assets，BS 2.2）成对出现。TuShare 系统性漏录。当 total_ncl 大于非流动负债明细和且 lease_liab 为空/0 时，优先查年报合并资产负债表非流动负债段的『租赁负债』（取非流动部分；流动部分通常在『一年内到期的非流动负债』，勿重复计入）。2019 年前该科目不存在（真值为 0）；2019 起才可能触发。"
+      },
+      "confirmed_examples": [
+        {
+          "ticker": "000002.SZ",
+          "company": "万科A",
+          "periods": "2019-2025",
+          "note": "TuShare lease_liab 全 18 年为空；年报非流动负债段『租赁负债』逐年解释 BS 3.2 残差（7 期，2019 起对应新租赁准则 A+H 生效）。"
+        }
+      ]
     }
   ]
 }
