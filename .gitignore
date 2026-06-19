@@ -33,7 +33,10 @@ dist/
 worktrees/
 
 # IDE / local config
-.claude/
+# .claude/ holds project skills (skills/) that MUST be committed;
+# ignore everything else under .claude/ (local settings, caches).
+.claude/*
+!.claude/skills/
 .obsidian/
 .serena/
 .vscode/
