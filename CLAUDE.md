@@ -2,6 +2,10 @@
 
 两阶段流水线：① 从 TuShare Pro API 拉取三表数据 → 标准化 → 入库 SQLite；② 从 SQLite 读取原始数据 → 透视宽表 → 严格配平校验 → 写入 SQLite clean 表。
 
+## 🧭 会计问题入口(改字段分类/排序/标签先看这里)
+
+**所有会计科目问题 → 查 `src/field_registry.yaml`。** 这是三表 325 个 TuShare 字段的唯一真源:每个字段归属哪张表/哪个 bucket/第几行(会计序)/中文标签/是否小计/resolve 父子/符号语义,全部声明在此一处。`clean.py` 的校验分类、`workbench.py` 的前端排序与标签、`docs/数据格式参考.md` 都从它派生。改一处,三处同步。**改字段分类/排序/标签只编辑这个 YAML,不要再去找 clean.py 的分类字典或 workbench 的排序声明(它们已不存在,都是从 registry import)。** 详细用法见 `docs/ARCHITECTURE.md`「会计系统(field_registry)怎么用」。
+
 ## 🔴 开发总原则：通用性高于一切（所有开发之上的第一原则）
 
 **本系统的开发目的就是兼容各种公司——不限制在任何一家公司、永远为千奇百怪的公司设计，是所有开发决策的第一原则。**
