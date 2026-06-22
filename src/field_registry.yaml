@@ -1,0 +1,402 @@
+version: 1
+statements:
+  income:
+    name: 利润表
+    unit: 百万元
+    category_order:
+    - revenue_item
+    - cost_item
+    - operating_adjustment
+    - below_line
+    - tax
+    - attribution
+    - comprehensive
+    - sub_item
+    - derived
+    category_labels:
+      revenue_item: 收入项
+      cost_item: 成本项
+      operating_adjustment: 营业利润调节项
+      below_line: 营业外收支
+      tax: 所得税
+      attribution: 净利润归属
+      comprehensive: 综合收益
+      sub_item: 子明细（已含于父项，不重复加总）
+      derived: 衍生/不参与加总
+      subtotal: 小计/合计
+    fields:
+    - {field: revenue, label: 营业收入, category: revenue_item}
+    - {field: comm_income, label: 手续费及佣金收入, category: revenue_item}
+    - {field: int_income, label: 利息收入, category: revenue_item}
+    - {field: n_asset_mg_income, label: 受托客户资产管理业务净收入, category: revenue_item}
+    - {field: n_commis_income, label: 手续费及佣金净收入, category: revenue_item}
+    - {field: n_oth_b_income, label: '加:其他业务净收益', category: revenue_item}
+    - {field: n_oth_income, label: 其他经营净收益, category: revenue_item}
+    - {field: n_sec_tb_income, label: 代理买卖证券业务净收入, category: revenue_item}
+    - {field: n_sec_uw_income, label: 证券承销业务净收入, category: revenue_item}
+    - {field: oth_b_income, label: 其他业务收入, category: revenue_item}
+    - {field: prem_earned, label: 已赚保费, category: revenue_item}
+    - {field: prem_income, label: 保险业务收入, category: revenue_item}
+    - {field: reins_income, label: '其中:分保费收入', category: revenue_item}
+    - {field: total_revenue, label: 营业总收入, category: subtotal}
+    - {field: oper_cost, label: '减:营业成本', category: cost_item}
+    - {field: biz_tax_surchg, label: '减:营业税金及附加', category: cost_item}
+    - {field: sell_exp, label: '减:销售费用', category: cost_item}
+    - {field: admin_exp, label: '减:管理费用', category: cost_item}
+    - {field: rd_exp, label: '减:研发费用', category: cost_item}
+    - {field: fin_exp, label: '减:财务费用', category: cost_item, resolve_children: [fin_exp_int_exp, fin_exp_int_inc]}
+    - {field: comm_exp, label: '减:手续费及佣金支出', category: cost_item}
+    - {field: compens_payout, label: 赔付总支出, category: cost_item}
+    - {field: compens_payout_refu, label: '减:摊回赔付支出', category: cost_item}
+    - {field: div_payt, label: 保户红利支出, category: cost_item}
+    - {field: insur_reser_refu, label: '减:摊回保险责任准备金', category: cost_item}
+    - {field: insurance_exp, label: 保险业务支出, category: cost_item}
+    - {field: int_exp, label: '减:利息支出', category: cost_item}
+    - {field: oper_exp, label: 营业支出, category: cost_item}
+    - {field: other_bus_cost, label: 其他业务成本, category: cost_item}
+    - {field: out_prem, label: '减:分出保费', category: cost_item}
+    - {field: prem_refund, label: 退保金, category: cost_item}
+    - {field: reins_cost_refund, label: '减:摊回分保费用', category: cost_item}
+    - {field: reins_exp, label: 分保费用, category: cost_item}
+    - {field: reser_insur_liab, label: 提取保险责任准备金, category: cost_item}
+    - {field: une_prem_reser, label: 提取未到期责任准备金, category: cost_item}
+    - {field: total_cogs, label: 营业总成本, category: subtotal}
+    - {field: total_opcost, label: 营业总成本（二）, category: subtotal}
+    - {field: assets_impair_loss, label: '减:资产减值损失', category: operating_adjustment, sign: questionable}
+    - {field: credit_impa_loss, label: '减:信用减值损失', category: operating_adjustment, sign: questionable}
+    - {field: oth_income, label: 其他收益, category: operating_adjustment}
+    - {field: invest_income, label: '加:投资净收益', category: operating_adjustment, resolve_children: [ass_invest_income, amodcost_fin_assets]}
+    - {field: fv_value_chg_gain, label: '加:公允价值变动净收益', category: operating_adjustment}
+    - {field: net_expo_hedging_benefits, label: 净敞口套期收益, category: operating_adjustment}
+    - {field: asset_disp_income, label: 资产处置收益, category: operating_adjustment}
+    - {field: forex_gain, label: '加:汇兑净收益', category: operating_adjustment}
+    - {field: oth_impair_loss_assets, label: 其他资产减值损失, category: operating_adjustment, sign: questionable}
+    - {field: operate_profit, label: 营业利润, category: subtotal}
+    - {field: non_oper_income, label: '加:营业外收入', category: below_line}
+    - {field: non_oper_exp, label: '减:营业外支出', category: below_line, resolve_children: [nca_disploss]}
+    - {field: total_profit, label: 利润总额, category: subtotal}
+    - {field: income_tax, label: 所得税费用, category: tax}
+    - {field: n_income, label: 净利润(含少数股东损益), category: subtotal}
+    - {field: n_income_attr_p, label: 净利润(不含少数股东损益), category: attribution}
+    - {field: minority_gain, label: 少数股东损益, category: attribution}
+    - {field: oth_compr_income, label: 其他综合收益, category: comprehensive}
+    - {field: t_compr_income, label: 综合收益总额, category: comprehensive}
+    - {field: compr_inc_attr_p, label: 归属于母公司(或股东)的综合收益总额, category: comprehensive}
+    - {field: compr_inc_attr_m_s, label: 归属于少数股东的综合收益总额, category: comprehensive}
+    - {field: amodcost_fin_assets, label: 以摊余成本计量的金融资产终止确认收益, category: sub_item, resolve_parent: invest_income}
+    - {field: ass_invest_income, label: '其中:对联营企业和合营企业的投资收益', category: sub_item, resolve_parent: invest_income}
+    - {field: continued_net_profit, label: 持续经营净利润, category: sub_item}
+    - {field: end_net_profit, label: 终止经营净利润, category: sub_item}
+    - {field: fin_exp_int_exp, label: '财务费用:利息费用', category: sub_item, resolve_parent: fin_exp}
+    - {field: fin_exp_int_inc, label: '财务费用:利息收入', category: sub_item, resolve_parent: fin_exp}
+    - {field: nca_disploss, label: '其中:减:非流动资产处置净损失', category: sub_item, resolve_parent: non_oper_exp}
+    - {field: adj_lossgain, label: 调整以前年度损益, category: derived}
+    - {field: basic_eps, label: 基本每股收益, category: derived}
+    - {field: capit_comstock_div, label: 转作股本的普通股股利, category: derived}
+    - {field: comshare_payable_dvd, label: 应付普通股股利, category: derived}
+    - {field: diluted_eps, label: 稀释每股收益, category: derived}
+    - {field: distable_profit, label: 可分配利润, category: derived}
+    - {field: distr_profit_shrhder, label: 可供股东分配的利润, category: derived}
+    - {field: ebit, label: 息税前利润, category: derived}
+    - {field: ebitda, label: 息税折旧摊销前利润, category: derived}
+    - {field: net_after_nr_lp_correct, label: 扣除非经常性损益后的净利润（更正前）, category: derived}
+    - {field: prfshare_payable_dvd, label: 应付优先股股利, category: derived}
+    - {field: transfer_housing_imprest, label: 住房周转金转入, category: derived}
+    - {field: transfer_oth, label: 其他转入, category: derived}
+    - {field: transfer_surplus_rese, label: 盈余公积转入, category: derived}
+    - {field: undist_profit, label: 年初未分配利润, category: derived}
+    - {field: withdra_biz_devfund, label: 提取企业发展基金, category: derived}
+    - {field: withdra_legal_pubfund, label: 提取法定公益金, category: derived}
+    - {field: withdra_legal_surplus, label: 提取法定盈余公积, category: derived}
+    - {field: withdra_oth_ersu, label: 提取任意盈余公积金, category: derived}
+    - {field: withdra_rese_fund, label: 提取储备基金, category: derived}
+    - {field: workers_welfare, label: 职工奖金福利, category: derived}
+  balancesheet:
+    name: 资产负债表
+    unit: 百万元
+    category_order:
+    - current_asset
+    - noncurrent_asset
+    - current_liab
+    - noncurrent_liab
+    - equity
+    - combo
+    - sub_item
+    - derived
+    category_labels:
+      current_asset: 流动资产
+      noncurrent_asset: 非流动资产
+      current_liab: 流动负债
+      noncurrent_liab: 非流动负债
+      equity: 所有者权益
+      combo: 合并科目（与拆分项互斥）
+      sub_item: 子明细（已含于父项，不重复加总）
+      derived: 衍生/不参与加总
+      subtotal: 小计/合计
+    fields:
+    - {field: money_cap, label: 货币资金, category: current_asset}
+    - {field: notes_receiv, label: 应收票据, category: current_asset}
+    - {field: accounts_receiv, label: 应收账款, category: current_asset}
+    - {field: receiv_financing, label: 应收款项融资, category: current_asset}
+    - {field: prepayment, label: 预付款项, category: current_asset}
+    - {field: oth_receiv, label: 其他应收款, category: current_asset}
+    - {field: inventories, label: 存货, category: current_asset}
+    - {field: contract_assets, label: 合同资产, category: current_asset}
+    - {field: hfs_assets, label: 持有待售的资产, category: current_asset}
+    - {field: nca_within_1y, label: 一年内到期的非流动资产, category: current_asset}
+    - {field: oth_cur_assets, label: 其他流动资产, category: current_asset}
+    - {field: acc_receivable, label: 应收款项, category: current_asset}
+    - {field: amor_exp, label: 待摊费用, category: current_asset}
+    - {field: cash_reser_cb, label: 现金及存放中央银行款项, category: current_asset}
+    - {field: client_depos, label: 其中：客户资金存款, category: current_asset}
+    - {field: client_prov, label: 其中：客户备付金, category: current_asset}
+    - {field: cost_fin_assets, label: 以摊余成本计量的金融资产, category: current_asset}
+    - {field: depos_in_oth_bfi, label: 存放同业和其它金融机构款项, category: current_asset}
+    - {field: deriv_assets, label: 衍生金融资产, category: current_asset}
+    - {field: div_receiv, label: 应收股利, category: current_asset}
+    - {field: fair_value_fin_assets, label: 以公允价值计量且其变动计入其他综合收益的金融资产, category: current_asset}
+    - {field: indep_acct_assets, label: 独立账户资产, category: current_asset}
+    - {field: int_receiv, label: 应收利息, category: current_asset}
+    - {field: invest_as_receiv, label: 应收款项类投资, category: current_asset}
+    - {field: lending_funds, label: 融出资金, category: current_asset}
+    - {field: loanto_oth_bank_fi, label: 拆出资金, category: current_asset}
+    - {field: ph_pledge_loans, label: 保户质押贷款, category: current_asset}
+    - {field: prec_metals, label: 贵金属, category: current_asset}
+    - {field: premium_receiv, label: 应收保费, category: current_asset}
+    - {field: pur_resale_fa, label: 买入返售金融资产, category: current_asset}
+    - {field: refund_cap_depos, label: 存出资本保证金, category: current_asset}
+    - {field: refund_depos, label: 存出保证金, category: current_asset}
+    - {field: reinsur_receiv, label: 应收分保账款, category: current_asset}
+    - {field: reinsur_res_receiv, label: 应收分保合同准备金, category: current_asset}
+    - {field: rr_reins_lins_liab, label: 应收分保寿险责任准备金, category: current_asset}
+    - {field: rr_reins_lthins_liab, label: 应收分保长期健康险责任准备金, category: current_asset}
+    - {field: rr_reins_outstd_cla, label: 应收分保未决赔款准备金, category: current_asset}
+    - {field: rr_reins_une_prem, label: 应收分保未到期责任准备金, category: current_asset}
+    - {field: sett_rsrv, label: 结算备付金, category: current_asset}
+    - {field: trad_asset, label: 交易性金融资产, category: current_asset}
+    - {field: transac_seat_fee, label: '其中:交易席位费', category: current_asset}
+    - {field: total_cur_assets, label: 流动资产合计, category: subtotal}
+    - {field: debt_invest, label: 债权投资(元), category: noncurrent_asset}
+    - {field: oth_debt_invest, label: 其他债权投资(元), category: noncurrent_asset}
+    - {field: lt_rec, label: 长期应收款, category: noncurrent_asset}
+    - {field: lt_eqt_invest, label: 长期股权投资, category: noncurrent_asset}
+    - {field: oth_eq_invest, label: 其他权益工具投资(元), category: noncurrent_asset}
+    - {field: oth_illiq_fin_assets, label: 其他非流动金融资产(元), category: noncurrent_asset}
+    - {field: invest_real_estate, label: 投资性房地产, category: noncurrent_asset}
+    - {field: fix_assets, label: 固定资产, category: noncurrent_asset}
+    - {field: cip, label: 在建工程, category: noncurrent_asset}
+    - {field: produc_bio_assets, label: 生产性生物资产, category: noncurrent_asset}
+    - {field: oil_and_gas_assets, label: 油气资产, category: noncurrent_asset}
+    - {field: use_right_assets, label: 使用权资产, category: noncurrent_asset}
+    - {field: intan_assets, label: 无形资产, category: noncurrent_asset}
+    - {field: r_and_d, label: 研发支出, category: noncurrent_asset}
+    - {field: goodwill, label: 商誉, category: noncurrent_asset}
+    - {field: lt_amor_exp, label: 长期待摊费用, category: noncurrent_asset}
+    - {field: defer_tax_assets, label: 递延所得税资产, category: noncurrent_asset}
+    - {field: oth_nca, label: 其他非流动资产, category: noncurrent_asset}
+    - {field: const_materials, label: 工程物资, category: noncurrent_asset}
+    - {field: decr_in_disbur, label: 发放贷款及垫款, category: noncurrent_asset}
+    - {field: fa_avail_for_sale, label: 可供出售金融资产, category: noncurrent_asset}
+    - {field: fixed_assets_disp, label: 固定资产清理, category: noncurrent_asset}
+    - {field: htm_invest, label: 持有至到期投资, category: noncurrent_asset}
+    - {field: oth_assets, label: 其他资产, category: noncurrent_asset}
+    - {field: time_deposits, label: 定期存款, category: noncurrent_asset}
+    - {field: total_nca, label: 非流动资产合计, category: subtotal}
+    - {field: total_assets, label: 资产总计, category: subtotal, role: total}
+    - {field: st_borr, label: 短期借款, category: current_liab}
+    - {field: cb_borr, label: 向中央银行借款, category: current_liab}
+    - {field: loan_oth_bank, label: 拆入资金, category: current_liab}
+    - {field: deriv_liab, label: 衍生金融负债, category: current_liab}
+    - {field: notes_payable, label: 应付票据, category: current_liab}
+    - {field: acct_payable, label: 应付账款, category: current_liab}
+    - {field: adv_receipts, label: 预收款项, category: current_liab}
+    - {field: contract_liab, label: 合同负债, category: current_liab}
+    - {field: sold_for_repur_fa, label: 卖出回购金融资产款, category: current_liab}
+    - {field: depos, label: 吸收存款, category: current_liab}
+    - {field: acting_trading_sec, label: 代理买卖证券款, category: current_liab}
+    - {field: acting_uw_sec, label: 代理承销证券款, category: current_liab}
+    - {field: payroll_payable, label: 应付职工薪酬, category: current_liab}
+    - {field: taxes_payable, label: 应交税费, category: current_liab}
+    - {field: oth_payable, label: 其他应付款, category: current_liab}
+    - {field: int_payable, label: 应付利息, category: current_liab}
+    - {field: div_payable, label: 应付股利, category: current_liab}
+    - {field: oth_cur_liab, label: 其他流动负债, category: current_liab}
+    - {field: hfs_sales, label: 持有待售的负债, category: current_liab}
+    - {field: non_cur_liab_due_1y, label: 一年内到期的非流动负债, category: current_liab}
+    - {field: acc_exp, label: 预提费用, category: current_liab}
+    - {field: agency_bus_liab, label: 代理业务负债, category: current_liab}
+    - {field: comm_payable, label: 应付手续费及佣金, category: current_liab}
+    - {field: deferred_inc, label: 递延收益, category: current_liab}
+    - {field: depos_ib_deposits, label: 吸收存款及同业存放, category: current_liab}
+    - {field: depos_oth_bfi, label: 同业和其它金融机构存放款项, category: current_liab}
+    - {field: depos_received, label: 存入保证金, category: current_liab}
+    - {field: indem_payable, label: 应付赔付款, category: current_liab}
+    - {field: indept_acc_liab, label: 独立账户负债, category: current_liab}
+    - {field: oth_liab, label: 其他负债, category: current_liab}
+    - {field: payable_to_reinsurer, label: 应付分保账款, category: current_liab}
+    - {field: payables, label: 应付款项, category: current_liab}
+    - {field: ph_invest, label: 保户储金及投资款, category: current_liab}
+    - {field: pledge_borr, label: '其中:质押借款', category: current_liab}
+    - {field: policy_div_payable, label: 应付保单红利, category: current_liab}
+    - {field: prem_receiv_adva, label: 预收保费, category: current_liab}
+    - {field: reser_lins_liab, label: 寿险责任准备金, category: current_liab}
+    - {field: reser_lthins_liab, label: 长期健康险责任准备金, category: current_liab}
+    - {field: reser_outstd_claims, label: 未决赔款准备金, category: current_liab}
+    - {field: reser_une_prem, label: 未到期责任准备金, category: current_liab}
+    - {field: rsrv_insur_cont, label: 保险合同准备金, category: current_liab}
+    - {field: st_bonds_payable, label: 应付短期债券, category: current_liab}
+    - {field: st_fin_payable, label: 应付短期融资款, category: current_liab}
+    - {field: trading_fl, label: 交易性金融负债, category: current_liab}
+    - {field: total_cur_liab, label: 流动负债合计, category: subtotal}
+    - {field: lt_borr, label: 长期借款, category: noncurrent_liab}
+    - {field: bond_payable, label: 应付债券, category: noncurrent_liab}
+    - {field: lease_liab, label: 租赁负债, category: noncurrent_liab}
+    - {field: lt_payable, label: 长期应付款, category: noncurrent_liab}
+    - {field: lt_payroll_payable, label: 长期应付职工薪酬, category: noncurrent_liab}
+    - {field: estimated_liab, label: 预计负债, category: noncurrent_liab}
+    - {field: defer_inc_non_cur_liab, label: 递延收益-非流动负债, category: noncurrent_liab}
+    - {field: defer_tax_liab, label: 递延所得税负债, category: noncurrent_liab}
+    - {field: oth_ncl, label: 其他非流动负债, category: noncurrent_liab}
+    - {field: specific_payables, label: 专项应付款, category: noncurrent_liab}
+    - {field: total_ncl, label: 非流动负债合计, category: subtotal}
+    - {field: total_liab, label: 负债合计, category: subtotal, role: total}
+    - {field: total_share, label: 期末总股本, category: equity}
+    - {field: oth_eqt_tools, label: 其他权益工具, category: equity}
+    - {field: cap_rese, label: 资本公积金, category: equity}
+    - {field: treasury_share, label: '减:库存股', category: equity}
+    - {field: oth_comp_income, label: 其他综合收益, category: equity}
+    - {field: surplus_rese, label: 盈余公积金, category: equity}
+    - {field: ordin_risk_reser, label: 一般风险准备, category: equity}
+    - {field: special_rese, label: 专项储备, category: equity}
+    - {field: undistr_porfit, label: 未分配利润, category: equity}
+    - {field: minority_int, label: 少数股东权益, category: equity}
+    - {field: forex_differ, label: 外币报表折算差额, category: equity}
+    - {field: total_hldr_eqy_exc_min_int, label: 股东权益合计(不含少数股东权益), category: subtotal}
+    - {field: total_hldr_eqy_inc_min_int, label: 股东权益合计(含少数股东权益), category: subtotal}
+    - {field: total_liab_hldr_eqy, label: 负债及股东权益总计, category: subtotal, role: total}
+    - {field: accounts_pay, label: 应付票据及应付账款, category: combo, combo_of: [notes_payable, acct_payable]}
+    - {field: accounts_receiv_bill, label: 应收票据及应收账款, category: combo, combo_of: [notes_receiv, accounts_receiv]}
+    - {field: cip_total, label: 在建工程(合计)(元), category: combo, combo_of: [cip]}
+    - {field: fix_assets_total, label: 固定资产(合计)(元), category: combo, combo_of: [fix_assets]}
+    - {field: long_pay_total, label: 长期应付款(合计)(元), category: combo, combo_of: [lt_payable]}
+    - {field: oth_pay_total, label: 其他应付款(合计)(元), category: combo, combo_of: [oth_payable, int_payable, div_payable]}
+    - {field: oth_rcv_total, label: 其他应收款(合计)（元）, category: combo, combo_of: [oth_receiv]}
+    - {field: oth_eq_ppbond, label: '其他权益工具:永续债(元)', category: sub_item}
+    - {field: oth_eqt_tools_p_shr, label: 其他权益工具(优先股), category: sub_item}
+    - {field: invest_loss_unconf, label: 未确认的投资损失, category: derived}
+  cashflow:
+    name: 现金流量表
+    unit: 百万元
+    category_order:
+    - cfo_inflow
+    - cfo_outflow
+    - cfi_inflow
+    - cfi_outflow
+    - cff_inflow
+    - cff_outflow
+    - balance
+    - supplementary
+    - sub_item
+    - derived
+    category_labels:
+      cfo_inflow: 经营活动现金流入
+      cfo_outflow: 经营活动现金流出
+      cfi_inflow: 投资活动现金流入
+      cfi_outflow: 投资活动现金流出
+      cff_inflow: 筹资活动现金流入
+      cff_outflow: 筹资活动现金流出
+      balance: 现金余额
+      supplementary: 间接法附注
+      sub_item: 子明细（已含于父项，不重复加总）
+      derived: 衍生/不参与加总
+      subtotal: 小计/合计
+    fields:
+    - {field: c_fr_sale_sg, label: 销售商品、提供劳务收到的现金, category: cfo_inflow}
+    - {field: recp_tax_rends, label: 收到的税费返还, category: cfo_inflow}
+    - {field: c_fr_oth_operate_a, label: 收到其他与经营活动有关的现金, category: cfo_inflow}
+    - {field: ifc_cash_incr, label: 收取利息和手续费净增加额, category: cfo_inflow}
+    - {field: n_cap_incr_repur, label: 回购业务资金净增加额, category: cfo_inflow}
+    - {field: n_depos_incr_fi, label: 客户存款和同业存放款项净增加额, category: cfo_inflow}
+    - {field: n_inc_borr_oth_fi, label: 向其他金融机构拆入资金净增加额, category: cfo_inflow}
+    - {field: n_incr_disp_faas, label: 处置可供出售金融资产净增加额, category: cfo_inflow}
+    - {field: n_incr_disp_tfa, label: 处置交易性金融资产净增加额, category: cfo_inflow}
+    - {field: n_incr_insured_dep, label: 保户储金净增加额, category: cfo_inflow}
+    - {field: n_incr_loans_cb, label: 向中央银行借款净增加额, category: cfo_inflow}
+    - {field: n_incr_loans_oth_bank, label: 拆入资金净增加额, category: cfo_inflow}
+    - {field: n_reinsur_prem, label: 收到再保业务现金净额, category: cfo_inflow}
+    - {field: prem_fr_orig_contr, label: 收到原保险合同保费取得的现金, category: cfo_inflow}
+    - {field: c_inf_fr_operate_a, label: 经营活动现金流入小计, category: subtotal}
+    - {field: c_paid_goods_s, label: 购买商品、接受劳务支付的现金, category: cfo_outflow}
+    - {field: c_paid_to_for_empl, label: 支付给职工以及为职工支付的现金, category: cfo_outflow}
+    - {field: c_paid_for_taxes, label: 支付的各项税费, category: cfo_outflow}
+    - {field: oth_cash_pay_oper_act, label: 支付其他与经营活动有关的现金, category: cfo_outflow}
+    - {field: c_pay_claims_orig_inco, label: 支付原保险合同赔付款项的现金, category: cfo_outflow}
+    - {field: n_incr_clt_loan_adv, label: 客户贷款及垫款净增加额, category: cfo_outflow}
+    - {field: n_incr_dep_cbob, label: 存放央行和同业款项净增加额, category: cfo_outflow}
+    - {field: pay_comm_insur_plcy, label: 支付保单红利的现金, category: cfo_outflow}
+    - {field: pay_handling_chrg, label: 支付手续费的现金, category: cfo_outflow}
+    - {field: st_cash_out_act, label: 经营活动现金流出小计, category: subtotal}
+    - {field: n_cashflow_act, label: 经营活动产生的现金流量净额, category: subtotal}
+    - {field: c_disp_withdrwl_invest, label: 收回投资收到的现金, category: cfi_inflow}
+    - {field: c_recp_return_invest, label: 取得投资收益收到的现金, category: cfi_inflow}
+    - {field: n_recp_disp_fiolta, label: 处置固定资产、无形资产和其他长期资产收回的现金净额, category: cfi_inflow}
+    - {field: n_recp_disp_sobu, label: 处置子公司及其他营业单位收到的现金净额, category: cfi_inflow}
+    - {field: oth_recp_ral_inv_act, label: 收到其他与投资活动有关的现金, category: cfi_inflow}
+    - {field: stot_inflows_inv_act, label: 投资活动现金流入小计, category: subtotal}
+    - {field: c_pay_acq_const_fiolta, label: 购建固定资产、无形资产和其他长期资产支付的现金, category: cfi_outflow}
+    - {field: c_paid_invest, label: 投资支付的现金, category: cfi_outflow}
+    - {field: n_disp_subs_oth_biz, label: 取得子公司及其他营业单位支付的现金净额, category: cfi_outflow}
+    - {field: oth_pay_ral_inv_act, label: 支付其他与投资活动有关的现金, category: cfi_outflow}
+    - {field: n_incr_pledge_loan, label: 质押贷款净增加额, category: cfi_outflow}
+    - {field: stot_out_inv_act, label: 投资活动现金流出小计, category: subtotal}
+    - {field: n_cashflow_inv_act, label: 投资活动产生的现金流量净额, category: subtotal}
+    - {field: c_recp_cap_contrib, label: 吸收投资收到的现金, category: cff_inflow, resolve_children: [incl_cash_rec_saims]}
+    - {field: c_recp_borrow, label: 取得借款收到的现金, category: cff_inflow}
+    - {field: proc_issue_bonds, label: 发行债券收到的现金, category: cff_inflow}
+    - {field: oth_cash_recp_ral_fnc_act, label: 收到其他与筹资活动有关的现金, category: cff_inflow}
+    - {field: stot_cash_in_fnc_act, label: 筹资活动现金流入小计, category: subtotal}
+    - {field: c_prepay_amt_borr, label: 偿还债务支付的现金, category: cff_outflow}
+    - {field: c_pay_dist_dpcp_int_exp, label: 分配股利、利润或偿付利息支付的现金, category: cff_outflow, resolve_children: [incl_dvd_profit_paid_sc_ms]}
+    - {field: oth_cashpay_ral_fnc_act, label: 支付其他与筹资活动有关的现金, category: cff_outflow}
+    - {field: stot_cashout_fnc_act, label: 筹资活动现金流出小计, category: subtotal}
+    - {field: n_cash_flows_fnc_act, label: 筹资活动产生的现金流量净额, category: subtotal}
+    - {field: eff_fx_flu_cash, label: 汇率变动对现金的影响, category: subtotal}
+    - {field: n_incr_cash_cash_equ, label: 现金及现金等价物净增加额, category: subtotal}
+    - {field: c_cash_equ_beg_period, label: 期初现金及现金等价物余额, category: balance}
+    - {field: c_cash_equ_end_period, label: 期末现金及现金等价物余额, category: balance}
+    - {field: beg_bal_cash, label: '减:现金的期初余额', category: balance}
+    - {field: beg_bal_cash_equ, label: '减:现金等价物的期初余额', category: balance}
+    - {field: end_bal_cash, label: 现金的期末余额, category: balance}
+    - {field: end_bal_cash_equ, label: '加:现金等价物的期末余额', category: balance}
+    - {field: amort_intang_assets, label: 无形资产摊销, category: supplementary}
+    - {field: conv_copbonds_due_within_1y, label: 一年内到期的可转换公司债券, category: supplementary}
+    - {field: conv_debt_into_cap, label: 债务转为资本, category: supplementary}
+    - {field: credit_impa_loss, label: '减:信用减值损失', category: supplementary, sign: questionable}
+    - {field: decr_def_inc_tax_assets, label: 递延所得税资产减少, category: supplementary}
+    - {field: decr_deferred_exp, label: 待摊费用减少, category: supplementary}
+    - {field: decr_inventories, label: 存货的减少, category: supplementary}
+    - {field: decr_oper_payable, label: 经营性应收项目的减少, category: supplementary}
+    - {field: depr_fa_coga_dpba, label: 固定资产折旧、油气资产折耗、生产性生物资产折旧, category: supplementary}
+    - {field: fa_fnc_leases, label: 融资租入固定资产, category: supplementary}
+    - {field: finan_exp, label: 财务费用, category: supplementary}
+    - {field: incr_acc_exp, label: 预提费用增加, category: supplementary}
+    - {field: incr_def_inc_tax_liab, label: 递延所得税负债增加, category: supplementary}
+    - {field: incr_oper_payable, label: 经营性应付项目的增加, category: supplementary}
+    - {field: invest_loss, label: 投资损失, category: supplementary}
+    - {field: loss_disp_fiolta, label: 处置固定、无形资产和其他长期资产的损失, category: supplementary}
+    - {field: loss_fv_chg, label: 公允价值变动损失, category: supplementary}
+    - {field: loss_scr_fa, label: 固定资产报废损失, category: supplementary}
+    - {field: lt_amort_deferred_exp, label: 长期待摊费用摊销, category: supplementary}
+    - {field: net_cash_rece_sec, label: 代理买卖证券收到的现金净额(元), category: supplementary}
+    - {field: net_dism_capital_add, label: 拆出资金净增加额, category: supplementary}
+    - {field: net_profit, label: 净利润, category: supplementary}
+    - {field: oth_loss_asset, label: 其他资产减值损失, category: supplementary}
+    - {field: others, label: 其他, category: supplementary}
+    - {field: prov_depr_assets, label: '加:资产减值准备', category: supplementary}
+    - {field: uncon_invest_loss, label: 未确认投资损失, category: supplementary}
+    - {field: use_right_asset_dep, label: 使用权资产折旧, category: supplementary}
+    - {field: incl_cash_rec_saims, label: '其中:子公司吸收少数股东投资收到的现金', category: sub_item, resolve_parent: c_recp_cap_contrib}
+    - {field: incl_dvd_profit_paid_sc_ms, label: '其中:子公司支付给少数股东的股利、利润', category: sub_item, resolve_parent: c_pay_dist_dpcp_int_exp}
+    - {field: free_cashflow, label: 企业自由现金流量, category: derived}
+    - {field: im_net_cashflow_oper_act, label: 经营活动产生的现金流量净额(间接法), category: subtotal}
+    - {field: im_n_incr_cash_equ, label: 现金及现金等价物净增加额(间接法), category: subtotal}

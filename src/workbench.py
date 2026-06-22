@@ -31,6 +31,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 import pandas as pd
+from src import field_registry as _registry
 from src.annual_report_utils import load_env, llm_api_key, llm_base_url, llm_model, llm_timeout_seconds
 from src.calc import ForecastBuildResult, value_from_statements
 from src.forecast import run_company_forecast
@@ -49,135 +50,14 @@ FIELD_REFERENCE_NAME = "\u6570\u636e\u683c\u5f0f\u53c2\u8003.md"
 PRESENTATION_SCHEMA_VERSION = 1
 
 STATEMENT_META = {
-    "forecast_is.csv": {
-        "key": "is",
-        "name": "IS",
-        "title": "利润表",
-        "doc_title": "\u5229\u6da6\u8868",
-        "unit": "百万元",
-        "category_order": [
-            "revenue_item",
-            "cost_item",
-            "operating_adjustment",
-            "below_line",
-            "tax",
-            "attribution",
-            "comprehensive",
-            "sub_item",
-            "derived",
-        ],
-        "subtotal_after": {
-            "revenue_item": ["total_revenue"],
-            "cost_item": ["total_cogs", "total_opcost"],
-            "operating_adjustment": ["operate_profit"],
-            "below_line": ["total_profit"],
-            "tax": ["n_income"],
-        },
-        # 会计准则展示顺序（数据格式参考.md 是字母序，这里覆盖为严格会计序）。
-        # 未列出的字段回退到字母序排在该类末尾，对金融企业字段无害（comp_type≠1 已过滤）。
-        "field_order": [
-            "revenue",
-            "oper_cost", "biz_tax_surchg", "sell_exp", "admin_exp", "rd_exp", "fin_exp",
-            "assets_impair_loss", "credit_impa_loss",
-            "oth_income", "invest_income", "fv_value_chg_gain", "net_expo_hedging_benefits",
-            "asset_disp_income", "forex_gain",
-            "non_oper_income", "non_oper_exp",
-            "income_tax",
-            "n_income_attr_p", "minority_gain",
-            "oth_compr_income", "t_compr_income", "compr_inc_attr_p", "compr_inc_attr_m_s",
-        ],
-    },
-    "forecast_bs.csv": {
-        "key": "bs",
-        "name": "BS",
-        "title": "资产负债表",
-        "doc_title": "\u8d44\u4ea7\u8d1f\u503a\u8868",
-        "unit": "百万元",
-        "category_order": [
-            "current_asset",
-            "noncurrent_asset",
-            "current_liab",
-            "noncurrent_liab",
-            "equity",
-            "combo",
-            "sub_item",
-            "derived",
-        ],
-        "subtotal_after": {
-            "current_asset": ["total_cur_assets"],
-            "noncurrent_asset": ["total_nca", "total_assets"],
-            "current_liab": ["total_cur_liab"],
-            "noncurrent_liab": ["total_ncl", "total_liab"],
-            "equity": ["total_hldr_eqy_exc_min_int", "total_hldr_eqy_inc_min_int", "total_liab_hldr_eqy"],
-        },
-        "field_order": [
-            # 流动资产
-            "money_cap", "notes_receiv", "accounts_receiv", "receiv_financing", "prepayment",
-            "oth_receiv", "inventories", "contract_assets", "hfs_assets", "nca_within_1y", "oth_cur_assets",
-            # 非流动资产
-            "debt_invest", "oth_debt_invest", "lt_rec", "lt_eqt_invest", "oth_eq_invest",
-            "oth_illiq_fin_assets", "invest_real_estate", "fix_assets", "cip", "produc_bio_assets",
-            "oil_and_gas_assets", "use_right_assets", "intan_assets", "r_and_d", "goodwill",
-            "lt_amor_exp", "defer_tax_assets", "oth_nca",
-            # 流动负债
-            "st_borr", "cb_borr", "loan_oth_bank", "deriv_liab", "notes_payable", "acct_payable",
-            "adv_receipts", "contract_liab", "sold_for_repur_fa", "depos", "acting_trading_sec",
-            "acting_uw_sec", "payroll_payable", "taxes_payable", "oth_payable", "int_payable",
-            "div_payable", "oth_cur_liab", "hfs_sales", "non_cur_liab_due_1y",
-            # 非流动负债
-            "lt_borr", "bond_payable", "lease_liab", "lt_payable", "lt_payroll_payable",
-            "estimated_liab", "defer_inc_non_cur_liab", "defer_tax_liab", "oth_ncl",
-            # 所有者权益
-            "total_share", "oth_eqt_tools", "cap_rese", "treasury_share", "oth_comp_income",
-            "surplus_rese", "ordin_risk_reser", "special_rese", "undistr_porfit", "minority_int",
-            "forex_differ",
-        ],
-    },
-    "forecast_cf.csv": {
-        "key": "cf",
-        "name": "CF",
-        "title": "现金流量表",
-        "doc_title": "\u73b0\u91d1\u6d41\u91cf\u8868",
-        "unit": "百万元",
-        "category_order": [
-            "cfo_inflow",
-            "cfo_outflow",
-            "cfi_inflow",
-            "cfi_outflow",
-            "cff_inflow",
-            "cff_outflow",
-            "balance",
-            "supplementary",
-            "sub_item",
-            "derived",
-        ],
-        "subtotal_after": {
-            "cfo_inflow": ["c_inf_fr_operate_a"],
-            "cfo_outflow": ["st_cash_out_act", "n_cashflow_act"],
-            "cfi_inflow": ["stot_inflows_inv_act"],
-            "cfi_outflow": ["stot_out_inv_act", "n_cashflow_inv_act"],
-            "cff_inflow": ["stot_cash_in_fnc_act"],
-            "cff_outflow": ["stot_cashout_fnc_act", "n_cash_flows_fnc_act", "eff_fx_flu_cash", "n_incr_cash_cash_equ"],
-        },
-        "field_order": [
-            # 经营活动流入
-            "c_fr_sale_sg", "recp_tax_rends", "c_fr_oth_operate_a",
-            # 经营活动流出
-            "c_paid_goods_s", "c_paid_to_for_empl", "c_paid_for_taxes", "oth_cash_pay_oper_act",
-            # 投资活动流入
-            "c_disp_withdrwl_invest", "c_recp_return_invest", "n_recp_disp_fiolta",
-            "n_recp_disp_sobu", "oth_recp_ral_inv_act",
-            # 投资活动流出
-            "c_pay_acq_const_fiolta", "c_paid_invest", "n_disp_subs_oth_biz", "oth_pay_ral_inv_act",
-            # 筹资活动流入
-            "c_recp_cap_contrib", "c_recp_borrow", "proc_issue_bonds", "oth_cash_recp_ral_fnc_act",
-            # 筹资活动流出
-            "c_prepay_amt_borr", "c_pay_dist_dpcp_int_exp", "oth_cashpay_ral_fnc_act",
-            # 期初/期末现金桥
-            "c_cash_equ_beg_period", "c_cash_equ_end_period",
-        ],
-    },
+    "forecast_is.csv": {"key": "is", "name": "IS", "title": "\u5229\u6da6\u8868",
+                        "doc_title": "\u5229\u6da6\u8868", "unit": "\u767e\u4e07\u5143"},
+    "forecast_bs.csv": {"key": "bs", "name": "BS", "title": "\u8d44\u4ea7\u8d1f\u503a\u8868",
+                        "doc_title": "\u8d44\u4ea7\u8d1f\u503a\u8868", "unit": "\u767e\u4e07\u5143"},
+    "forecast_cf.csv": {"key": "cf", "name": "CF", "title": "\u73b0\u91d1\u6d41\u91cf\u8868",
+                        "doc_title": "\u73b0\u91d1\u6d41\u91cf\u8868", "unit": "\u767e\u4e07\u5143"},
 }
+
 
 # full_*.csv = history+forecast concatenated, same schema as forecast_*.csv.
 # Alias to the forecast meta so _statement_rows shapes them identically (same field labels).
@@ -286,76 +166,12 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     return list(csv.DictReader(StringIO(_read_text(path))))
 
 
-def _field_reference_path() -> Path | None:
-    exact = BASE_DIR / "docs" / FIELD_REFERENCE_NAME
-    if exact.exists():
-        return exact
-    for path in (BASE_DIR / "docs").glob("*.md"):
-        if "\u53c2\u8003" in path.name:
-            return path
-    return None
+# 字段→中文标签扁平索引:统一来自 field_registry(三表 325 字段合并)。
+# 仅影响展示层中文化(行/列标签);非 TuShare 码在 STASH_CODE_LABELS 补充。
+FIELD_LABELS: dict[str, str] = _registry.LABELS
 
 
-def _parse_field_reference() -> dict[str, list[dict[str, str]]]:
-    path = _field_reference_path()
-    if not path:
-        return {}
-    text = _read_text(path)
-    result: dict[str, list[dict[str, str]]] = {"is": [], "bs": [], "cf": []}
-    current: str | None = None
-    for line in text.splitlines():
-        if line.startswith("## "):
-            title = line[3:]
-            if "\u5229\u6da6\u8868" in title:
-                current = "is"
-            elif "\u8d44\u4ea7\u8d1f\u503a\u8868" in title:
-                current = "bs"
-            elif "\u73b0\u91d1\u6d41\u91cf\u8868" in title:
-                current = "cf"
-            else:
-                current = None
-            continue
-        if not current or not line.startswith("| `"):
-            continue
-        parts = [part.strip() for part in line.strip().strip("|").split("|")]
-        if len(parts) < 4:
-            continue
-        result[current].append(
-            {
-                "field": parts[0].strip("`"),
-                "label": parts[1],
-                "category": parts[2].strip("`"),
-                "category_label": parts[3],
-            }
-        )
-    return result
-
-
-FIELD_REFERENCE = _parse_field_reference()
-
-# 展示层标签覆盖：数据格式参考.md 个别标签与会计惯例不一致（如 rd_exp 漏"减:"）。
-# 仅影响 workbench 展示，不触碰只读契约文档。
-LABEL_OVERRIDE: dict[str, str] = {
-    "rd_exp": "减:研发费用",
-    "credit_impa_loss": "减:信用减值损失",  # 与 资产减值损失 对齐，明确为营业总成本中的减项
-}
-
-
-# 扁平 字段→中文 索引：复用 FIELD_REFERENCE（数据格式参考.md）+ LABEL_OVERRIDE。
-# 用于 stash/历史观测等非报表场景的展示层中文化（行/列标签），纯展示，不碰契约。
-def _build_field_label_index() -> dict[str, str]:
-    idx: dict[str, str] = {}
-    for rows in FIELD_REFERENCE.values():
-        for r in rows:
-            idx[r["field"]] = r["label"]
-    idx.update(LABEL_OVERRIDE)
-    return idx
-
-
-FIELD_LABELS = _build_field_label_index()
-
-# 非 TuShare 码（knob 路径/历史观测专用），不在 FIELD_REFERENCE，展示层补中文。
-# 仅覆盖本项目 defaults.yaml 命名空间与历史观测常见码；未知码由 _humanize_label 原样回退。
+# 非 TuShare 码(knob 路径/历史观测专用),不在 field_registry,展示层补中文。
 STASH_CODE_LABELS: dict[str, str] = {
     "gpm": "整体毛利率",
     "effective_tax_rate": "有效税率",
@@ -423,20 +239,9 @@ def _statement_rows(table_name: str, csv_path: Path) -> dict[str, Any] | None:
     meta = STATEMENT_META.get(table_name)
     if not rows or not meta:
         return None
+    stmt = _registry.statement_meta_for_table(table_name)
     years = [str(int(float(row["period"]))) for row in rows if row.get("period")]
     fields_in_csv = set(rows[0].keys()) - {"period"}
-    reference = FIELD_REFERENCE.get(meta["key"], [])
-    by_category: dict[str, list[dict[str, str]]] = {}
-    by_field: dict[str, dict[str, str]] = {}
-    for item in reference:
-        by_field[item["field"]] = item
-        by_category.setdefault(item["category"], []).append(item)
-
-    # 会计准则展示顺序：field_order 给出严格会计序，未列出字段回退到字母序排在末尾。
-    field_rank = {field: idx for idx, field in enumerate(meta.get("field_order", []))}
-    fallback_rank = len(field_rank)
-    for category, items in by_category.items():
-        items.sort(key=lambda it: field_rank.get(it["field"], fallback_rank))
 
     values_by_field: dict[str, dict[str, float | None]] = {}
     for field in fields_in_csv:
@@ -445,33 +250,37 @@ def _statement_rows(table_name: str, csv_path: Path) -> dict[str, Any] | None:
     used: set[str] = set()
     output_rows: list[dict[str, Any]] = []
 
-    def append_field(field: str, role: str | None = None) -> None:
+    def append_field(field: str) -> None:
         if field in used or field not in fields_in_csv:
             return
-        ref = by_field.get(field)
-        if not ref:
+        if field not in stmt.labels:
             return
+        category = stmt.field_categories[field]
+        if field in stmt.total_fields:
+            role = "total"
+        elif category == "subtotal":
+            role = "subtotal"
+        else:
+            role = "normal"
         values = values_by_field[field]
         output_rows.append(
             {
                 "field": field,
-                "label": LABEL_OVERRIDE.get(field, ref["label"]),
-                "category": ref["category"],
-                "category_label": ref["category_label"],
-                "role": role or ("subtotal" if ref["category"] == "subtotal" else "normal"),
-                "level": 0 if role in {"subtotal", "total"} or ref["category"] == "subtotal" else 1,
+                "label": stmt.labels[field],
+                "category": category,
+                "category_label": stmt.category_labels.get(category, category),
+                "role": role,
+                "level": 0 if role in {"subtotal", "total"} else 1,
                 "is_zero": not _nonzero(values),
                 "values": values,
             }
         )
         used.add(field)
 
-    for category in meta["category_order"]:
-        for item in by_category.get(category, []):
-            append_field(item["field"])
-        for field in meta["subtotal_after"].get(category, []):
-            append_field(field, "total" if field in {"total_assets", "total_liab", "total_liab_hldr_eqy"} else "subtotal")
-
+    # registry.field_order 已是严格会计序(小计内联在其位置),直接迭代即可。
+    for field in stmt.field_order:
+        append_field(field)
+    # 残留:CSV 里但不在 registry 的列(QA plug 等),按 CSV 序兜底;无 label 的自动跳过。
     for field in fields_in_csv:
         append_field(field)
 

@@ -39,6 +39,8 @@ MKA/
 │   ├── init.py               # 一键编排入口
 │   ├── data_fetcher.py       # 阶段①：TuShare拉取+标准化+入库（~1250行）
 │   ├── clean.py              # 阶段②：EAV→宽表+配平校验+SQLite clean表写入
+│   ├── field_registry.py     # field_registry.yaml loader:三表字段元数据唯一真源
+│   ├── field_registry.yaml   # 全程序会计科目唯一真源(分类/会计序/标签/resolve/sign);clean.py 校验 + workbench 渲染 + 数据格式参考.md 同源
 │   ├── report_downloader.py  # 巨潮资讯网年报 PDF + Markdown 批量下载
 │   ├── annual_report_utils.py     # 年报 Markdown/LLM 公共工具（reconciler / analyzer 共用）
 │   ├── annual_report_reconciler.py # clean.py 年度硬校验失败后的年报 Markdown 智能核对
@@ -371,6 +373,14 @@ python -m src.clean --ticker 002946.SZ --verbose              # 调试日志
 ### 字段命名
 - **只用 TuShare 官方字段名**，如 `n_income_attr_p`、`total_hldr_eqy_inc_min_int`、`c_pay_acq_const_fiolta`；唯一例外是 clean 阶段的 6 个 `qa_*_plug` 审计字段
 - **禁止使用任何内部别名**，`field_terms.csv` 和 `statement_field_coverage.csv` 中不得出现非官方字段
+
+### 会计科目与排序的唯一真源:field_registry（2026-06-22 改版）
+三表 325 个官方字段的元数据——**哪张表 / 哪个 bucket / 第几行(会计序) / 中文标签 / 是否小计 / resolve 父子 / 符号语义**——全部声明在 `src/field_registry.yaml` 一处。`clean.py` 的 `IS/BS/CF_FIELD_CATEGORIES`、`IS/BS_SUB_RESOLVE`、`COMBO_RESOLVE`、`SIGN_QUESTIONABLE_IS_FIELDS` 与 `workbench.py` 的三表渲染排序/标签都 `from .field_registry import`，`docs/数据格式参考.md` 由 `scripts/gen_field_reference.py` 从它派生。改一处,校验+前端+文档同步,不再有并行声明漂移。
+- **flat 有序列表 = 会计序**:`statements.<income/balancesheet/cashflow>.fields` 的列表顺序即会计准则序=前端展示序。`category_order`(展示桶序,不含 subtotal)+ `category_labels`(全 category→中文,含 subtotal)分离声明。小计字段(category=subtotal)在列表中的位置即其展示位置,不再用 `subtotal_after` 单独挂载。
+- **label 直接带"减:/其中:"前缀**,`LABEL_OVERRIDE` 已溶解。三个 BS 总计(`total_assets`/`total_liab`/`total_liab_hldr_eqy`)标 `role: total`。
+- **改字段分类/排序**:直接编辑 `field_registry.yaml`。`tests/test_field_registry.py` 守内部一致性(字段数/标签覆盖/resolve 引用/combo 拆项同桶/total_fields)。
+- **改版修了 stale drift**:`credit_impa_loss`/`assets_impair_loss`/`oth_impair_loss_assets` 旧 `数据格式参考.md` 误标 `cost_item`,实际 clean.py 校验为 `operating_adjustment`;registry 统一为 `operating_adjustment`,文档同步修正。
+- `check_is/bs/cf` 的 subtotal 公式仍写在代码里(B1:元数据同源,公式不数据驱动);`known_tushare_defects.json` 独立保留,未并入。
 
 ### 单位转换（入库单位）
 | 类别 | 入库单位 | 转换 |
