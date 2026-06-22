@@ -333,73 +333,9 @@ clean("path/to/data.db", "300866.SZ") -> pd.DataFrame
 
 **CLI**：`python -m src.clean --ticker 300866.SZ [--db path] [--verbose]`
 
-#### 3.2.1 会计系统（field_registry）怎么用
+#### 3.2.1 会计系统（field_registry）—— 唯一真源
 
-`src/field_registry.yaml` 是三表 325 个 TuShare 官方字段的**会计元数据唯一真源**。`clean.py` 的校验分类、`workbench.py` 的前端排序与标签、`docs/数据格式参考.md` 全部从它派生。改一处,三处同步,不再有并行声明漂移。
-
-**YAML 结构**(每个 statement 一个块):
-
-```yaml
-statements:
-  income:                       # 顶层 key = income / balancesheet / cashflow
-    name: 利润表
-    unit: 百万元
-    category_order:             # 展示桶顺序(不含 subtotal——subtotal 是内联小计,非展示桶)
-      [revenue_item, cost_item, operating_adjustment, ...]
-    category_labels:            # 全 category → 中文标签(含 subtotal)
-      revenue_item: 收入项
-      subtotal: 小计/合计
-      ...
-    fields:                     # ← 有序列表,顺序 = 会计准则序 = 前端展示序
-      - {field: revenue, label: 营业收入, category: revenue_item}
-      - {field: oper_cost, label: 减:营业成本, category: cost_item}
-      - {field: total_cogs, label: 营业总成本, category: subtotal}      # 小计就插在它该出现的位置
-      - {field: invest_income, label: 投资收益, category: operating_adjustment,
-         resolve_children: [ass_invest_income, amodcost_fin_assets]}
-      - {field: ass_invest_income, label: '其中:对联营和合营企业的投资收益',
-         category: sub_item, resolve_parent: invest_income}
-      - {field: assets_impair_loss, label: '减:资产减值损失',
-         category: operating_adjustment, sign: questionable}
-      - {field: total_assets, label: 资产总计, category: subtotal, role: total}  # BS 总计粗体
-```
-
-**字段维度**(每条 field 最多七维):
-
-| 维度 | 必填 | 说明 |
-|------|------|------|
-| `field` | 是 | TuShare 官方字段名 |
-| `label` | 是 | 中文展示标签,直接带"减:/其中:"前缀 |
-| `category` | 是 | bucket 归类(revenue_item / cost_item / subtotal / current_asset / ...) |
-| `resolve_children` | 否 | 父项 → 子明细列表(IS/CF 合并科目拆分) |
-| `resolve_parent` | 否 | 子项 → 父项(反向索引,文档用) |
-| `sign` | 否 | `questionable` = 符号已带会计含义(三个减值科目) |
-| `role` | 否 | `total` = BS 三个总计粗体;缺省按 `category==subtotal` 判小计 |
-| `combo_of` | 否 | BS 合并科目 → 拆分项列表(combo category 专用) |
-
-**谁消费它:**
-
-| 消费方 | 从 registry 取 | 取代了改版前的 |
-|--------|---------------|---------------|
-| `clean.py` | `IS/BS/CF_FIELD_CATEGORIES`·`IS/BS_SUB_RESOLVE`·`COMBO_RESOLVE`·`SIGN_QUESTIONABLE_IS_FIELDS`(via `from .field_registry import`) | 手维护的分类字典 |
-| `workbench._statement_rows` | `stmt.field_order`(直接迭代,小计内联)+ `stmt.labels` + `stmt.field_categories` + `stmt.total_fields` | `FIELD_REFERENCE` 解析 + `field_order`/`category_order`/`subtotal_after` + `LABEL_OVERRIDE` 五源合流 |
-| `docs/数据格式参考.md` | `scripts/gen_field_reference.py` 从 registry 派生 | stale 的手生成文档 |
-
-**怎么改(常见操作):**
-
-1. **改某字段分类**(如把 X 从 cost_item 移到 operating_adjustment):编辑 `field_registry.yaml` 改该字段的 `category`,跑 `python -m scripts.gen_field_reference` 重生文档,跑 `python -m pytest tests/test_field_registry.py`。clean.py 的 bucket 求和自动跟进(它读 registry)。
-2. **改某字段展示顺序**:在 `fields` 列表里挪那一行。顺序就是会计序。
-3. **改中文标签**:改该字段 `label`(含"减:"前缀就写进 label)。
-4. **加新字段**(罕见,通常是 TuShare 新增官方字段):在对应 statement 的 `fields` 加一条,category 必须在 `category_labels` 里;若是新 category,同时在 `category_order`/`category_labels` 登记。
-
-**不要做的事:**
-
-- ❌ 不要在 `clean.py` 里改分类——`IS/BS/CF_FIELD_CATEGORIES` 等已是从 registry import 的别名,改不动(改了也会被下次 import 覆盖)。
-- ❌ 不要在 `workbench.py` 里加排序/标签——`STATEMENT_META` 已瘦身到只剩 key/name/title/unit,排序标签全在 registry。
-- ❌ 不要手改 `docs/数据格式参考.md`——它是生成物,跑 `gen_field_reference` 重生。
-
-**边界(B1):** `check_is/bs/cf` 里的 subtotal 公式(`total_cogs = sum(cost_item)` 等)仍写在代码里,不数据驱动。registry 只统元数据,不统校验公式——check 函数已稳定(美的/紫金/茅台/比亚迪/万科/三一全过),数据驱动重写是另一个独立重构,风险不值。`known_tushare_defects.json` 也独立保留,未并入 registry(它是 reconciler 的 LLM 检索提示,不是字段元数据)。
-
-**长期守卫:** `tests/test_field_registry.py` 锁 9 条不变量(字段数 86/150/89、每字段有标签且 category 在 category_labels、resolve/combo 引用真实存在、total_fields 是 subtotal、sign_questionable ⊆ IS、credit_impa_loss 漂移已修、field_order 覆盖全字段无重复、subtotal 不在 category_order)。
+三表 325 字段的会计元数据(分类/会计序/标签/resolve/sign/role)统一在 `src/field_registry.yaml`。clean.py 校验分类、workbench 渲染排序/标签、`docs/数据格式参考.md` 三处同源。**改字段分类/排序/标签只编辑该 YAML,详见 `docs/会计系统.md`(改会计科目必读)。** 边界:check_* subtotal 公式留代码(B1);known_tushare_defects 独立;6 个 qa_*_plug 不在 registry。
 
 ### 3.3 report_downloader.py（年报/季报 PDF + Markdown 下载）
 
