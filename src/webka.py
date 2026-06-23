@@ -24,6 +24,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from src.company_paths import active_vore_dir, annual_reports_dir, webclaude_dir as company_webclaude_dir
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 COMPANIES_DIR = BASE_DIR / "companies"
 SKILLS_DIR = BASE_DIR / "skills"
@@ -84,16 +86,27 @@ def _guess_ticker_from_dir(company_dir: Path) -> str:
     return name
 
 
+def _is_packable_file(path: Path) -> bool:
+    if path.name.startswith("~$"):
+        return False
+    return path.is_file()
+
+
 def newest_file(dir_path: Path, patterns: list[str]) -> Path | None:
     """取目录下匹配任一模式的最新修改文件。"""
     if not dir_path.exists():
         return None
-    files: list[Path] = []
+    files: list[tuple[float, Path]] = []
     for pat in patterns:
-        files.extend(dir_path.rglob(pat))
+        for candidate in dir_path.rglob(pat):
+            try:
+                if _is_packable_file(candidate):
+                    files.append((candidate.stat().st_mtime, candidate))
+            except OSError:
+                continue
     if not files:
         return None
-    return max(files, key=lambda p: p.stat().st_mtime)
+    return max(files, key=lambda item: item[0])[1]
 
 
 def newest_annual_report(annuals_dir: Path) -> Path | None:
@@ -129,7 +142,7 @@ def _has_annual_pdf(annuals_dir: Path) -> bool:
 
 def copy_to_webclaude(company_dir: Path) -> dict[str, str]:
     """清空并重新填充 WEBCLAUDE/核心假设部分/，返回打包报告字典。"""
-    webclaude_dir = company_dir / "WEBCLAUDE" / "核心假设部分"
+    webclaude_dir = company_webclaude_dir(company_dir) / "核心假设部分"
     if webclaude_dir.exists():
         shutil.rmtree(webclaude_dir)
     webclaude_dir.mkdir(parents=True)
@@ -153,8 +166,7 @@ def copy_to_webclaude(company_dir: Path) -> dict[str, str]:
         report["现有核心假设底稿"] = "⏭️ 无（init 模式）"
 
     # 3. 最新活跃素材（可选）
-    active_vore_dir = company_dir / "active_vore"
-    active_file = newest_file(active_vore_dir, ["*"])
+    active_file = newest_file(active_vore_dir(company_dir), ["*"])
     if active_file:
         dest = webclaude_dir / f"02_活跃素材_{active_file.name}"
         shutil.copy2(active_file, dest)
@@ -163,7 +175,7 @@ def copy_to_webclaude(company_dir: Path) -> dict[str, str]:
         report["活跃素材"] = "⏭️ 无"
 
     # 4. 最新年报 Markdown（可选，不读 PDF）
-    annuals_dir = company_dir / "annuals"
+    annuals_dir = annual_reports_dir(company_dir)
     annual_md = newest_annual_report(annuals_dir)
     if annual_md:
         dest = webclaude_dir / f"03_最新年报_{annual_md.name}"

@@ -1,4 +1,4 @@
-# YAML1 Formula/DAG 开发文档
+﻿# YAML1 Formula/DAG 开发文档
 
 状态：**实验性 · 受限可执行**。代码闭环已达成（`src/yaml1_formula.py` 求值器 + cleaner 接入 + 7 个 formula 单元测试绿），但**仅在合成 fixture 上验证过，尚无真实异构公司跑通**。在第二家异构公司（如茅台基酒链/产能滞后类）实跑通过前，不应视为"稳定/生产可用"。  
 日期：2026-06-16  
@@ -11,7 +11,7 @@
 
 Formula/DAG 不是新的财务引擎，也不是把 Excel 原样塞进 Python。
 
-它是 `yaml1_cleaner.py` 里的受限公式求值层：把复杂业务算法先求成逐年序列，再压平成 `calc.py` 已经认识的标准参数。`calc.py` 继续只吃 `.modelking/forecast_params.yaml`，永远不直接读取 yaml1、formula、DAG、业务 driver 或中间变量。
+它是 `yaml1_cleaner.py` 里的受限公式求值层：把复杂业务算法先求成逐年序列，再压平成 `calc.py` 已经认识的标准参数。`calc.py` 继续只吃 `Agent/.modelking/forecast_params.yaml`，永远不直接读取 yaml1、formula、DAG、业务 driver 或中间变量。
 
 ```text
 核心假设.md
@@ -23,7 +23,7 @@ Formula/DAG 不是新的财务引擎，也不是把 Excel 原样塞进 Python。
        4. collect knob/formula overlay
        5. expand terminal fade
        6. resolve onto defaults.yaml
-  -> .modelking/forecast_params.yaml
+  -> Agent/.modelking/forecast_params.yaml
   -> calc.py
 ```
 
@@ -285,7 +285,7 @@ src/yaml1_formula.py
 
 ## 回测和审计输出
 
-Formula report 必须写入 `.modelking/yaml1_clean_report.json`。
+Formula report 必须写入 `Agent/.modelking/yaml1_clean_report.json`。
 
 建议结构：
 
@@ -410,7 +410,7 @@ Warning：
 
 - `src/yaml1_formula.py`：安全表达式和 DAG 求值器。
 - `src/yaml1_cleaner.py`：接入 formula result、revenue leaf、path overlay、report、backtest。
-- `src/workbench.py`：当前保持 read-only YAML1 展示，formula report 已进入 `.modelking/yaml1_clean_report.json`。
+- `src/workbench.py`：当前保持 read-only YAML1 展示，formula report 已进入 `Agent/.modelking/yaml1_clean_report.json`。
 
 测试：
 

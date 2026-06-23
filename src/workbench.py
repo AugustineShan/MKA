@@ -2,12 +2,13 @@
 
 This is intentionally a thin UI shell. It reads company folders, serves the
 React app, and delegates DCF generation to the official forecast pipeline:
-defaults.yaml + yaml1*.yaml -> forecast/
+Agent/defaults.yaml + Agent/yaml1*.yaml -> Agent/forecast/
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import os
@@ -33,12 +34,42 @@ from pydantic import BaseModel
 import pandas as pd
 from src import field_registry as _registry
 from src.annual_report_utils import load_env, llm_api_key, llm_base_url, llm_model, llm_timeout_seconds
-from src.calc import ForecastBuildResult, value_from_statements
+from src.calc import (
+    CalcError,
+    ForecastBuildResult,
+    as_float,
+    build_forecast_statements,
+    value_from_statements,
+)
+from src.company_paths import (
+    COMPANIES_DIR as DEFAULT_COMPANIES_DIR,
+    active_vore_dir,
+    annual_reports_dir,
+    collection_dir,
+    db_path as company_db_path,
+    defaults_path as company_defaults_path,
+    forecast_dir as company_forecast_dir,
+    important_files_dir,
+    latest_yaml1_path,
+    meeting_notes_dir,
+    modelking_dir,
+    official_breakdowns_dir,
+    quarterly_reports_dir,
+    research_reports_dir,
+)
 from src.forecast import run_company_forecast
+from src.quarterly_tracker import (
+    clear_override,
+    compute_quarterly_view,
+    load_overrides,
+    set_override,
+)
+from src.yaml1_cleaner import Yaml1CleanError, clean_yaml1_data
+from src.yaml2_schema import DEFAULT_TERMINAL_CAPEX_DA_RATIO, get_path
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-COMPANIES_DIR = BASE_DIR / "companies"
+COMPANIES_DIR = DEFAULT_COMPANIES_DIR
 APP_DIST = BASE_DIR / "app" / "dist"
 CORE_ASSUMPTION_NAMES = ("核心假设.md", "核心假设 (1).md")
 FORECAST_TABLES = (
@@ -48,6 +79,7 @@ FORECAST_TABLES = (
 )
 FIELD_REFERENCE_NAME = "\u6570\u636e\u683c\u5f0f\u53c2\u8003.md"
 PRESENTATION_SCHEMA_VERSION = 1
+COMPANY_DIR_RE = re.compile(r"^.+_\d{6}$")
 
 STATEMENT_META = {
     "forecast_is.csv": {"key": "is", "name": "IS", "title": "\u5229\u6da6\u8868",
@@ -91,7 +123,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _read_meta(company_dir: Path) -> dict[str, str]:
-    db_path = company_dir / "data.db"
+    db_path = company_db_path(company_dir)
     if not db_path.exists():
         return {}
     try:
@@ -111,20 +143,25 @@ def _plain(value: Any) -> Any:
 def _company_dirs() -> list[Path]:
     if not COMPANIES_DIR.exists():
         return []
-    return sorted([path for path in COMPANIES_DIR.iterdir() if path.is_dir()], key=lambda item: item.name)
+    return sorted(
+        [path for path in COMPANIES_DIR.iterdir() if path.is_dir() and COMPANY_DIR_RE.match(path.name)],
+        key=lambda item: item.name,
+    )
 
 
 def _company_dir(company_id: str) -> Path:
     target = (COMPANIES_DIR / company_id).resolve()
     companies_root = COMPANIES_DIR.resolve()
-    if not target.is_dir() or companies_root not in target.parents:
+    if not target.is_dir() or companies_root not in target.parents or not COMPANY_DIR_RE.match(target.name):
         raise HTTPException(status_code=404, detail=f"Company not found: {company_id}")
     return target
 
 
 def _latest_yaml1(company_dir: Path) -> Path | None:
-    candidates = sorted(company_dir.glob("yaml1*.yaml"), key=lambda item: item.stat().st_mtime, reverse=True)
-    return candidates[0] if candidates else None
+    try:
+        return latest_yaml1_path(company_dir)
+    except FileNotFoundError:
+        return None
 
 
 def _core_assumption(company_dir: Path) -> Path | None:
@@ -137,11 +174,11 @@ def _core_assumption(company_dir: Path) -> Path | None:
 
 
 def _forecast_summary(company_dir: Path) -> dict[str, Any]:
-    return _read_json(company_dir / "forecast" / "dcf_summary.json")
+    return _read_json(company_forecast_dir(company_dir) / "dcf_summary.json")
 
 
 def _manifest(company_dir: Path) -> dict[str, Any]:
-    return _read_json(company_dir / "forecast" / "run_manifest.json")
+    return _read_json(company_forecast_dir(company_dir) / "run_manifest.json")
 
 
 def _relative(path: Path) -> str:
@@ -221,7 +258,7 @@ def _humanize_path(path: Any) -> str:
     return _humanize_label(leaf)
 
 
-def _number_or_none(value: str | None) -> float | None:
+def _number_or_none(value: Any) -> float | None:
     if value is None or value == "":
         return None
     try:
@@ -234,8 +271,30 @@ def _nonzero(values: dict[str, float | None], epsilon: float = 1e-9) -> bool:
     return any(value is not None and abs(value) > epsilon for value in values.values())
 
 
-def _statement_rows(table_name: str, csv_path: Path) -> dict[str, Any] | None:
-    rows = _read_csv_rows(csv_path)
+def _statement_display_label(field: str, label: str, category: str) -> str:
+    """Investor-facing label for statement presentation rows.
+
+    Registry labels stay faithful to TuShare/raw accounting fields; the workbench
+    presentation view can remove source-system suffixes when a combo row is used
+    as a fallback display row.
+    """
+    if category != "combo":
+        return label
+    cleaned = label
+    for suffix in ("(合计)(元)", "（合计）（元）", "(合计)（元）", "（合计）(元)", "（元）", "(元)"):
+        cleaned = cleaned.replace(suffix, "")
+    return cleaned
+
+
+def _statement_display_role(field: str, category: str, role: str) -> str:
+    if field.startswith("qa_") or category in {"combo", "derived", "sub_item"}:
+        return "technical"
+    if role in {"subtotal", "total"}:
+        return "primary"
+    return "primary"
+
+
+def _statement_rows_from_records(table_name: str, rows: list[dict[str, Any]], path_label: str) -> dict[str, Any] | None:
     meta = STATEMENT_META.get(table_name)
     if not rows or not meta:
         return None
@@ -263,13 +322,20 @@ def _statement_rows(table_name: str, csv_path: Path) -> dict[str, Any] | None:
         else:
             role = "normal"
         values = values_by_field[field]
+        display_role = _statement_display_role(field, category, role)
+        combo_of = list(stmt.combo_resolve[field][0]) if field in stmt.combo_resolve else []
         output_rows.append(
             {
                 "field": field,
                 "label": stmt.labels[field],
+                "display_label": _statement_display_label(field, stmt.labels[field], category),
                 "category": category,
                 "category_label": stmt.category_labels.get(category, category),
                 "role": role,
+                "display_role": display_role,
+                "is_technical": display_role == "technical",
+                "technical_reason": "combo_or_derived_accounting_field" if display_role == "technical" else None,
+                "combo_of": combo_of,
                 "level": 0 if role in {"subtotal", "total"} else 1,
                 "is_zero": not _nonzero(values),
                 "values": values,
@@ -289,14 +355,26 @@ def _statement_rows(table_name: str, csv_path: Path) -> dict[str, Any] | None:
         "name": meta["name"],
         "title": meta["title"],
         "unit": meta["unit"],
-        "path": _relative(csv_path),
+        "path": path_label,
         "years": years,
         "rows": output_rows,
     }
 
 
+def _statement_rows(table_name: str, csv_path: Path) -> dict[str, Any] | None:
+    rows = _read_csv_rows(csv_path)
+    return _statement_rows_from_records(table_name, rows, _relative(csv_path))
+
+
+def _statement_rows_from_dataframe(table_name: str, df: pd.DataFrame, path_label: str) -> dict[str, Any] | None:
+    if df.empty:
+        return None
+    rows = df.to_dict(orient="records")
+    return _statement_rows_from_records(table_name, rows, path_label)
+
+
 def _statement_sheets(company_dir: Path) -> list[dict[str, Any]]:
-    forecast_dir = company_dir / "forecast"
+    forecast_dir = company_forecast_dir(company_dir)
     sheets = []
     for table_name in FORECAST_TABLES:
         sheet = _statement_rows(table_name, forecast_dir / table_name)
@@ -307,7 +385,7 @@ def _statement_sheets(company_dir: Path) -> list[dict[str, Any]]:
 
 def _full_statement_sheets(company_dir: Path) -> list[dict[str, Any]]:
     """History+forecast concatenated statements (full_*.csv). Same shaping as forecast."""
-    forecast_dir = company_dir / "forecast"
+    forecast_dir = company_forecast_dir(company_dir)
     sheets = []
     for table_name in FULL_STATEMENT_TABLES:
         sheet = _statement_rows(table_name, forecast_dir / table_name)
@@ -318,7 +396,7 @@ def _full_statement_sheets(company_dir: Path) -> list[dict[str, Any]]:
 
 def _dcf_detail(company_dir: Path) -> list[dict[str, Any]]:
     """Per-year FCFF build: fcff, discount_factor, pv_fcff, nopat, da, capex, delta_nwc."""
-    rows = _read_csv_rows(company_dir / "forecast" / "dcf_detail.csv")
+    rows = _read_csv_rows(company_forecast_dir(company_dir) / "dcf_detail.csv")
     out: list[dict[str, Any]] = []
     for row in rows:
         period = row.get("period")
@@ -994,8 +1072,498 @@ def _yaml1_assumptions_view(data: dict[str, Any], years: list[str]) -> dict:
     }
 
 
+def _pointer_escape(value: Any) -> str:
+    return str(value).replace("~", "~0").replace("/", "~1")
+
+
+def _json_pointer(*segments: Any) -> str:
+    return "/" + "/".join(_pointer_escape(segment) for segment in segments)
+
+
+def _decode_pointer_segment(segment: str) -> str:
+    return segment.replace("~1", "/").replace("~0", "~")
+
+
+def _is_numeric(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _assumption_unit(path: str, payload: dict[str, Any] | None = None) -> str:
+    unit = str((payload or {}).get("unit", "")).lower()
+    if unit in {"pct", "ratio", "yoy", "percent"}:
+        return "pct"
+    lowered = path.lower()
+    if any(token in lowered for token in ("yoy", "rate", "ratio", "gpm", "margin", "growth")):
+        return "pct"
+    if any(token in lowered for token in ("_abs", "abs_", "below_line_abs", "cost_abs", "million")):
+        return "abs_mn"
+    return "number"
+
+
+def _assumption_format(unit: str) -> str:
+    if unit == "pct":
+        return "percent"
+    if unit == "abs_mn":
+        return "integer"
+    return "number"
+
+
+def _assumption_group(path: str) -> str:
+    if path.startswith("income.revenue."):
+        return "revenue_driver"
+    if path.startswith("terminal."):
+        return "terminal"
+    if path.startswith("income."):
+        return "standard_knob"
+    return "other"
+
+
+def _values_cells(values: list[Any], years: list[str], pointer_segments: list[Any]) -> list[dict[str, Any]]:
+    cells: list[dict[str, Any]] = []
+    for index, value in enumerate(values):
+        year = years[index] if index < len(years) else f"Y{index + 1}"
+        cells.append(
+            {
+                "year": str(year),
+                "pointer": _json_pointer(*pointer_segments, index),
+                "value": float(value) if _is_numeric(value) else None,
+            }
+        )
+    return cells
+
+
+def _editable_top_level_value_knobs(data: dict[str, Any], years: list[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    skip = {"meta", "terminal", "stash", "income.revenue"}
+    for path, payload in data.items():
+        if path in skip or not isinstance(payload, dict):
+            continue
+        values = payload.get("values")
+        if not isinstance(values, list):
+            continue
+        unit = _assumption_unit(path, payload)
+        rows.append(
+            {
+                "id": f"top:{path}",
+                "label": _humanize_path(path),
+                "group": _assumption_group(path),
+                "path": path,
+                "family": _cell(payload.get("kind")) or None,
+                "unit": unit,
+                "format": _assumption_format(unit),
+                "source": "yaml1_top_level_values",
+                "cells": _values_cells(values, years, [path, "values"]),
+                "note": _cell(payload.get("note")) or None,
+                "src": _cell(payload.get("src")) or None,
+            }
+        )
+    return rows
+
+
+def _revenue_node_label(node_key: str, node: dict[str, Any]) -> str:
+    label = node.get("label")
+    if isinstance(label, str) and label:
+        return label
+    src = node.get("src")
+    if isinstance(src, str) and src.startswith("#") and len(src) > 1:
+        return src[1:]
+    return str(node_key)
+
+
+def _editable_revenue_driver_knobs(data: dict[str, Any], years: list[str]) -> list[dict[str, Any]]:
+    revenue = data.get("income.revenue")
+    if not isinstance(revenue, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+
+    def add_values(
+        *,
+        label: str,
+        path: str,
+        pointer_segments: list[Any],
+        values: Any,
+        family: str | None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        if not isinstance(values, list):
+            return
+        unit = _assumption_unit(path, payload)
+        rows.append(
+            {
+                "id": f"revenue:{path}",
+                "label": label,
+                "group": "revenue_driver",
+                "path": path,
+                "family": family,
+                "unit": unit,
+                "format": _assumption_format(unit),
+                "source": "yaml1_revenue_driver",
+                "cells": _values_cells(values, years, pointer_segments),
+                "note": _cell((payload or {}).get("note")) or None,
+                "src": _cell((payload or {}).get("src")) or None,
+            }
+        )
+
+    def walk(node: Any, pointer_segments: list[Any], label_parts: list[str], path_parts: list[str]) -> None:
+        if not isinstance(node, dict):
+            return
+        segments = node.get("segments")
+        if isinstance(segments, dict):
+            for key, child in segments.items():
+                child_label = _revenue_node_label(str(key), child) if isinstance(child, dict) else str(key)
+                walk(
+                    child,
+                    [*pointer_segments, "segments", key],
+                    [*label_parts, child_label],
+                    [*path_parts, str(key)],
+                )
+
+        factors = node.get("factors")
+        if isinstance(factors, list):
+            for index, factor in enumerate(factors):
+                if not isinstance(factor, dict):
+                    continue
+                key = str(factor.get("key") or f"factor_{index + 1}")
+                label = str(factor.get("label") or _humanize_label(key))
+                projection = factor.get("projection")
+                if isinstance(projection, dict):
+                    values = projection.get("values")
+                    add_values(
+                        label=" · ".join([*label_parts, label]),
+                        path=".".join(["income", "revenue", *path_parts, key]),
+                        pointer_segments=[*pointer_segments, "factors", index, "projection", "values"],
+                        values=values,
+                        family=_cell(projection.get("kind")) or None,
+                        payload=projection,
+                    )
+
+        projection = node.get("projection")
+        if isinstance(projection, dict):
+            add_values(
+                label=" · ".join([*label_parts, _cell(projection.get("kind")) or "projection"]),
+                path=".".join(["income", "revenue", *path_parts, "projection"]),
+                pointer_segments=[*pointer_segments, "projection", "values"],
+                values=projection.get("values"),
+                family=_cell(projection.get("kind")) or None,
+                payload=projection,
+            )
+
+        knobs = node.get("knobs")
+        if isinstance(knobs, dict):
+            for key, values in knobs.items():
+                add_values(
+                    label=" · ".join([*label_parts, _humanize_label(key)]),
+                    path=".".join(["income", "revenue", *path_parts, str(key)]),
+                    pointer_segments=[*pointer_segments, "knobs", key],
+                    values=values,
+                    family=str(key),
+                    payload={"unit": "pct" if "yoy" in str(key).lower() or "margin" in str(key).lower() else None},
+                )
+
+    walk(revenue, ["income.revenue"], [], [])
+    return rows
+
+
+def _editable_terminal_knobs(data: dict[str, Any]) -> list[dict[str, Any]]:
+    terminal = data.get("terminal")
+    if not isinstance(terminal, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    scalar_defs = [
+        ("perpetual_growth", "永续增速", ["terminal", "perpetual_growth"], "pct"),
+        ("explicit_end", "显式期末", ["terminal", "explicit_end"], "number"),
+    ]
+    fade = terminal.get("fade") if isinstance(terminal.get("fade"), dict) else {}
+    if isinstance(fade, dict) and "to_year" in fade:
+        scalar_defs.append(("fade.to_year", "衰减至", ["terminal", "fade", "to_year"], "number"))
+    for path, label, pointer_segments, unit in scalar_defs:
+        target: Any = data
+        for segment in pointer_segments:
+            if not isinstance(target, dict) or segment not in target:
+                target = None
+                break
+            target = target[segment]
+        if not _is_numeric(target):
+            continue
+        rows.append(
+            {
+                "id": f"terminal:{path}",
+                "label": label,
+                "group": "terminal",
+                "path": f"terminal.{path}",
+                "family": "terminal",
+                "unit": unit,
+                "format": _assumption_format(unit),
+                "source": "yaml1_terminal",
+                "cells": [{"year": "terminal", "pointer": _json_pointer(*pointer_segments), "value": float(target)}],
+                "note": None,
+                "src": _cell(terminal.get("src")) or None,
+            }
+        )
+    return rows
+
+
+def _editable_assumptions(data: dict[str, Any]) -> list[dict[str, Any]]:
+    years = _years_from_yaml1(data)
+    rows: list[dict[str, Any]] = []
+    rows.extend(_editable_top_level_value_knobs(data, years))
+    rows.extend(_editable_revenue_driver_knobs(data, years))
+    rows.extend(_editable_terminal_knobs(data))
+    return rows
+
+
+def _editable_cells_by_pointer(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        cell["pointer"]: {**cell, "assumption": row}
+        for row in _editable_assumptions(data)
+        for cell in row.get("cells", [])
+    }
+
+
+def _pointer_target(root: Any, pointer: str) -> tuple[Any, str | int]:
+    if not pointer.startswith("/"):
+        raise HTTPException(status_code=400, detail=f"Invalid pointer: {pointer}")
+    parts = [_decode_pointer_segment(part) for part in pointer.strip("/").split("/") if part != ""]
+    if not parts:
+        raise HTTPException(status_code=400, detail="Pointer cannot target document root")
+    target = root
+    for part in parts[:-1]:
+        if isinstance(target, list):
+            try:
+                target = target[int(part)]
+            except (ValueError, IndexError) as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid list pointer segment: {part}") from exc
+        elif isinstance(target, dict):
+            if part not in target:
+                raise HTTPException(status_code=400, detail=f"Pointer segment not found: {part}")
+            target = target[part]
+        else:
+            raise HTTPException(status_code=400, detail=f"Pointer walks through scalar at: {part}")
+    last = parts[-1]
+    if isinstance(target, list):
+        try:
+            return target, int(last)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid list pointer segment: {last}") from exc
+    if isinstance(target, dict):
+        return target, last
+    raise HTTPException(status_code=400, detail=f"Pointer targets scalar parent: {pointer}")
+
+
+def _values_match(left: Any, right: Any, tolerance: float = 1e-9) -> bool:
+    if left is None and right is None:
+        return True
+    if left is None or right is None:
+        return False
+    try:
+        return abs(float(left) - float(right)) <= tolerance
+    except (TypeError, ValueError):
+        return False
+
+
+def _apply_assumption_patches(data: dict[str, Any], patches: list[dict[str, Any]]) -> dict[str, Any]:
+    patched = copy.deepcopy(data)
+    editable = _editable_cells_by_pointer(data)
+    for patch in patches:
+        pointer = str(patch.get("pointer") or "")
+        if pointer not in editable:
+            raise HTTPException(status_code=400, detail=f"Unsupported editable pointer: {pointer}")
+        old_value = patch.get("old_value")
+        new_value = patch.get("new_value")
+        expected_old = editable[pointer].get("value")
+        if not _values_match(old_value, expected_old):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Assumption value changed since preview: {pointer}",
+            )
+        if not _is_numeric(new_value):
+            raise HTTPException(status_code=400, detail=f"Assumption value must be numeric: {pointer}")
+        parent, key = _pointer_target(patched, pointer)
+        current = parent[key]
+        if not _values_match(current, expected_old):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Assumption value changed since preview: {pointer}",
+            )
+        parent[key] = float(new_value)
+    return patched
+
+
+def _format_patch_value(value: Any) -> str:
+    if value is None:
+        return "null"
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_ka_change_prompt(
+    *,
+    company_name: str,
+    core_path: str | None,
+    yaml1_path: str | None,
+    yaml1_data: dict[str, Any],
+    patches: list[dict[str, Any]],
+    preview_summary: dict[str, Any] | None = None,
+) -> str:
+    editable = _editable_cells_by_pointer(yaml1_data)
+    lines = [
+        f"请执行 `/ka`，基于当前核心假设.md 更新 {company_name} 的假设。",
+        "",
+        "关键纪律：",
+        "- 修改人话权威层 `核心假设.md`，不要直接修改 yaml1。",
+        "- 保持原有结构、历史事实、来源说明、业务线命名和口径说明。",
+        "- 同步更新正文里的预测描述，以及末尾机器自报 `knobs` 块。",
+        "- 修改完成后运行 `/comp` 重新编译 yaml1，并用正式 forecast 覆盖 Agent/forecast/。",
+        "",
+        f"核心假设路径：{core_path or '未找到'}",
+        f"当前 yaml1 路径：{yaml1_path or '未找到'}",
+        "",
+        "前端试算变更：",
+    ]
+    for patch in patches:
+        pointer = str(patch.get("pointer") or "")
+        cell = editable.get(pointer, {})
+        assumption = cell.get("assumption", {})
+        label = assumption.get("label") or pointer
+        path = assumption.get("path") or pointer
+        year = cell.get("year") or ""
+        old_value = _format_patch_value(patch.get("old_value"))
+        new_value = _format_patch_value(patch.get("new_value"))
+        lines.append(f"- {label} ({path}) {year}: {old_value} -> {new_value}")
+    if preview_summary:
+        lines.extend(
+            [
+                "",
+                "试算结果摘要：",
+            ]
+        )
+        for key in ("per_share_value", "enterprise_value", "equity_value", "terminal_pv"):
+            if key in preview_summary:
+                lines.append(f"- {key}: {_format_patch_value(preview_summary.get(key))}")
+    lines.extend(
+        [
+            "",
+            "请把以上试算变化翻译成分析师语言，必要时补一句为什么这样调；不要把它写成机械 diff。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _dcf_detail_from_dataframe(df: pd.DataFrame) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        period = row.get("period")
+        try:
+            period_int = int(float(period))
+        except (TypeError, ValueError):
+            continue
+        rows.append(
+            {
+                "period": period_int,
+                "fcff": _number_or_none(row.get("fcff")),
+                "discount_factor": _number_or_none(row.get("discount_factor")),
+                "pv_fcff": _number_or_none(row.get("pv_fcff")),
+                "nopat": _number_or_none(row.get("nopat")),
+                "da": _number_or_none(row.get("da")),
+                "capex": _number_or_none(row.get("capex")),
+                "delta_nwc": _number_or_none(row.get("delta_nwc")),
+            }
+        )
+    return rows
+
+
+def _ratio_or_none(num: float | None, den: float | None) -> float | None:
+    if num is None or den is None or abs(den) < 1e-9:
+        return None
+    return num / den
+
+
+def _yoy_values(values: dict[str, float | None], years: list[str]) -> dict[str, float | None]:
+    out: dict[str, float | None] = {}
+    for index, year in enumerate(years):
+        current = values.get(year)
+        previous = values.get(years[index - 1]) if index > 0 else None
+        out[year] = _ratio_or_none(current - previous, previous) if current is not None and previous is not None else None
+    return out
+
+
+def _make_result_row(field: str, label: str, values: dict[str, float | None]) -> dict[str, Any]:
+    return {
+        "field": field,
+        "label": label,
+        "display_label": label,
+        "category": "preview_result",
+        "category_label": "试算结果",
+        "role": "normal",
+        "display_role": "primary",
+        "is_technical": False,
+        "technical_reason": None,
+        "combo_of": [],
+        "level": 1,
+        "is_zero": not _nonzero(values),
+        "values": values,
+    }
+
+
+def _result_rows_from_statement_sheet(sheet: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not sheet:
+        return []
+    rows_by_field = {row.get("field"): row for row in sheet.get("rows", [])}
+    years = [str(year) for year in sheet.get("years", [])]
+
+    def values(field: str) -> dict[str, float | None]:
+        row = rows_by_field.get(field)
+        raw = row.get("values", {}) if isinstance(row, dict) else {}
+        return {year: _number_or_none(raw.get(year)) for year in years}
+
+    revenue = values("revenue")
+    net_income = values("n_income")
+    attr_net_income = values("n_income_attr_p")
+    net_margin = {year: _ratio_or_none(net_income.get(year), revenue.get(year)) for year in years}
+    return [
+        _make_result_row("revenue", "营业收入", revenue),
+        _make_result_row("revenue_yoy", "同比增长", _yoy_values(revenue, years)),
+        _make_result_row("n_income_attr_p", "归母净利润", attr_net_income),
+        _make_result_row("n_income", "净利润", net_income),
+        _make_result_row("net_margin", "净利率", net_margin),
+        _make_result_row("n_income_yoy", "净利润同比", _yoy_values(net_income, years)),
+    ]
+
+
+def _preview_response(
+    cleaned_report: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    statement_sheets = [
+        sheet
+        for sheet in (
+            _statement_rows_from_dataframe("forecast_is.csv", result["income_statement"], "preview:forecast_is.csv"),
+            _statement_rows_from_dataframe("forecast_bs.csv", result["balance_sheet"], "preview:forecast_bs.csv"),
+            _statement_rows_from_dataframe("forecast_cf.csv", result["cash_flow"], "preview:forecast_cf.csv"),
+        )
+        if sheet
+    ]
+    is_sheet = next((sheet for sheet in statement_sheets if sheet.get("key") == "is"), None)
+    return {
+        "dcf_summary": result["summary"],
+        "dcf_detail": _dcf_detail_from_dataframe(result["dcf"]),
+        "statement_sheets": statement_sheets,
+        "result_rows": _result_rows_from_statement_sheet(is_sheet),
+        "warnings": cleaned_report.get("warnings", []),
+        "errors": cleaned_report.get("errors", []),
+    }
+
+
+def _model_dump(model: BaseModel) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
+
 def _presentation_cache_path(company_dir: Path) -> Path:
-    return company_dir / ".modelking" / "yaml1_presentation.json"
+    return modelking_dir(company_dir) / "yaml1_presentation.json"
 
 
 def _yaml1_presentation_cache(company_dir: Path) -> dict[str, Any] | None:
@@ -1216,7 +1784,15 @@ def _sse(event: str, payload: dict[str, Any]) -> str:
 
 
 def _material_files(company_dir: Path) -> list[dict[str, Any]]:
-    roots = [company_dir / "active_vore", company_dir / "extractions", company_dir / "annuals"]
+    roots = [
+        active_vore_dir(company_dir),
+        collection_dir(company_dir),
+        important_files_dir(company_dir),
+        research_reports_dir(company_dir),
+        meeting_notes_dir(company_dir),
+        annual_reports_dir(company_dir),
+        quarterly_reports_dir(company_dir),
+    ]
     files: list[dict[str, Any]] = []
     for root in roots:
         if not root.exists():
@@ -1237,8 +1813,47 @@ def _material_files(company_dir: Path) -> list[dict[str, Any]]:
     return files[:300]
 
 
+def _annual_revenue_breakdown(company_dir: Path) -> list[dict[str, Any]]:
+    path = official_breakdowns_dir(company_dir) / "business_revenue_breakdown.csv"
+    if not path.exists():
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for row in _read_csv_rows(path):
+        rows.append(
+            {
+                "year": int(_as_float(row.get("year"))),
+                "dimension": row.get("dimension") or "",
+                "dimension_label": row.get("dimension_label") or "",
+                "item_name": row.get("item_name") or "",
+                "revenue_yuan": _number_or_none(row.get("revenue_yuan")),
+                "revenue_pct": _number_or_none(row.get("revenue_pct")),
+                "revenue_yoy_pct": _number_or_none(row.get("revenue_yoy_pct")),
+                "cost_yuan": _number_or_none(row.get("cost_yuan")),
+                "cost_yoy_pct": _number_or_none(row.get("cost_yoy_pct")),
+                "gross_margin_pct": _number_or_none(row.get("gross_margin_pct")),
+                "gross_margin_change": row.get("gross_margin_change") or "",
+                "source_table": row.get("source_table") or "",
+                "source_line": int(_as_float(row.get("source_line"))),
+                "confidence": row.get("confidence") or "",
+                "source_file": row.get("source_file") or "",
+            }
+        )
+
+    dimension_rank = {"product": 0, "industry": 1, "region": 2, "sales_model": 3}
+    rows.sort(
+        key=lambda item: (
+            -int(item["year"]),
+            dimension_rank.get(str(item["dimension"]), 99),
+            str(item["source_table"]),
+            -(float(item["revenue_yuan"]) if item.get("revenue_yuan") is not None else 0.0),
+        )
+    )
+    return rows
+
+
 def _company_summary(company_dir: Path) -> dict[str, Any]:
-    defaults_path = company_dir / "defaults.yaml"
+    defaults_path = company_defaults_path(company_dir)
     defaults = _read_yaml(defaults_path)
     meta = _read_meta(company_dir)
     forecast = _forecast_summary(company_dir)
@@ -1250,7 +1865,7 @@ def _company_summary(company_dir: Path) -> dict[str, Any]:
     ticker = meta.get("ticker") or _plain(defaults.get("ticker")) or _plain(market.get("ticker"))
     name = meta.get("name") or _plain(defaults.get("name")) or _plain(market.get("name")) or company_dir.name.rsplit("_", 1)[0]
     code = str(ticker).split(".")[0] if ticker else company_dir.name.rsplit("_", 1)[-1]
-    forecast_dir = company_dir / "forecast"
+    forecast_dir = company_forecast_dir(company_dir)
     updated_at = None
     if (forecast_dir / "run_manifest.json").exists():
         updated_at = (forecast_dir / "run_manifest.json").stat().st_mtime
@@ -1266,7 +1881,15 @@ def _company_summary(company_dir: Path) -> dict[str, Any]:
         "has_defaults": defaults_path.exists(),
         "has_forecast": forecast_dir.exists(),
         "has_core_assumption": core_path is not None,
-        "has_materials": any((company_dir / name).exists() for name in ("active_vore", "extractions", "annuals")),
+        "has_materials": any(root.exists() for root in (
+            active_vore_dir(company_dir),
+            collection_dir(company_dir),
+            important_files_dir(company_dir),
+            research_reports_dir(company_dir),
+            meeting_notes_dir(company_dir),
+            annual_reports_dir(company_dir),
+            quarterly_reports_dir(company_dir),
+        )),
         "per_share_value": forecast.get("per_share_value"),
         "base_period": forecast.get("base_period") or _plain(model.get("base_year")),
         "forecast_years": forecast.get("forecast_years") or _plain(model.get("forecast_years")),
@@ -1284,9 +1907,10 @@ def list_companies() -> list[dict[str, Any]]:
 @app.get("/api/companies/{company_id}")
 def read_company(company_id: str) -> dict[str, Any]:
     company_dir = _company_dir(company_id)
+    summary = _company_summary(company_dir)
     yaml1_path = _latest_yaml1(company_dir)
     core_path = _core_assumption(company_dir)
-    forecast_dir = company_dir / "forecast"
+    forecast_dir = company_forecast_dir(company_dir)
     yaml1_data = _read_yaml(yaml1_path) if yaml1_path else {}
     yaml1_years = _years_from_yaml1(yaml1_data) if yaml1_data else []
     tables = []
@@ -1295,7 +1919,7 @@ def read_company(company_id: str) -> dict[str, Any]:
         if path.exists():
             tables.append({"name": name, "path": _relative(path), "csv": _csv_preview(path)})
     return {
-        "summary": _company_summary(company_dir),
+        "summary": summary,
         "core_assumption_md": _read_text(core_path) if core_path else None,
         "yaml1_path": _relative(yaml1_path) if yaml1_path else None,
         "yaml1_text": _read_text(yaml1_path) if yaml1_path else None,
@@ -1303,6 +1927,7 @@ def read_company(company_id: str) -> dict[str, Any]:
         "yaml1_sheets": _yaml1_sheets(yaml1_path),
         "yaml1_stash_view": _yaml1_stash_view(yaml1_data) if yaml1_data else [],
         "yaml1_assumptions_view": _yaml1_assumptions_view(yaml1_data, yaml1_years) if yaml1_data else None,
+        "editable_assumptions": _editable_assumptions(yaml1_data) if yaml1_data else [],
         "yaml1_presentation": _yaml1_presentation_cache(company_dir),
         "dcf_summary": _forecast_summary(company_dir) or None,
         "manifest": _manifest(company_dir) or None,
@@ -1310,6 +1935,8 @@ def read_company(company_id: str) -> dict[str, Any]:
         "statement_sheets": _statement_sheets(company_dir),
         "full_statement_sheets": _full_statement_sheets(company_dir),
         "dcf_detail": _dcf_detail(company_dir),
+        "quarterly_view": _optional_quarterly_for_company(company_dir, summary=summary),
+        "annual_revenue_breakdown": _annual_revenue_breakdown(company_dir),
         "materials": _material_files(company_dir),
     }
 
@@ -1335,6 +1962,263 @@ class SensitivityPayload(BaseModel):
     terminal_capex_da_ratio: float
 
 
+class AssumptionPatchPayload(BaseModel):
+    pointer: str
+    old_value: float | None = None
+    new_value: float | None = None
+
+
+class AssumptionPreviewPayload(BaseModel):
+    patches: list[AssumptionPatchPayload]
+
+
+class AssumptionBriefPayload(BaseModel):
+    patches: list[AssumptionPatchPayload]
+    preview_summary: dict[str, Any] | None = None
+
+
+@app.post("/api/companies/{company_id}/assumption-preview")
+def assumption_preview(company_id: str, payload: AssumptionPreviewPayload) -> dict[str, Any]:
+    company_dir = _company_dir(company_id)
+    yaml1_path = _latest_yaml1(company_dir)
+    if not yaml1_path:
+        raise HTTPException(status_code=404, detail="yaml1_*.yaml was not found")
+    yaml1_data = _read_yaml(yaml1_path)
+    patches = [_model_dump(item) for item in payload.patches]
+    try:
+        patched_yaml1 = _apply_assumption_patches(yaml1_data, patches)
+        cleaned = clean_yaml1_data(
+            patched_yaml1,
+            company_defaults_path(company_dir),
+            company_db_path(company_dir),
+            yaml1_label=f"{yaml1_path}#preview",
+        )
+        build = build_forecast_statements(cleaned.forecast_params)
+        result = value_from_statements(
+            build,
+            wacc=as_float(get_path(cleaned.forecast_params, "model.wacc")),
+            terminal_growth=as_float(get_path(cleaned.forecast_params, "model.terminal_growth")),
+            terminal_capex_da_ratio=as_float(
+                get_path(cleaned.forecast_params, "model.terminal_capex_da_ratio"),
+                DEFAULT_TERMINAL_CAPEX_DA_RATIO,
+            ),
+        )
+    except (Yaml1CleanError, CalcError, ValueError) as exc:
+        return {
+            "dcf_summary": None,
+            "dcf_detail": [],
+            "statement_sheets": [],
+            "result_rows": [],
+            "warnings": [],
+            "errors": [{"message": str(exc)}],
+        }
+    return _preview_response(cleaned.report, result)
+
+
+@app.post("/api/companies/{company_id}/assumption-brief")
+def assumption_brief(company_id: str, payload: AssumptionBriefPayload) -> dict[str, Any]:
+    company_dir = _company_dir(company_id)
+    yaml1_path = _latest_yaml1(company_dir)
+    core_path = _core_assumption(company_dir)
+    yaml1_data = _read_yaml(yaml1_path) if yaml1_path else {}
+    prompt = _format_ka_change_prompt(
+        company_name=company_dir.name,
+        core_path=str(core_path) if core_path else None,
+        yaml1_path=str(yaml1_path) if yaml1_path else None,
+        yaml1_data=yaml1_data,
+        patches=[_model_dump(item) for item in payload.patches],
+        preview_summary=payload.preview_summary,
+    )
+    return {"prompt": prompt}
+
+
+class QuarterlyOverridePayload(BaseModel):
+    period: str
+    param: str
+    value: float
+    note: str | None = None
+
+
+QUARTERLY_PERIOD_RE = re.compile(r"^(\d{4})Q([1-4])$")
+
+
+def _quarterly_ticker(company_dir: Path, summary: dict[str, Any] | None = None) -> str:
+    data = summary or _company_summary(company_dir)
+    ticker = data.get("ticker")
+    if not ticker:
+        raise HTTPException(status_code=400, detail="Company ticker is missing")
+    return str(ticker)
+
+
+def _compute_quarterly_for_company(
+    company_dir: Path,
+    *,
+    year: int | None = None,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    ticker = _quarterly_ticker(company_dir, summary)
+    db = company_db_path(company_dir)
+    if not db.exists():
+        raise HTTPException(status_code=400, detail="Company data.db is missing")
+    try:
+        return compute_quarterly_view(db=db, ticker=ticker, company_dir=company_dir, year=year)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _optional_quarterly_for_company(
+    company_dir: Path,
+    *,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    try:
+        return _compute_quarterly_for_company(company_dir, summary=summary)
+    except HTTPException:
+        return None
+
+
+def _quarter_value(view: dict[str, Any], field: str, q: int) -> float:
+    period = f"{view.get('year') or ''}Q{q}"
+    for row in view.get("rows", []):
+        if row.get("field") == field:
+            values = row.get("values", {})
+            if isinstance(values, dict):
+                return float(values.get(period, values.get(f"Q{q}", 0.0)) or 0.0)
+    return 0.0
+
+
+def _prior_same_quarter_value(db: Path, field: str, year: int, q: int) -> float:
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT period, " + field + " FROM clean_quarterly WHERE period LIKE ?",
+            (f"%Q{q}",),
+        ).fetchall()
+    values: dict[int, float] = {}
+    for row in rows:
+        period = str(row["period"])
+        if "Q" not in period:
+            continue
+        y_text, _ = period.split("Q", 1)
+        try:
+            y = int(y_text)
+        except ValueError:
+            continue
+        if y < year:
+            values[y] = float(row[field] or 0.0)
+    for y in sorted(values, reverse=True):
+        if abs(values[y]) > 1e-9:
+            return values[y]
+    return 0.0
+
+
+def _locked_override_from_payload(
+    *,
+    company_dir: Path,
+    ticker: str,
+    payload: QuarterlyOverridePayload,
+) -> tuple[str, float]:
+    match = QUARTERLY_PERIOD_RE.match(payload.period)
+    if not match:
+        raise HTTPException(status_code=400, detail="period must be YYYYQq")
+    year = int(match.group(1))
+    q = int(match.group(2))
+    if q == 4:
+        raise HTTPException(status_code=400, detail="Q4 is residual and cannot be manually overridden")
+
+    view = compute_quarterly_view(
+        db=company_db_path(company_dir),
+        ticker=ticker,
+        company_dir=company_dir,
+        year=year,
+    )
+    state = str(view.get("quarter_states", {}).get(str(q), ""))
+    if state == "actual":
+        raise HTTPException(status_code=400, detail="Published quarters are read-only")
+
+    param = payload.param
+    value = float(payload.value)
+    revenue_q = _quarter_value(view, "revenue", q)
+
+    if param == "gpm":
+        return "gross_profit", revenue_q * value
+    if param == "gross_profit_abs":
+        return "gross_profit", value
+    if param == "revenue_abs":
+        return "revenue", value
+    if param == "revenue_yoy":
+        prior = _prior_same_quarter_value(company_db_path(company_dir), "revenue", year, q)
+        return "revenue", prior * (1.0 + value)
+    if param == "income_tax_rate":
+        return "income_tax", _quarter_value(view, "total_profit", q) * value
+    if param == "income_tax_abs":
+        return "income_tax", value
+    if param == "fin_exp_abs":
+        return "fin_exp", value
+    if param.endswith("_rate"):
+        field = param.removesuffix("_rate")
+        if field in {"sell_exp", "admin_exp", "rd_exp", "biz_tax_surchg"}:
+            return field, revenue_q * value
+    if param.endswith("_abs"):
+        field = param.removesuffix("_abs")
+        if field in {"sell_exp", "admin_exp", "rd_exp", "biz_tax_surchg"}:
+            return field, value
+
+    raise HTTPException(status_code=400, detail=f"Unsupported quarterly override param: {param}")
+
+
+@app.get("/api/companies/{company_id}/quarterly")
+def read_quarterly(company_id: str, year: int | None = None) -> dict[str, Any]:
+    company_dir = _company_dir(company_id)
+    return _compute_quarterly_for_company(company_dir, year=year)
+
+
+@app.put("/api/companies/{company_id}/quarterly/override")
+def put_quarterly_override(company_id: str, payload: QuarterlyOverridePayload) -> dict[str, Any]:
+    company_dir = _company_dir(company_id)
+    ticker = _quarterly_ticker(company_dir)
+    locked_field, locked_value = _locked_override_from_payload(
+        company_dir=company_dir,
+        ticker=ticker,
+        payload=payload,
+    )
+    set_override(
+        company_db_path(company_dir),
+        ticker,
+        payload.period,
+        payload.param,
+        payload.value,
+        locked_field=locked_field,
+        locked_value=locked_value,
+        note=payload.note,
+        updated_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+    )
+    return {
+        "ok": True,
+        "locked_field": locked_field,
+        "locked_value": locked_value,
+        "view": _compute_quarterly_for_company(company_dir, year=int(payload.period[:4])),
+    }
+
+
+@app.delete("/api/companies/{company_id}/quarterly/override/{period}")
+def delete_quarterly_override(
+    company_id: str,
+    period: str,
+    param: str | None = None,
+) -> dict[str, Any]:
+    company_dir = _company_dir(company_id)
+    ticker = _quarterly_ticker(company_dir)
+    clear_override(company_db_path(company_dir), ticker, period, param=param)
+    year = int(period[:4]) if QUARTERLY_PERIOD_RE.match(period) else None
+    return {
+        "ok": True,
+        "view": _compute_quarterly_for_company(company_dir, year=year),
+    }
+
+
 def _load_forecast_build(path: Path) -> ForecastBuildResult:
     data = json.loads(path.read_text(encoding="utf-8"))
     return ForecastBuildResult(
@@ -1355,7 +2239,7 @@ def _load_forecast_build(path: Path) -> ForecastBuildResult:
 @app.post("/api/companies/{company_id}/dcf-sensitivity")
 def dcf_sensitivity(company_id: str, payload: SensitivityPayload) -> dict[str, Any]:
     company_dir = _company_dir(company_id)
-    build_path = company_dir / ".modelking" / "forecast_build.json"
+    build_path = modelking_dir(company_dir) / "forecast_build.json"
     if not build_path.exists():
         raise HTTPException(status_code=400, detail="Run forecast first")
     if payload.wacc <= payload.terminal_growth:

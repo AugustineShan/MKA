@@ -1,7 +1,7 @@
 """Clean raw TuShare EAV data into validated wide tables in SQLite.
 
 Public API:
-    clean("D:\\MKA\\companies\\安克创新_300866\\data.db", "300866.SZ") -> pd.DataFrame
+    clean("D:\\MKA\\companies\\安克创新_300866\\Agent\\data.db", "300866.SZ") -> pd.DataFrame
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ from contextlib import closing
 from pathlib import Path
 
 import pandas as pd
+
+from src.company_paths import company_dir_from_db_path, find_db_path as find_agent_db_path, recon_dir
 
 from .field_registry import (
     IS_FIELD_CATEGORIES, BS_FIELD_CATEGORIES, CF_FIELD_CATEGORIES,
@@ -1282,7 +1284,7 @@ def apply_annual_bs_plugs(
 
 
 def default_plugs_path(db_path: Path) -> Path:
-    return db_path.parent / "recon" / "annual_plugs.json"
+    return recon_dir(company_dir_from_db_path(db_path)) / "annual_plugs.json"
 
 
 def load_annual_plugs(path: Path | None, ticker: str) -> list[dict[str, object]]:
@@ -1770,7 +1772,7 @@ WARNING_COLUMNS = [
 
 
 def default_overrides_path(db_path: Path) -> Path:
-    return db_path.parent / "recon" / "annual_report_overrides.json"
+    return recon_dir(company_dir_from_db_path(db_path)) / "annual_report_overrides.json"
 
 
 def load_approved_overrides(path: Path | None, ticker: str) -> list[dict[str, object]]:
@@ -1807,7 +1809,7 @@ def override_column_name(endpoint: str, field: str) -> str:
 
 def default_restatement_exemptions_path(db_path: Path) -> Path:
     """跨表 7.4 重述豁免文件：由 subagent 升级通道确认后写入，clean 加载后把对应边界降级为软 warning。"""
-    return db_path.parent / "recon" / "restatement_exemptions.json"
+    return recon_dir(company_dir_from_db_path(db_path)) / "restatement_exemptions.json"
 
 
 def load_restatement_exemptions(path: Path | None, ticker: str) -> list[dict[str, object]]:
@@ -2070,7 +2072,7 @@ def auto_reconcile_annual_failure(db_path: Path, ticker: str, *, max_failures: i
     result = subprocess.run(cmd, cwd=Path(__file__).resolve().parent.parent)
     after_approved = approved_override_count(override_path)
     if result.returncode == 0:
-        latest_path = db_path.parent / "recon" / "annual_report_reconciliation_latest.json"
+        latest_path = recon_dir(company_dir_from_db_path(db_path)) / "annual_report_reconciliation_latest.json"
         print(f"Annual reconciliation evidence: {latest_path}", file=sys.stderr, flush=True)
         print(f"Annual override file: {override_path}", file=sys.stderr, flush=True)
         if after_approved > before_approved:
@@ -2280,12 +2282,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Clean TuShare raw data into validated wide tables in SQLite.")
     parser.add_argument("--ticker", required=True, help="A-share ticker, e.g. 300866.SZ")
     parser.add_argument("--db", default=None, help="Path to data.db (auto-detected if omitted)")
-    parser.add_argument("--overrides", default=None, help="Approved annual-report override JSON (default: company/recon/annual_report_overrides.json)")
+    parser.add_argument("--overrides", default=None, help="Approved annual-report override JSON (default: company/Agent/recon/annual_report_overrides.json)")
     parser.add_argument("--no-overrides", action="store_true", help="Do not apply approved annual-report overrides")
     parser.add_argument("--allow-annual-plug", action="store_true", help="Apply user-approved annual QA plugs (annual_plugs.json) for hard residuals two reconciler rounds could not close. Written by init.py's plug prompt.")
-    parser.add_argument("--plugs", default=None, help="Annual plug directive JSON (default: company/recon/annual_plugs.json)")
+    parser.add_argument("--plugs", default=None, help="Annual plug directive JSON (default: company/Agent/recon/annual_plugs.json)")
     parser.add_argument("--no-restatement-exemptions", action="store_true", help="Do not apply approved 跨表 7.4 restatement exemptions (restatement_exemptions.json)")
-    parser.add_argument("--restatement-exemptions", default=None, help="Restatement exemption JSON (default: company/recon/restatement_exemptions.json)")
+    parser.add_argument("--restatement-exemptions", default=None, help="Restatement exemption JSON (default: company/Agent/recon/restatement_exemptions.json)")
     parser.add_argument("--mode", choices=["annual", "quarterly", "all"], default="all", help="Which clean table(s) to build")
     parser.add_argument("--no-auto-reconcile", action="store_true", help="Do not run annual_report_reconciler.py after annual hard-check failure")
     parser.add_argument("--auto-reconcile-max-failures", type=int, default=60, help="Maximum annual failures to analyze when auto-reconciliation is triggered. Complex companies (financial subsidiaries, recurring missing fields) can exceed 30 failures; the cap must cover the full annual history so they reconcile fully rather than silently leaving later years unbalanced.")
@@ -2302,13 +2304,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.db:
         db_path = Path(args.db)
     else:
-        code = ticker.split(".")[0]
         base = Path(__file__).resolve().parent.parent / "companies"
-        candidates = sorted(base.glob(f"*_{code}/data.db"))
-        if not candidates:
-            print(f"No data.db found for {ticker} in {base}", file=sys.stderr)
+        try:
+            db_path = find_agent_db_path(ticker, base)
+        except FileNotFoundError:
+            print(f"No Agent/data.db found for {ticker} in {base}", file=sys.stderr)
             return 1
-        db_path = candidates[0]
 
     try:
         clean_all(

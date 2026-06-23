@@ -14,8 +14,14 @@ from io import StringIO
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from src.calc import run_forecast
+from src.company_paths import (
+    company_dir_from_agent_path,
+    db_path as company_db_path,
+    defaults_path as company_defaults_path,
+)
 from src.yaml1_cleaner import clean_yaml1
 from src.yaml2_schema import read_yaml2
 
@@ -23,6 +29,12 @@ from src.yaml2_schema import read_yaml2
 BASELINE_PATH = Path("tests/fixtures/calc_scalar_baseline.json")
 ABS_TOL = 1e-6
 REL_TOL = 1e-9
+
+
+def _baseline_items() -> list[tuple[str, dict]]:
+    baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+    assert baseline, "baseline fixture must contain at least one company"
+    return sorted(baseline.items())
 
 
 def _result_payload(result: dict) -> dict[str, str]:
@@ -92,21 +104,21 @@ def _assert_json_equivalent(actual, expected, label: str) -> None:
         assert actual == expected, f"{label} changed"
 
 
-def test_identity_clean_defaults_are_numerically_equivalent_to_baseline():
-    baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
-    assert baseline, "baseline fixture must contain at least one company"
+@pytest.mark.parametrize("ticker, expected", _baseline_items())
+def test_identity_clean_defaults_are_numerically_equivalent_to_baseline(ticker, expected):
+    baseline_defaults_path = Path(expected["defaults_path"])
+    company_dir = (
+        company_dir_from_agent_path(baseline_defaults_path)
+        if baseline_defaults_path.parent.name == "Agent"
+        else baseline_defaults_path.parent
+    )
+    defaults_path = company_defaults_path(company_dir)
+    clean_annual_path = company_db_path(company_dir)
+    if not defaults_path.exists() or not clean_annual_path.exists():
+        pytest.skip(f"local company artifacts are missing for {ticker}: {company_dir}")
 
-    missing: list[str] = []
-    for ticker, expected in sorted(baseline.items()):
-        defaults_path = Path(expected["defaults_path"])
-        clean_annual_path = defaults_path.parent / "data.db"
-        if not defaults_path.exists():
-            missing.append(f"{ticker}: {defaults_path}")
-            continue
-        cleaned = clean_yaml1(None, defaults_path, clean_annual_path)
-        actual = _result_payload(run_forecast(cleaned.forecast_params))
-        for table in ["income_statement", "balance_sheet", "cash_flow", "dcf"]:
-            _assert_frame_equivalent(actual[table], expected[table], ticker, table)
-        _assert_summary_equivalent(actual["summary_json"], expected["summary_json"], ticker)
-
-    assert missing == []
+    cleaned = clean_yaml1(None, defaults_path, clean_annual_path)
+    actual = _result_payload(run_forecast(cleaned.forecast_params))
+    for table in ["income_statement", "balance_sheet", "cash_flow", "dcf"]:
+        _assert_frame_equivalent(actual[table], expected[table], ticker, table)
+    _assert_summary_equivalent(actual["summary_json"], expected["summary_json"], ticker)

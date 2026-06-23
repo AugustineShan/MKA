@@ -32,10 +32,15 @@ from src.yaml2_schema import (
     write_yaml2,
 )
 from src.financial_expense_analyzer import load_financial_expense_yaml
+from src.company_paths import (
+    COMPANIES_DIR,
+    company_dir_from_db_path,
+    defaults_path,
+    find_db_path as find_agent_db_path,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-COMPANIES_DIR = BASE_DIR / "companies"
 
 REVENUE_RATE_FIELDS = [
     "biz_tax_surchg",
@@ -77,11 +82,7 @@ INTEREST_BEARING_DEBT_FIELDS = [
 
 
 def find_db_path(ticker: str) -> Path:
-    code = ticker.split(".")[0]
-    candidates = sorted(COMPANIES_DIR.glob(f"*_{code}/data.db"))
-    if not candidates:
-        raise FileNotFoundError(f"No data.db found for {ticker} under {COMPANIES_DIR}")
-    return candidates[0]
+    return find_agent_db_path(ticker, COMPANIES_DIR)
 
 
 def read_meta(conn: sqlite3.Connection) -> dict[str, str]:
@@ -152,7 +153,8 @@ def build_defaults(db_path: Path, ticker: str | None = None) -> dict[str, Any]:
         base_period, row = read_latest_annual(conn)
 
     ticker = ticker or meta.get("ticker") or ""
-    name = meta.get("name") or db_path.parent.name
+    company_dir = company_dir_from_db_path(db_path)
+    name = meta.get("name") or company_dir.name
     revenue = row.get("revenue", 0.0)
     oper_cost = row.get("oper_cost", 0.0)
     total_profit = row.get("total_profit", 0.0)
@@ -316,7 +318,7 @@ def _apply_financial_expense_evidence(data: dict[str, Any], db_path: Path) -> di
     Reads ``financial_expense.yaml`` and picks the latest approved+high period
     whose checks pass and whose base_period matches the YAML2 base_period.
     """
-    company_dir = db_path.parent
+    company_dir = company_dir_from_db_path(db_path)
     archive = load_financial_expense_yaml(company_dir)
     if archive is None:
         return data
@@ -402,15 +404,15 @@ def operating_working_capital(row: dict[str, float]) -> float:
 
 
 def default_output_path(db_path: Path) -> Path:
-    return db_path.parent / "defaults.yaml"
+    return defaults_path(company_dir_from_db_path(db_path))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate YAML2 defaults.yaml from clean annual data.")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--ticker", help="A-share ticker, e.g. 300866.SZ")
-    group.add_argument("--db", help="Path to companies/*/data.db")
-    parser.add_argument("--output", help="Output defaults.yaml path; defaults to company directory")
+    group.add_argument("--db", help="Path to companies/*/Agent/data.db")
+    parser.add_argument("--output", help="Output defaults.yaml path; defaults to company/Agent/defaults.yaml")
     return parser.parse_args(argv)
 
 

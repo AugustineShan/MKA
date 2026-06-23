@@ -1,4 +1,4 @@
----
+﻿---
 name: webcomp
 description: 一键打包网页端编译 yaml1 所需输入材料（含 yaml1compiler skill）到公司目录下的 WEBCLAUDE/yaml1编译部分/ 文件夹，方便在 Claude.ai 网页端上传后执行 compiler。
 argument-hint: [公司名或代码，如 新乳业 / 002946]
@@ -15,7 +15,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 2. **清空 `WEBCLAUDE/yaml1编译部分/` 文件夹**：防止过时文件污染。
 3. **复制四份输入材料与执行 skill**（加序号前缀，便于网页端按顺序查看）：
    - `00_核心假设.md`（`companies/{公司}/*核心假设*.md` 最新一份，**必须存在**）
-   - `01_defaults.yaml`（`companies/{公司}/defaults.yaml`，**必须存在**）
+   - `01_defaults.yaml`（`companies/{公司}/Agent/defaults.yaml`，**必须存在**）
    - `02_数据格式参考.md`（`D:\MKA\docs\数据格式参考.md`）
    - `03_yaml1算法模板契约.md`（`D:\MKA\docs\yaml1算法模板契约.md`）
    - `04_yaml1compiler_skill_vN.md`（`D:\MKA\skills\` 中最新版 yaml1compiler skill，网页端执行时需要）

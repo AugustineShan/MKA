@@ -7,8 +7,9 @@ glob the live ``companies/*_002946`` directory, whose ``yaml1`` is recompiled
 (date-stamped) and whose ``data.db`` is re-fetched over time.  That coupled the
 tests' golden values to mutable, git-ignored runtime data, so any recompile or
 data refresh turned the suite red without any code change.  ``tests/fixtures/
-company_002946`` is a committed, immutable snapshot (data.db, defaults.yaml,
-yaml1, and a synthetic 2025 annual-report note stub) so the tests are
+company_002946`` is a committed, immutable snapshot (Agent/data.db,
+Agent/defaults.yaml, Agent/yaml1, and a synthetic 2025 annual-report note stub)
+so the tests are
 deterministic and decoupled from the live workspace.
 """
 
@@ -26,7 +27,8 @@ FIXTURE_COMPANY_DIR = Path(__file__).resolve().parent / "fixtures" / "company_00
 def copy_fixture_company(tmp_path: Path) -> Path:
     """Copy the frozen 002946 company snapshot into ``tmp_path/companies/<name>/``.
 
-    Use for tests that write outputs (forecast/, .modelking/, financial_expense.yaml).
+    Use for tests that write outputs (Agent/forecast/, Agent/.modelking/,
+    Agent/financial_expense.yaml).
     Tests that only read may point directly at ``FIXTURE_COMPANY_DIR``.
     """
     dst = tmp_path / "companies" / FIXTURE_COMPANY_DIR.name

@@ -1,7 +1,7 @@
 ﻿"""Fetch A-share financial statements from TuShare into SQLite DBs.
 
 Public API for other agents:
-    fetch_company("600519.SH", force_refresh=False) -> "D:\\MKA\\companies\\贵州茅台_600519\\data.db"
+    fetch_company("600519.SH", force_refresh=False) -> "D:\\MKA\\companies\\贵州茅台_600519\\Agent\\data.db"
 """
 
 from __future__ import annotations
@@ -20,6 +20,9 @@ from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
 import pandas as pd
+
+from src.company_paths import db_path as company_db_path
+from src.company_paths import ensure_workspace_layout
 
 
 LOGGER = logging.getLogger("data_fetcher")
@@ -372,7 +375,9 @@ class TushareDataFetcher:
     def _company_db_path(self, ticker: str, company_name: str) -> Path:
         safe_name = sanitize_path_part(company_name)
         code = ticker.split(".")[0]
-        return self.output_root / "companies" / f"{safe_name}_{code}" / "data.db"
+        company_dir = self.output_root / "companies" / f"{safe_name}_{code}"
+        ensure_workspace_layout(company_dir)
+        return company_db_path(company_dir)
 
 
 def create_tushare_client(token: str | None = None, http_url: str | None = None) -> Any:

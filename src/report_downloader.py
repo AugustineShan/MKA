@@ -26,6 +26,8 @@ from typing import Iterator
 
 import requests
 
+from src.company_paths import annual_reports_dir, ensure_workspace_layout, quarterly_reports_dir
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 VENDORED_CNINFO_SRC = BASE_DIR / "vendor" / "use_cninfo" / "src"
@@ -460,8 +462,8 @@ def target_dir_for(company: CompanyInfo, kind: str, company_dir_override=None) -
         base = Path(company_dir_override)
     else:
         base = BASE_DIR / "companies" / f"{safe_path_component(company.name)}_{company.code}"
-    sub = "annuals" if kind == "annual" else "quarterlyreports"
-    return base / sub
+    ensure_workspace_layout(base)
+    return annual_reports_dir(base) if kind == "annual" else quarterly_reports_dir(base)
 
 
 def markdown_frontmatter(data: dict) -> str:
@@ -605,8 +607,8 @@ def download_reports(
     """Download reports concurrently with controlled parallelism.
 
     ``reports`` may mix annual and quarterly kinds; annuals land in
-    ``target_dir`` (annuals/), quarterlies in ``quarterly_target_dir``
-    (quarterlyreports/) when provided, else in ``target_dir``. A single
+    ``target_dir`` (公告/年报), quarterlies in ``quarterly_target_dir``
+    (公告/季报) when provided, else in ``target_dir``. A single
     ThreadPoolExecutor drains the whole list so annual and quarterly
     downloads share one pool instead of two serial passes.
     """
@@ -672,8 +674,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--company-dir",
         default=None,
-        help="explicit company directory (e.g. the data_fetcher-created dir holding data.db). "
-        "When set, annuals/quarterlyreports land here instead of being re-derived from the "
+        help="explicit company directory (e.g. the data_fetcher-created workbench holding Agent/data.db). "
+        "When set, 公告/年报 and 公告/季报 land here instead of being re-derived from the "
         "cninfo company name — avoids dir splits when cninfo and TuShare disagree on the name "
         "(e.g. half-width 万科A vs full-width 万科Ａ).",
     )
@@ -754,14 +756,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.quarterly:
         target_dir = target_dir_for(company, kind="quarterly", company_dir_override=company_dir_override)
     elif args.all_reports:
-        # Annuals go to annuals/, quarterlies go to quarterlyreports/
+        # Annuals go to 公告/年报, quarterlies go to 公告/季报.
         # We'll handle this inside the download loop by filtering reports
         target_dir = target_dir_for(company, kind="annual", company_dir_override=company_dir_override)
     else:
         target_dir = target_dir_for(company, kind="annual", company_dir_override=company_dir_override)
 
     print(f"company: {company.name} {company.ticker} orgId={company.org_id}")
-    print(f"target : {target_dir.parent} (annuals + quarterlyreports)")
+    print(f"target : {target_dir.parent} (公告/年报 + 公告/季报)")
     print(f"matched: {len(reports)} report(s)")
     for report in reports:
         kind_label = {
@@ -777,7 +779,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.all_reports:
-        # Annuals go to annuals/, quarterlies go to quarterlyreports/.
+        # Annuals go to 公告/年报, quarterlies go to 公告/季报.
         # Both share one download pool (single ThreadPoolExecutor) so annual
         # and quarterly PDFs download concurrently instead of two serial passes.
         annual_dir = target_dir_for(company, kind="annual", company_dir_override=company_dir_override)

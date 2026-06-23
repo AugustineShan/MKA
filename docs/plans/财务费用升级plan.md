@@ -1,4 +1,4 @@
-# 财务费用细则升级计划
+﻿# 财务费用细则升级计划
 
 > 状态：已实现，测试通过（54/54）  
 > 关联模块：`src/financial_expense_analyzer.py`、`src/defaults_gen.py`、`src/init.py`、`src/annual_report_utils.py`
@@ -88,7 +88,7 @@ def load_evidence(company_dir: Path) -> dict[str, Any] | None
 6. 两道勾稽：
    - **总额勾稽**：`interest_expense − interest_income + other_fin_exp_abs ≈ fin_exp`
    - **边界勾稽**：动态 detect clean 的 `fin_exp_int_exp` 实际对应哪种口径，验证 LLM 分项能重建 clean 原子
-7. 写 evidence 到 `companies/{公司}/recon/financial_expense_detail_latest.json`
+7. 写 evidence 到 `companies/{公司}/Agent/recon/financial_expense_detail_latest.json`
 
 ### 2.2 修改 `src/defaults_gen.py`
 

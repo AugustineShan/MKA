@@ -4,7 +4,7 @@ Usage:
     python -m src.annual_report_extractor --ticker 002946.SZ --year 2025
 
 Output:
-    companies/{公司名}_{代码}/Extraction/{公司名}-{年度}-年报萃取.md
+    companies/{公司名}_{代码}/收集/年报萃取/{公司名}-{年度}-年报萃取.md
 
 Provider selection (via .env):
     LLM_PROVIDER=glm  -> GLM-5-Turbo (default fallback)
@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+from src.company_paths import annual_reports_dir, extraction_dir, find_company_dir as find_company_root
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SKILL_PATH = BASE_DIR / "skills" / "annual_report_extractor_v2.md"
@@ -123,9 +125,10 @@ def call_llm(
 
 
 def find_company_dir(ticker: str) -> Path | None:
-    code = ticker.split(".")[0]
-    candidates = sorted((BASE_DIR / "companies").glob(f"*_{code}"))
-    return candidates[0] if candidates else None
+    try:
+        return find_company_root(ticker)
+    except FileNotFoundError:
+        return None
 
 
 def extract_annual_report(ticker: str, year: int) -> Path:
@@ -133,7 +136,7 @@ def extract_annual_report(ticker: str, year: int) -> Path:
     if company_dir is None:
         raise FileNotFoundError(f"Company directory not found for {ticker}")
 
-    md_path = company_dir / "annuals" / f"{year}_年度报告.md"
+    md_path = annual_reports_dir(company_dir) / f"{year}_年度报告.md"
     if not md_path.exists():
         raise FileNotFoundError(f"Markdown annual report not found: {md_path}")
 
@@ -169,7 +172,7 @@ def extract_annual_report(ticker: str, year: int) -> Path:
     content = result["content"]
     print(f"Received {len(content):,} chars of output. Usage: {result.get('usage')}")
 
-    output_dir = company_dir / "Extraction"
+    output_dir = extraction_dir(company_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"{company_name}-{year}-年报萃取.md"
     out_path.write_text(content, encoding="utf-8")

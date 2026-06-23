@@ -1,18 +1,27 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import type {
+  AnnualRevenueBreakdownRow,
+  AssumptionPatch,
+  AssumptionPreview,
   AssumptionsKnob,
   AssumptionsSection,
   CompanyDetail,
   CompanySummary,
   DcfDetailRow,
+  EditableAssumption,
+  EditableAssumptionCell,
   FileItem,
+  QuarterlyRow,
+  QuarterlyView,
   StashBlock,
+  StatementRow,
   StatementSheet,
   TabKey,
   TerminalView,
   TraceabilityItem,
   Yaml1AssumptionsView,
   Yaml1Presentation,
+  Yaml1RevenueSegment,
   Yaml1RevenueView,
 } from "./types";
 
@@ -21,6 +30,7 @@ const tabs: Array<{ key: TabKey; label: string }> = [
   { key: "yaml1", label: "核心假设展示" },
   { key: "statements", label: "完整三表" },
   { key: "dcf", label: "DCF" },
+  { key: "quarterly", label: "季度展示" },
   { key: "materials", label: "Materials" },
 ];
 
@@ -46,6 +56,40 @@ async function apiPostJson<T>(path: string, body: Record<string, unknown>): Prom
   return response.json() as Promise<T>;
 }
 
+async function previewAssumptions(companyId: string, patches: AssumptionPatch[]): Promise<AssumptionPreview> {
+  return apiPostJson<AssumptionPreview>(
+    `/api/companies/${encodeURIComponent(companyId)}/assumption-preview`,
+    { patches },
+  );
+}
+
+async function generateAssumptionBrief(
+  companyId: string,
+  patches: AssumptionPatch[],
+  previewSummary?: Record<string, unknown> | null,
+): Promise<{ prompt: string }> {
+  return apiPostJson<{ prompt: string }>(
+    `/api/companies/${encodeURIComponent(companyId)}/assumption-brief`,
+    { patches, preview_summary: previewSummary ?? null },
+  );
+}
+
+async function apiPutJson<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const response = await fetch(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json() as Promise<T>;
+}
+
+async function apiDelete<T>(path: string): Promise<T> {
+  const response = await fetch(path, { method: "DELETE" });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json() as Promise<T>;
+}
+
 function formatNumber(value: unknown, digits = 0): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "-";
   return new Intl.NumberFormat("en-US", {
@@ -66,6 +110,28 @@ function formatSignedPercent(value: unknown, digits = 1): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "-";
   const formatted = formatPercent(value, digits);
   return value > 0 ? `+${formatted}` : formatted;
+}
+
+function formatPctPoint(value: unknown, digits = 1): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "-";
+  return `${new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value)}%`;
+}
+
+function formatSignedPctPoint(value: unknown, digits = 1): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "-";
+  const formatted = formatPctPoint(value, digits);
+  return value > 0 ? `+${formatted}` : formatted;
+}
+
+function formatYuan(value: unknown): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "-";
+  const abs = Math.abs(value);
+  if (abs >= 100_000_000) return `${formatNumber(value / 100_000_000, 1)} 亿`;
+  if (abs >= 10_000) return `${formatNumber(value / 10_000, 1)} 万`;
+  return formatNumber(value, 0);
 }
 
 function calcCagr(start: number, end: number | undefined, periods: number): number | null {
@@ -841,8 +907,6 @@ function ValuationBridge({ dcf, detail }: { dcf: Record<string, unknown> | null 
   const equity = num(dcf, "equity_value");
   const shares = num(dcf, "total_shares");
   const perShare = num(dcf, "per_share_value");
-  const terminalShare = ev && terminalPv ? Math.round((terminalPv / ev) * 100) : null;
-  const highTerminal = terminalShare != null && terminalShare >= 60;
   if (perShare == null) return null;
   return (
     <section className="card valuation-bridge-card">
@@ -851,9 +915,6 @@ function ValuationBridge({ dcf, detail }: { dcf: Record<string, unknown> | null 
           <div className="eyebrow">How 17.03 is built</div>
           <h2>估值桥</h2>
         </div>
-        {terminalShare != null ? (
-          <span className={`terminal-share-warning ${highTerminal ? "warn" : ""}`}>终值占比 {terminalShare}%{highTerminal ? " · 估值高度依赖永续" : ""}</span>
-        ) : null}
       </div>
       <div className="valuation-bridge">
         <div className="bridge-step"><span className="bridge-label">PV(FCFF)</span><strong>{formatNumber(pvFcff)}</strong></div>
@@ -911,15 +972,201 @@ function ValuationBridge({ dcf, detail }: { dcf: Record<string, unknown> | null 
 
 // ─────────────────────────── Full statement table (history | forecast) ───────────────────────────
 
-const IS_KEY_ROWS = new Set(["revenue", "oper_cost", "operate_profit", "total_profit", "n_income", "n_income_attr_p"]);
+const STATEMENT_KEY_ROWS: Record<string, Set<string>> = {
+  is: new Set(["revenue", "total_revenue", "operate_profit", "total_profit", "n_income", "n_income_attr_p"]),
+  bs: new Set(["money_cap", "total_assets", "total_liab", "total_hldr_eqy_inc_min_int", "total_hldr_eqy_exc_min_int"]),
+  cf: new Set(["n_cashflow_act", "n_cashflow_inv_act", "n_cash_flows_fnc_act", "n_incr_cash_cash_equ", "c_cash_equ_end_period"]),
+};
 
-function FullStatementTable({ sheet, basePeriod, showZeroRows, years }: { sheet: StatementSheet; basePeriod: string; showZeroRows: boolean; years?: string[] }) {
+const STATEMENT_HIDDEN_ROWS: Record<string, Set<string>> = {
+  is: new Set(["total_opcost"]),
+};
+
+const STATEMENT_RELOCATE_AFTER: Record<string, Record<string, string>> = {
+  bs: {
+    accounts_receiv_bill: "accounts_receiv",
+    accounts_pay: "acct_payable",
+    cip_total: "cip",
+    fix_assets_total: "fix_assets",
+    long_pay_total: "lt_payable",
+    oth_pay_total: "oth_payable",
+    oth_rcv_total: "oth_receiv",
+  },
+};
+
+const QUARTERLY_KEY_ROWS = new Set(["revenue", "oper_cost", "operate_profit", "total_profit", "n_income"]);
+
+type StatementDisplayFormat = "number" | "percent" | "signedPercent";
+
+type StatementDisplayRow = Omit<StatementRow, "role"> & {
+  role: StatementRow["role"] | "metric";
+  displayFormat?: StatementDisplayFormat;
+  synthetic?: boolean;
+  categoryStart?: boolean;
+  presentationFallback?: boolean;
+};
+
+function ratioOrNull(numerator: number | null | undefined, denominator: number | null | undefined): number | null {
+  if (typeof numerator !== "number" || typeof denominator !== "number" || !Number.isFinite(numerator) || !Number.isFinite(denominator) || Math.abs(denominator) < 1e-9) {
+    return null;
+  }
+  return numerator / denominator;
+}
+
+function calcYoy(values: Record<string, number | null>, years: string[]): Record<string, number | null> {
+  return years.reduce<Record<string, number | null>>((acc, year, index) => {
+    const current = values[year];
+    const previous = index > 0 ? values[years[index - 1]] : null;
+    acc[year] = ratioOrNull(typeof current === "number" && typeof previous === "number" ? current - previous : null, previous);
+    return acc;
+  }, {});
+}
+
+function makeMetricRow(
+  field: string,
+  label: string,
+  values: Record<string, number | null>,
+  displayFormat: StatementDisplayFormat = "percent",
+): StatementDisplayRow {
+  return {
+    field,
+    label,
+    category: "metric",
+    category_label: "关键比率",
+    role: "metric",
+    level: 1,
+    is_zero: !Object.values(values).some((value) => typeof value === "number" && Math.abs(value) > 1e-9),
+    values,
+    displayFormat,
+    synthetic: true,
+  };
+}
+
+function hasNonZeroInYears(row: StatementRow | undefined, years: string[]): boolean {
+  if (!row) return false;
+  return years.some((year) => {
+    const value = row.values[year];
+    return typeof value === "number" && Number.isFinite(value) && Math.abs(value) > 1e-9;
+  });
+}
+
+function shouldUseComboFallback(row: StatementRow, rowMap: Map<string, StatementRow>, visibleYears: string[]): boolean {
+  if (row.category !== "combo" || !row.combo_of?.length || !hasNonZeroInYears(row, visibleYears)) return false;
+  const splitRows = row.combo_of.map((field) => rowMap.get(field)).filter(Boolean) as StatementRow[];
+  return !splitRows.length || !splitRows.some((splitRow) => hasNonZeroInYears(splitRow, visibleYears));
+}
+
+function buildStatementDisplayRows(sheet: StatementSheet, showZeroRows: boolean, showTechnicalRows: boolean, visibleYears: string[]): StatementDisplayRow[] {
+  const rowMap = new Map(sheet.rows.map((row) => [row.field, row]));
+  const hidden = STATEMENT_HIDDEN_ROWS[sheet.key] ?? new Set<string>();
+  const relocateAfter = STATEMENT_RELOCATE_AFTER[sheet.key] ?? {};
+  const eligibleRows = sheet.rows.filter((row) => !hidden.has(row.field) && (showZeroRows || !row.is_zero || row.role !== "normal"));
+  const eligibleFields = new Set(eligibleRows.map((row) => row.field));
+  const visibleBaseRows: StatementDisplayRow[] = [];
+  const relocatedRows = new Map<string, StatementDisplayRow[]>();
+  for (const row of eligibleRows) {
+    const fallback = shouldUseComboFallback(row, rowMap, visibleYears);
+    if (row.is_technical && !showTechnicalRows && !fallback) continue;
+    const displayRow: StatementDisplayRow = {
+      ...row,
+      label: fallback ? row.display_label ?? row.label : row.label,
+      display_role: fallback ? "primary" : row.display_role,
+      is_technical: fallback ? false : row.is_technical,
+      presentationFallback: fallback,
+    };
+    const anchor = relocateAfter[row.field];
+    if (anchor && eligibleFields.has(anchor)) {
+      relocatedRows.set(anchor, [...(relocatedRows.get(anchor) ?? []), displayRow]);
+    } else {
+      visibleBaseRows.push(displayRow);
+    }
+  }
+  const baseRows = visibleBaseRows.filter((row) => !relocateAfter[row.field] || !eligibleFields.has(relocateAfter[row.field]));
+  const metricRowsByAnchor = new Map<string, StatementDisplayRow[]>();
+
+  if (sheet.key === "is") {
+    const revenue = rowMap.get("revenue") ?? rowMap.get("total_revenue");
+    const operCost = rowMap.get("oper_cost");
+    const totalCogs = rowMap.get("total_cogs");
+    const operateProfit = rowMap.get("operate_profit");
+    const totalProfit = rowMap.get("total_profit");
+    const incomeTax = rowMap.get("income_tax");
+    const netIncome = rowMap.get("n_income");
+    const addMetric = (anchor: string, row: StatementDisplayRow | null | undefined) => {
+      if (!row || (!showZeroRows && row.is_zero)) return;
+      metricRowsByAnchor.set(anchor, [...(metricRowsByAnchor.get(anchor) ?? []), row]);
+    };
+    const revValues = revenue?.values ?? {};
+    const ratioToRevenue = (row?: StatementRow) =>
+      visibleYears.reduce<Record<string, number | null>>((acc, year) => {
+        acc[year] = ratioOrNull(row?.values[year], revValues[year]);
+        return acc;
+      }, {});
+    const derivedMargin = (numerator?: StatementRow, denominator?: StatementRow) =>
+      visibleYears.reduce<Record<string, number | null>>((acc, year) => {
+        acc[year] = ratioOrNull(numerator?.values[year], denominator?.values[year]);
+        return acc;
+      }, {});
+    if (revenue) addMetric(revenue.field, makeMetricRow("revenue_yoy_display", "收入同比", calcYoy(revenue.values, visibleYears), "signedPercent"));
+    if (operCost && revenue) {
+      addMetric("oper_cost", makeMetricRow("gross_margin_display", "毛利率", visibleYears.reduce<Record<string, number | null>>((acc, year) => {
+        const rev = revenue.values[year];
+        const cost = operCost.values[year];
+        acc[year] = typeof rev === "number" && typeof cost === "number" ? ratioOrNull(rev - cost, rev) : null;
+        return acc;
+      }, {})));
+    }
+    addMetric("sell_exp", makeMetricRow("sell_exp_rate_display", "销售费用率", ratioToRevenue(rowMap.get("sell_exp"))));
+    addMetric("admin_exp", makeMetricRow("admin_exp_rate_display", "管理费用率", ratioToRevenue(rowMap.get("admin_exp"))));
+    addMetric("rd_exp", makeMetricRow("rd_exp_rate_display", "研发费用率", ratioToRevenue(rowMap.get("rd_exp"))));
+    addMetric("fin_exp", makeMetricRow("fin_exp_rate_display", "财务费用率", ratioToRevenue(rowMap.get("fin_exp"))));
+    if (totalCogs) addMetric("total_cogs", makeMetricRow("total_cogs_rate_display", "营业总成本率", ratioToRevenue(totalCogs)));
+    if (operateProfit) addMetric("operate_profit", makeMetricRow("operate_margin_display", "营业利润率", ratioToRevenue(operateProfit)));
+    if (totalProfit) addMetric("total_profit", makeMetricRow("total_profit_margin_display", "利润总额率", ratioToRevenue(totalProfit)));
+    if (incomeTax && totalProfit) addMetric("income_tax", makeMetricRow("income_tax_rate_display", "所得税率", derivedMargin(incomeTax, totalProfit)));
+    if (netIncome) {
+      addMetric("n_income", makeMetricRow("net_margin_display", "净利率", ratioToRevenue(netIncome)));
+      addMetric("n_income", makeMetricRow("n_income_yoy_display", "净利润同比", calcYoy(netIncome.values, visibleYears), "signedPercent"));
+    }
+  }
+
+  const out: StatementDisplayRow[] = [];
+  let previousCategory = "";
+  for (const row of baseRows) {
+    const displayRow: StatementDisplayRow = {
+      ...row,
+      categoryStart: Boolean(previousCategory && previousCategory !== row.category),
+    };
+    out.push(displayRow);
+    previousCategory = row.category;
+    const relocated = relocatedRows.get(row.field) ?? [];
+    for (const item of relocated) {
+      out.push({
+        ...item,
+        categoryStart: false,
+      });
+    }
+    const metrics = metricRowsByAnchor.get(row.field) ?? [];
+    out.push(...metrics);
+  }
+  return out;
+}
+
+function formatStatementCell(value: number | null | undefined, displayFormat: StatementDisplayFormat = "number"): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "";
+  if (displayFormat === "percent") return formatPercent(value, 1);
+  if (displayFormat === "signedPercent") return formatSignedPercent(value, 1);
+  return formatNumber(value);
+}
+
+function FullStatementTable({ sheet, basePeriod, showZeroRows, showTechnicalRows, years }: { sheet: StatementSheet; basePeriod: string; showZeroRows: boolean; showTechnicalRows: boolean; years?: string[] }) {
   const visibleYears = years ?? sheet.years;
   const historyYears = useMemo(() => {
     const base = Number(basePeriod);
     return new Set(visibleYears.filter((y) => (Number(y) || 0) <= base));
   }, [visibleYears, basePeriod]);
-  const rows = sheet.rows.filter((row) => showZeroRows || !row.is_zero || row.role !== "normal");
+  const rows = useMemo(() => buildStatementDisplayRows(sheet, showZeroRows, showTechnicalRows, visibleYears), [sheet, showZeroRows, showTechnicalRows, visibleYears]);
+  const keyRows = STATEMENT_KEY_ROWS[sheet.key] ?? new Set<string>();
   const yearLabel = (year: string) => (historyYears.has(year) ? year : `${year}E`);
   return (
     <section className="spreadsheet-card statement-card">
@@ -945,13 +1192,13 @@ function FullStatementTable({ sheet, basePeriod, showZeroRows, years }: { sheet:
           </thead>
           <tbody>
             {rows.map((row) => (
-              <tr className={`${row.role} level-${row.level} ${IS_KEY_ROWS.has(row.field) ? "key-row" : ""}`} key={row.field}>
+              <tr className={`${row.role} level-${row.level} ${keyRows.has(row.field) ? "key-row" : ""} ${row.synthetic ? "metric-row" : ""} ${row.is_technical ? "technical-row" : ""} ${row.presentationFallback ? "fallback-row" : ""} ${row.categoryStart ? "category-start" : ""}`} key={row.field}>
                 <td className="statement-label" title={`${row.label} (${row.field})`}><span>{row.label}</span></td>
                 {visibleYears.map((year) => {
                   const value = row.values[year];
                   return (
                     <td className={`numeric ${historyYears.has(year) ? "history-year" : "forecast-year"} ${typeof value === "number" && value < 0 ? "negative" : ""}`} key={`${row.field}-${year}`}>
-                      {typeof value === "number" ? formatNumber(value) : ""}
+                      {formatStatementCell(value, row.displayFormat)}
                     </td>
                   );
                 })}
@@ -975,9 +1222,15 @@ type AxisRow = {
   bold?: boolean;
   override?: boolean;
   muted?: boolean;
+  editablePath?: string;
   // int=整数金额(百万元) · num2=2位小数(参考项通用) · decimal=小数比率×100+%(旋钮) ·
   // signedDecimal=带符号同比% · volume=1位小数(万吨)
   format?: "int" | "num2" | "decimal" | "signedDecimal" | "volume";
+};
+
+type AssumptionInlineEdit = {
+  pointer: string;
+  raw: string;
 };
 type AxisGroup = {
   title: string;
@@ -1056,7 +1309,53 @@ function blockIsYearSeries(block: StashBlock): boolean {
   return true;
 }
 
-function UnifiedYearTable({ years, baseYear, groups }: { years: string[]; baseYear: number; groups: AxisGroup[] }) {
+function UnifiedYearTable({
+  years,
+  baseYear,
+  groups,
+  editMode = false,
+  editableByPath,
+  editablePeriods: editablePeriodSet,
+  drafts = {},
+  inlineEdit,
+  onInlineEditChange,
+  onStartInlineEdit,
+  onCommitInlineEdit,
+  onCancelInlineEdit,
+  onOpenPeriod,
+}: {
+  years: string[];
+  baseYear: number;
+  groups: AxisGroup[];
+  editMode?: boolean;
+  editableByPath?: Map<string, EditableAssumption>;
+  editablePeriods?: Set<string>;
+  drafts?: Record<string, number | null>;
+  inlineEdit?: AssumptionInlineEdit | null;
+  onInlineEditChange?: (raw: string) => void;
+  onStartInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell) => void;
+  onCommitInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell) => void;
+  onCancelInlineEdit?: () => void;
+  onOpenPeriod?: (period: string) => void;
+}) {
+  const periodClass = (year: string) => {
+    const numericYear = Number(year);
+    if (!baseYear || Number.isNaN(numericYear)) return "";
+    const role = numericYear > baseYear ? "forecast-year" : "history-year";
+    const start = numericYear > baseYear && !years.some((candidate) => {
+      const candidateYear = Number(candidate);
+      return !Number.isNaN(candidateYear) && candidateYear > baseYear && candidateYear < numericYear;
+    });
+    return `${role}${start ? " forecast-start" : ""}`;
+  };
+  const editableCell = (row: AxisRow, year: string) => {
+    if (!row.editablePath || !editableByPath) return null;
+    const assumption = editableByPath.get(row.editablePath);
+    if (!assumption) return null;
+    const cell = editableCellForPeriod(assumption, year);
+    return cell ? { assumption, cell } : null;
+  };
+
   return (
     <div className="table-scroll workbook-scroll">
       <table className="financial-table unified-table">
@@ -1064,7 +1363,15 @@ function UnifiedYearTable({ years, baseYear, groups }: { years: string[]; baseYe
           <tr className="year-header-row">
             <th>项目</th>
             {years.map((y) => (
-              <th className="numeric" key={y}>{yearLabel(y, baseYear)}</th>
+              <th className={`numeric ${periodClass(y)} ${editablePeriodSet?.has(y) ? "editable-period-head" : ""}`} key={y}>
+                {editMode && editablePeriodSet?.has(y) && onOpenPeriod ? (
+                  <button className="assumption-period-button" onClick={() => onOpenPeriod(y)} type="button">
+                    {yearLabel(y, baseYear)}
+                  </button>
+                ) : (
+                  yearLabel(y, baseYear)
+                )}
+              </th>
             ))}
           </tr>
         </thead>
@@ -1095,9 +1402,37 @@ function UnifiedYearTable({ years, baseYear, groups }: { years: string[]; baseYe
                   </td>
                   {years.map((y) => {
                     const v = r.values[y];
+                    const editable = editMode ? editableCell(r, y) : null;
+                    const currentValue = editable ? editableValueForCell(editable.cell, drafts) : v;
+                    const changed = editable ? editableCellChanged(editable.cell, drafts) : false;
+                    const isInline = Boolean(editable && inlineEdit?.pointer === editable.cell.pointer);
                     return (
-                      <td className={`numeric ${typeof v === "number" && v < 0 ? "negative" : ""}`} key={y}>
-                        {formatAxisCell(v, r.format)}
+                      <td className={`numeric ${periodClass(y)} ${typeof currentValue === "number" && currentValue < 0 ? "negative" : ""} ${changed ? "assumption-cell-changed" : ""}`} key={y}>
+                        {editable && isInline ? (
+                          <div className="assumption-inline-editor">
+                            <input
+                              autoFocus
+                              onChange={(event) => onInlineEditChange?.(event.currentTarget.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") onCommitInlineEdit?.(editable.assumption, editable.cell);
+                                if (event.key === "Escape") onCancelInlineEdit?.();
+                              }}
+                              type="text"
+                              value={inlineEdit?.raw ?? ""}
+                            />
+                            <button onClick={() => onCommitInlineEdit?.(editable.assumption, editable.cell)} type="button">OK</button>
+                          </div>
+                        ) : editable ? (
+                          <button
+                            className={`assumption-inline-cell ${changed ? "is-manual" : ""}`}
+                            onClick={() => onStartInlineEdit?.(editable.assumption, editable.cell)}
+                            type="button"
+                          >
+                            {editableDisplayValue(editable.assumption, currentValue)}
+                          </button>
+                        ) : (
+                          formatAxisCell(v, r.format)
+                        )}
                       </td>
                     );
                   })}
@@ -1120,10 +1455,59 @@ function knobIsRate(path: string): boolean {
   return path.includes("gpm") || path.includes("cost_rates") || path.includes("tax_rate") || path.includes("minority");
 }
 
-function buildRevenueGroups(view: Yaml1RevenueView, presentation: Yaml1Presentation | null | undefined, secondaryBlocks: StashBlock[], fullStatementSheets?: StatementSheet[]): AxisGroup[] {
+function statementValueFromPreview(
+  baseSheet: StatementSheet | undefined,
+  previewSheet: StatementSheet | undefined,
+  fields: string[],
+  year: string,
+  baseYear: number,
+): number | null {
+  const isForecast = Number(year) > baseYear;
+  if (isForecast) {
+    const preview = statementValue(previewSheet, fields, year);
+    if (preview != null) return preview;
+  }
+  return statementValue(baseSheet, fields, year);
+}
+
+function profitRowsForRevenueBlock(
+  baseSheet: StatementSheet | undefined,
+  previewSheet: StatementSheet | undefined,
+  years: string[],
+  baseYear: number,
+  revenueValues: Record<string, number | null>,
+): AxisRow[] {
+  const netIncome: Record<string, number | null> = {};
+  const attrNetIncome: Record<string, number | null> = {};
+  for (const year of years) {
+    netIncome[year] = statementValueFromPreview(baseSheet, previewSheet, ["n_income"], year, baseYear);
+    attrNetIncome[year] = statementValueFromPreview(baseSheet, previewSheet, ["n_income_attr_p"], year, baseYear);
+  }
+  const netMargin: Record<string, number | null> = {};
+  for (const year of years) {
+    const income = netIncome[year];
+    const revenue = revenueValues[year];
+    netMargin[year] = typeof income === "number" && typeof revenue === "number" && revenue !== 0 ? income / revenue : null;
+  }
+  return [
+    { label: "归母净利润", bold: true, values: attrNetIncome, format: "int" },
+    { label: "净利润", values: netIncome, format: "int" },
+    { label: "净利率", muted: true, values: netMargin, format: "decimal" },
+    { label: "净利润同比", muted: true, values: yoySeries(netIncome), format: "signedDecimal" },
+  ];
+}
+
+function buildRevenueGroups(
+  view: Yaml1RevenueView,
+  presentation: Yaml1Presentation | null | undefined,
+  secondaryBlocks: StashBlock[],
+  fullStatementSheets?: StatementSheet[],
+  previewStatementSheets?: StatementSheet[],
+): AxisGroup[] {
   const groups: AxisGroup[] = [];
   // 总收入：历史从完整 IS 表 revenue 补全，base+预测来自 revenueView，拼成完整时间轴
   const fullIs = fullStatementSheets?.find((s) => s.key === "is");
+  const previewIs = previewStatementSheets?.find((s) => s.key === "is");
   const totalValues: Record<string, number | null> = {};
   if (fullIs) {
     for (const y of fullIs.years) {
@@ -1131,15 +1515,17 @@ function buildRevenueGroups(view: Yaml1RevenueView, presentation: Yaml1Presentat
     }
   }
   totalValues[String(view.base_year)] = view.base_revenue;
-  for (const y of view.years) totalValues[y] = view.revenues[y] ?? null;
+  for (const y of view.years) totalValues[y] = statementValue(previewIs, ["revenue"], y) ?? view.revenues[y] ?? null;
   const totalYoy: Record<string, number | null> = yoySeries(totalValues);
+  const totalRows: AxisRow[] = [
+    { label: "营业收入", bold: true, values: totalValues, format: "int" },
+    { label: "同比增长", muted: true, values: totalYoy, format: "signedDecimal" },
+    ...profitRowsForRevenueBlock(fullIs, previewIs, unionYears([Object.keys(totalValues), view.years]), view.base_year, totalValues),
+  ];
   groups.push({
-    title: "总收入",
+    title: "总收入与利润路径",
     unit: "百万元",
-    rows: [
-      { label: "营业收入", bold: true, values: totalValues, format: "int" },
-      { label: "同比增长", muted: true, values: totalYoy, format: "signedDecimal" },
-    ],
+    rows: totalRows,
   });
   // 主拆分 · 业务线
   const wanted = presentation?.segment_order ?? [];
@@ -1182,9 +1568,245 @@ function buildAssumptionsGroups(view: Yaml1AssumptionsView): AxisGroup[] {
     rows: sec.knobs.map((k) => {
       const values: Record<string, number | null> = {};
       view.years.forEach((y, i) => { values[y] = k.values[i] ?? null; });
-      return { label: knobLabel(k), values, note: k.note, override: k.is_override, bold: k.is_override, format: knobIsRate(k.path) ? "decimal" : "int" };
+      return { label: knobLabel(k), values, note: k.note, override: k.is_override, bold: k.is_override, editablePath: k.path, format: knobIsRate(k.path) ? "decimal" : "int" };
     }),
   }));
+}
+
+const EDITABLE_GROUP_LABELS: Record<EditableAssumption["group"], string> = {
+  result: "结果目标",
+  revenue_driver: "收入拆分 drivers",
+  standard_knob: "利润表 knobs",
+  terminal: "终值 / 时间轴",
+  other: "其他覆盖",
+};
+
+function editableYears(rows: EditableAssumption[]): string[] {
+  return unionYears(rows.flatMap((row) => row.cells.map((cell) => cell.year)));
+}
+
+function editableOriginalValue(row: EditableAssumption, year: string): number | null {
+  const cell = row.cells.find((item) => item.year === year);
+  return cell?.value ?? null;
+}
+
+function editablePointer(row: EditableAssumption, year: string): string | null {
+  const cell = row.cells.find((item) => item.year === year);
+  return cell?.pointer ?? null;
+}
+
+function editableDisplayValue(row: EditableAssumption, value: number | null): string {
+  if (value == null) return "";
+  if (row.format === "percent") return formatPercent(value, 2);
+  if (row.format === "integer") return formatNumber(value, 0);
+  return formatNumber(value, 2);
+}
+
+function editableInputValue(row: EditableAssumption, value: number | null): string {
+  if (value == null) return "";
+  const displayValue = row.format === "percent" ? value * 100 : value;
+  return `${Number(displayValue.toFixed(6))}`;
+}
+
+function parseEditableInput(row: EditableAssumption, raw: string): number | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const parsed = Number(trimmed.replace(/,/g, "").replace(/%$/, ""));
+  if (!Number.isFinite(parsed)) return null;
+  return row.format === "percent" ? parsed / 100 : parsed;
+}
+
+function editableCellForPeriod(row: EditableAssumption, period: string): EditableAssumptionCell | undefined {
+  return row.cells.find((item) => item.year === period);
+}
+
+function editableValueForCell(cell: EditableAssumptionCell, drafts: Record<string, number | null>): number | null {
+  return cell.pointer in drafts ? drafts[cell.pointer] : cell.value;
+}
+
+function editableCellChanged(cell: EditableAssumptionCell, drafts: Record<string, number | null>): boolean {
+  return cell.pointer in drafts && drafts[cell.pointer] !== cell.value;
+}
+
+function editableRowsByPath(rows: EditableAssumption[]): Map<string, EditableAssumption> {
+  return new Map(rows.map((row) => [row.path, row]));
+}
+
+function editablePeriods(rows: EditableAssumption[]): string[] {
+  return unionYears([rows.filter((row) => row.group !== "terminal").flatMap((row) => row.cells.map((cell) => cell.year))]);
+}
+
+function buildAssumptionPatches(editable: EditableAssumption[], drafts: Record<string, number | null>): AssumptionPatch[] {
+  const original = new Map<string, number | null>();
+  for (const row of editable) {
+    for (const cell of row.cells) original.set(cell.pointer, cell.value);
+  }
+  return Object.entries(drafts)
+    .filter(([pointer, value]) => original.has(pointer) && original.get(pointer) !== value)
+    .map(([pointer, value]) => ({
+      pointer,
+      old_value: original.get(pointer) ?? null,
+      new_value: value,
+    }));
+}
+
+function EditableAssumptionsTable({
+  editable,
+  editMode,
+  drafts,
+  onDraft,
+}: {
+  editable: EditableAssumption[];
+  editMode: boolean;
+  drafts: Record<string, number | null>;
+  onDraft: (pointer: string, value: number | null) => void;
+}) {
+  const nonTerminal = editable.filter((row) => row.group !== "terminal");
+  const terminal = editable.filter((row) => row.group === "terminal");
+  const years = editableYears(nonTerminal);
+  const grouped = new Map<EditableAssumption["group"], EditableAssumption[]>();
+  for (const row of nonTerminal) grouped.set(row.group, [...(grouped.get(row.group) ?? []), row]);
+
+  return (
+    <div className="assumption-edit-stack">
+      <div className="table-scroll workbook-scroll">
+        <table className="financial-table unified-table assumption-edit-table">
+          <thead>
+            <tr className="year-header-row">
+              <th>项目</th>
+              {years.map((year) => (
+                <th className="numeric forecast-year" key={year}>{year}E</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[...grouped.entries()].map(([group, rows]) => (
+              <Fragment key={group}>
+                <tr className="group-header-row">
+                  <th colSpan={years.length + 1}>{EDITABLE_GROUP_LABELS[group] ?? group}</th>
+                </tr>
+                {rows.map((row) => (
+                  <tr key={row.id}>
+                    <td className="statement-label" title={[row.path, row.src, row.note].filter(Boolean).join("\n")}>
+                      <span>{row.label}</span>
+                      <small>{row.path}</small>
+                    </td>
+                    {years.map((year) => {
+                      const pointer = editablePointer(row, year);
+                      const originalValue = editableOriginalValue(row, year);
+                      const currentValue = pointer && pointer in drafts ? drafts[pointer] : originalValue;
+                      const changed = pointer != null && pointer in drafts && drafts[pointer] !== originalValue;
+                      return (
+                        <td className={`numeric assumption-edit-cell ${changed ? "changed" : ""}`} key={`${row.id}-${year}`}>
+                          {editMode && pointer ? (
+                            <input
+                              aria-label={`${row.label} ${year}`}
+                              className="assumption-cell-input"
+                              onChange={(event) => onDraft(pointer, parseEditableInput(row, event.currentTarget.value))}
+                              type="number"
+                              value={editableInputValue(row, currentValue)}
+                            />
+                          ) : (
+                            editableDisplayValue(row, currentValue)
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {terminal.length ? (
+        <div className="terminal-edit-strip">
+          {terminal.map((row) => {
+            const cell: EditableAssumptionCell | undefined = row.cells[0];
+            const pointer = cell?.pointer;
+            const originalValue = cell?.value ?? null;
+            const currentValue = pointer && pointer in drafts ? drafts[pointer] : originalValue;
+            const changed = pointer != null && pointer in drafts && drafts[pointer] !== originalValue;
+            return (
+              <label className={`terminal-edit-field ${changed ? "changed" : ""}`} key={row.id}>
+                <span>{row.label}</span>
+                {editMode && pointer ? (
+                  <input
+                    onChange={(event) => onDraft(pointer, parseEditableInput(row, event.currentTarget.value))}
+                    type="number"
+                    value={editableInputValue(row, currentValue)}
+                  />
+                ) : (
+                  <strong>{editableDisplayValue(row, currentValue)}</strong>
+                )}
+              </label>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AssumptionPeriodDrawer({
+  period,
+  editable,
+  drafts,
+  onDraft,
+  onClose,
+}: {
+  period: string;
+  editable: EditableAssumption[];
+  drafts: Record<string, number | null>;
+  onDraft: (pointer: string, value: number | null) => void;
+  onClose: () => void;
+}) {
+  const rows = editable.filter((row) => row.cells.some((cell) => cell.year === period));
+  const grouped = new Map<EditableAssumption["group"], EditableAssumption[]>();
+  for (const row of rows) grouped.set(row.group, [...(grouped.get(row.group) ?? []), row]);
+  const title = period === "terminal" ? "Terminal" : `${period}E`;
+
+  return (
+    <div className="assumption-drawer-backdrop" role="presentation" onMouseDown={onClose}>
+      <aside className="assumption-drawer" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="assumption-drawer-head">
+          <div>
+            <div className="eyebrow">Assumption panel</div>
+            <h2>{title}</h2>
+          </div>
+          <button className="icon-button" onClick={onClose} type="button">×</button>
+        </div>
+        <div className="assumption-drawer-list">
+          {[...grouped.entries()].map(([group, groupRows]) => (
+            <Fragment key={group}>
+              <div className="assumption-drawer-group">{EDITABLE_GROUP_LABELS[group] ?? group}</div>
+              {groupRows.map((row) => {
+                const cell = editableCellForPeriod(row, period);
+                if (!cell) return null;
+                const currentValue = editableValueForCell(cell, drafts);
+                const changed = editableCellChanged(cell, drafts);
+                return (
+                  <div className={`assumption-drawer-row ${changed ? "changed" : ""}`} key={`${row.id}-${cell.pointer}`}>
+                    <div className="assumption-drawer-row-copy">
+                      <strong>{row.label}</strong>
+                      <span>{editableDisplayValue(row, currentValue)}</span>
+                      <small>{row.path}</small>
+                    </div>
+                    <input
+                      onChange={(event) => onDraft(cell.pointer, parseEditableInput(row, event.currentTarget.value))}
+                      placeholder={row.format === "percent" ? "1.5 / 1.5%" : row.format === "integer" ? "整数" : "数值"}
+                      type="text"
+                      value={editableInputValue(row, currentValue)}
+                    />
+                  </div>
+                );
+              })}
+            </Fragment>
+          ))}
+        </div>
+      </aside>
+    </div>
+  );
 }
 
 function buildReferenceGroups(refBlocks: StashBlock[]): { groups: AxisGroup[]; rest: StashBlock[] } {
@@ -1207,6 +1829,331 @@ function buildReferenceGroups(refBlocks: StashBlock[]): { groups: AxisGroup[]; r
   return { groups, rest };
 }
 
+const ANNUAL_DIMENSIONS = [
+  { key: "product", label: "产品" },
+  { key: "industry", label: "行业" },
+  { key: "region", label: "地区" },
+  { key: "sales_model", label: "销售模式" },
+];
+
+const ANNUAL_SOURCE_LABELS: Record<string, string> = {
+  revenue_composition: "收入构成",
+  major_business_profitability: "主营业务",
+  business_profitability_yoy_split: "经营情况",
+};
+
+const ANNUAL_SERIES_METRICS = [
+  { key: "revenue_yuan", label: "收入" },
+  { key: "revenue_pct", label: "占比" },
+  { key: "revenue_yoy_pct", label: "同比" },
+  { key: "gross_margin_pct", label: "毛利率" },
+] as const;
+
+type AnnualSeriesMetric = (typeof ANNUAL_SERIES_METRICS)[number]["key"];
+
+function normalizeDisclosureName(value: string): string {
+  return value.replace(/[（）()及与和、/\\\s]/g, "").toLowerCase();
+}
+
+function disclosureShare(row: AnnualRevenueBreakdownRow, rows: AnnualRevenueBreakdownRow[]): number | null {
+  if (typeof row.revenue_pct === "number" && !Number.isNaN(row.revenue_pct)) return row.revenue_pct;
+  const total = rows.reduce((sum, item) => sum + (typeof item.revenue_yuan === "number" ? item.revenue_yuan : 0), 0);
+  if (!total || typeof row.revenue_yuan !== "number") return null;
+  return (row.revenue_yuan / total) * 100;
+}
+
+function annualMetricValue(
+  row: AnnualRevenueBreakdownRow | undefined,
+  metric: AnnualSeriesMetric,
+  yearRows: AnnualRevenueBreakdownRow[],
+): number | null {
+  if (!row) return null;
+  if (metric === "revenue_pct") return disclosureShare(row, yearRows);
+  const value = row[metric];
+  return typeof value === "number" && !Number.isNaN(value) ? value : null;
+}
+
+function formatAnnualMetric(value: number | null, metric: AnnualSeriesMetric): string {
+  if (value == null) return "";
+  if (metric === "revenue_yuan") return formatYuan(value);
+  if (metric === "revenue_yoy_pct") return formatSignedPctPoint(value);
+  return formatPctPoint(value);
+}
+
+function pickAnnualSeriesRow(
+  candidates: AnnualRevenueBreakdownRow[],
+  metric: AnnualSeriesMetric,
+): AnnualRevenueBreakdownRow | undefined {
+  if (!candidates.length) return undefined;
+  const hasMetric = (row: AnnualRevenueBreakdownRow) => {
+    if (metric === "revenue_pct") return typeof row.revenue_pct === "number" || typeof row.revenue_yuan === "number";
+    return typeof row[metric] === "number";
+  };
+  const sourceScore = (row: AnnualRevenueBreakdownRow) => {
+    if (metric === "revenue_pct") return row.source_table === "revenue_composition" ? 0 : 1;
+    if (metric === "gross_margin_pct") return row.gross_margin_pct == null ? 2 : 0;
+    return row.source_table === "major_business_profitability" ? 0 : 1;
+  };
+  return [...candidates].sort((left, right) => {
+    const metricDelta = Number(!hasMetric(left)) - Number(!hasMetric(right));
+    if (metricDelta !== 0) return metricDelta;
+    const sourceDelta = sourceScore(left) - sourceScore(right);
+    if (sourceDelta !== 0) return sourceDelta;
+    return (right.revenue_yuan ?? 0) - (left.revenue_yuan ?? 0);
+  })[0];
+}
+
+function AnnualRevenueDisclosure({
+  rows,
+  modelSegments,
+}: {
+  rows?: AnnualRevenueBreakdownRow[];
+  modelSegments: Yaml1RevenueSegment[];
+}) {
+  const allRows = rows ?? [];
+  const years = useMemo(() => [...new Set(allRows.map((row) => row.year))].sort((a, b) => b - a), [allRows]);
+  const seriesYears = useMemo(() => [...years].sort((a, b) => a - b), [years]);
+  const [activeYear, setActiveYear] = useState<number | null>(years[0] ?? null);
+  const [viewMode, setViewMode] = useState<"snapshot" | "series">("series");
+  const [seriesMetric, setSeriesMetric] = useState<AnnualSeriesMetric>("revenue_yuan");
+
+  useEffect(() => {
+    if (!years.length) {
+      setActiveYear(null);
+      return;
+    }
+    setActiveYear((current) => (current && years.includes(current) ? current : years[0]));
+  }, [years]);
+
+  const yearRows = useMemo(() => allRows.filter((row) => row.year === activeYear), [allRows, activeYear]);
+  const availableDimensions = useMemo(
+    () => ANNUAL_DIMENSIONS.filter((dimension) => allRows.some((row) => row.dimension === dimension.key)),
+    [allRows],
+  );
+  const [activeDimension, setActiveDimension] = useState<string>("product");
+
+  useEffect(() => {
+    if (!availableDimensions.length) return;
+    setActiveDimension((current) =>
+      availableDimensions.some((dimension) => dimension.key === current) ? current : availableDimensions[0].key,
+    );
+  }, [availableDimensions]);
+
+  const visibleRows = useMemo(
+    () =>
+      yearRows
+        .filter((row) => row.dimension === activeDimension)
+        .sort((left, right) => (right.revenue_yuan ?? 0) - (left.revenue_yuan ?? 0)),
+    [yearRows, activeDimension],
+  );
+  const dimensionRows = useMemo(() => allRows.filter((row) => row.dimension === activeDimension), [allRows, activeDimension]);
+  const seriesItems = useMemo(() => {
+    const names = [...new Set(dimensionRows.map((row) => row.item_name).filter(Boolean))];
+    return names
+      .map((name) => {
+        const latestRevenue = [...dimensionRows]
+          .filter((row) => row.item_name === name && typeof row.revenue_yuan === "number")
+          .sort((left, right) => right.year - left.year)[0]?.revenue_yuan ?? 0;
+        return { name, latestRevenue };
+      })
+      .sort((left, right) => right.latestRevenue - left.latestRevenue || left.name.localeCompare(right.name, "zh-CN"));
+  }, [dimensionRows]);
+
+  const modelNames = useMemo(() => modelSegments.map((segment) => segment.name).filter(Boolean), [modelSegments]);
+  const normalizedModelNames = useMemo(() => modelNames.map(normalizeDisclosureName), [modelNames]);
+  const matchedRows = useMemo(() => {
+    if (activeDimension !== "product" || !normalizedModelNames.length) return [];
+    return visibleRows.filter((row) => {
+      const disclosed = normalizeDisclosureName(row.item_name);
+      return normalizedModelNames.some((model) => disclosed.includes(model) || model.includes(disclosed));
+    });
+  }, [activeDimension, normalizedModelNames, visibleRows]);
+  const matchRate = visibleRows.length ? matchedRows.length / visibleRows.length : null;
+  const activeLabel = availableDimensions.find((dimension) => dimension.key === activeDimension)?.label ?? "披露口径";
+
+  if (!allRows.length) {
+    return (
+      <section className="card yaml-region annual-disclosure">
+        <div className="yaml-region-heading">
+          <div className="eyebrow">④ Annual report disclosure</div>
+          <h2>年报披露口径</h2>
+        </div>
+        <div className="annual-empty">
+          <h3>暂无年报披露拆分</h3>
+          <p>当前公司还没有生成可展示的年报业务拆分数据。</p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card yaml-region annual-disclosure">
+      <div className="yaml-region-heading annual-disclosure-heading">
+        <div>
+          <div className="eyebrow">④ Annual report disclosure</div>
+          <h2>年报披露口径</h2>
+        </div>
+        <div className="annual-disclosure-stats">
+          <div>
+            <span>展示</span>
+            <strong>{viewMode === "snapshot" ? activeYear ?? "-" : "时间序列"}</strong>
+          </div>
+          <div>
+            <span>维度</span>
+            <strong>{activeLabel}</strong>
+          </div>
+          <div>
+            <span>模型匹配</span>
+            <strong>{matchRate == null ? "-" : formatPercent(matchRate, 0)}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="annual-disclosure-controls">
+        <div className="range-toggle annual-mode-toggle" role="group">
+          <button className={viewMode === "snapshot" ? "active" : ""} onClick={() => setViewMode("snapshot")} type="button">
+            单年结构
+          </button>
+          <button className={viewMode === "series" ? "active" : ""} onClick={() => setViewMode("series")} type="button">
+            时间序列
+          </button>
+        </div>
+        <div className="sheet-tabs compact-tabs" role="tablist">
+          {years.map((year) => (
+            <button className={viewMode === "snapshot" && year === activeYear ? "active" : ""} key={year} onClick={() => { setActiveYear(year); setViewMode("snapshot"); }} type="button">
+              {year}
+            </button>
+          ))}
+        </div>
+        <div className="sheet-tabs compact-tabs" role="tablist">
+          {availableDimensions.map((dimension) => (
+            <button
+              className={dimension.key === activeDimension ? "active" : ""}
+              key={dimension.key}
+              onClick={() => setActiveDimension(dimension.key)}
+              type="button"
+            >
+              <span>{dimension.label}</span>
+              <small>{allRows.filter((row) => row.dimension === dimension.key).length}</small>
+            </button>
+          ))}
+        </div>
+        {viewMode === "series" ? (
+          <div className="sheet-tabs compact-tabs" role="tablist">
+            {ANNUAL_SERIES_METRICS.map((metric) => (
+              <button className={seriesMetric === metric.key ? "active" : ""} key={metric.key} onClick={() => setSeriesMetric(metric.key)} type="button">
+                {metric.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      {viewMode === "series" && seriesItems.length ? (
+        <div className="table-scroll workbook-scroll annual-series-table-wrap">
+          <table className="financial-table annual-series-table">
+            <thead>
+              <tr>
+                <th>{activeLabel}</th>
+                {seriesYears.map((year) => (
+                  <th className="numeric" key={year}>{year}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {seriesItems.map((item) => (
+                <tr key={item.name}>
+                  <td className="statement-label">
+                    <span>{item.name}</span>
+                  </td>
+                  {seriesYears.map((year) => {
+                    const rowsInYear = dimensionRows.filter((row) => row.year === year);
+                    const row = pickAnnualSeriesRow(rowsInYear.filter((candidate) => candidate.item_name === item.name), seriesMetric);
+                    const value = annualMetricValue(row, seriesMetric, rowsInYear);
+                    return (
+                      <td className={`numeric ${seriesMetric === "revenue_yoy_pct" && value != null && value < 0 ? "negative" : ""}`} key={year}>
+                        {formatAnnualMetric(value, seriesMetric)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {viewMode === "snapshot" && visibleRows.length ? (
+        <>
+          <div className="annual-bars">
+            {visibleRows.slice(0, 12).map((row) => {
+              const share = disclosureShare(row, visibleRows);
+              return (
+                <div className="annual-bar-row" key={`${row.year}-${row.dimension}-${row.item_name}-${row.source_line}`}>
+                  <div className="annual-bar-label" title={row.item_name}>{row.item_name}</div>
+                  <div className="annual-bar-track">
+                    <span style={{ width: `${Math.max(2, Math.min(100, share ?? 0))}%` }} />
+                  </div>
+                  <div className="annual-bar-value">{share == null ? "-" : formatPctPoint(share, 1)}</div>
+                  <div className="annual-bar-revenue">{formatYuan(row.revenue_yuan)}</div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="table-scroll workbook-scroll annual-disclosure-table-wrap">
+            <table className="financial-table annual-disclosure-table">
+              <thead>
+                <tr>
+                  <th>项目</th>
+                  <th className="numeric">收入</th>
+                  <th className="numeric">占比</th>
+                  <th className="numeric">同比</th>
+                  <th className="numeric">毛利率</th>
+                  <th>来源</th>
+                  <th>置信度</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRows.map((row) => {
+                  const share = disclosureShare(row, visibleRows);
+                  return (
+                    <tr key={`${row.year}-${row.dimension}-${row.item_name}-${row.source_table}-${row.source_line}`}>
+                      <td className="statement-label">
+                        <span>{row.item_name}</span>
+                      </td>
+                      <td className="numeric">{formatYuan(row.revenue_yuan)}</td>
+                      <td className="numeric">{share == null ? "-" : formatPctPoint(share, 1)}</td>
+                      <td className={`numeric ${typeof row.revenue_yoy_pct === "number" && row.revenue_yoy_pct < 0 ? "negative" : ""}`}>
+                        {formatSignedPctPoint(row.revenue_yoy_pct)}
+                      </td>
+                      <td className="numeric">{formatPctPoint(row.gross_margin_pct)}</td>
+                      <td>
+                        <span className="source-chip">{ANNUAL_SOURCE_LABELS[row.source_table] ?? row.source_table}</span>
+                        <small className="source-line">line {row.source_line}</small>
+                      </td>
+                      <td>
+                        <span className={`confidence-pill ${row.confidence}`}>{row.confidence || "-"}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+
+      {(viewMode === "snapshot" && !visibleRows.length) || (viewMode === "series" && !seriesItems.length) ? (
+        <div className="annual-empty">
+          <h3>当前维度无披露项</h3>
+          <p>这一年报没有抽到该维度下的收入拆分。</p>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function YamlWorkbook({
   companyId,
   initialPresentation,
@@ -1215,6 +2162,8 @@ function YamlWorkbook({
   fullStatementSheets,
   stashView,
   assumptionsView,
+  editableAssumptions,
+  annualRevenueBreakdown,
   yaml1Text,
   path,
 }: {
@@ -1225,6 +2174,8 @@ function YamlWorkbook({
   fullStatementSheets?: StatementSheet[];
   stashView?: StashBlock[];
   assumptionsView?: Yaml1AssumptionsView | null;
+  editableAssumptions?: EditableAssumption[];
+  annualRevenueBreakdown?: AnnualRevenueBreakdownRow[];
   yaml1Text?: string | null;
   path?: string | null;
 }) {
@@ -1232,13 +2183,61 @@ function YamlWorkbook({
   const [presentationStatus, setPresentationStatus] = useState<string[]>([]);
   const [presentationError, setPresentationError] = useState<string | null>(null);
   const [presentationRunning, setPresentationRunning] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [draftValues, setDraftValues] = useState<Record<string, number | null>>({});
+  const [preview, setPreview] = useState<AssumptionPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [briefPrompt, setBriefPrompt] = useState("");
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [briefError, setBriefError] = useState<string | null>(null);
+  const [drawerPeriod, setDrawerPeriod] = useState<string | null>(null);
+  const [inlineEdit, setInlineEdit] = useState<AssumptionInlineEdit | null>(null);
+  const editableRows = editableAssumptions ?? [];
+  const patches = useMemo(() => buildAssumptionPatches(editableRows, draftValues), [editableRows, draftValues]);
+  const editablePathMap = useMemo(() => editableRowsByPath(editableRows), [editableRows]);
+  const editablePeriodList = useMemo(() => editablePeriods(editableRows), [editableRows]);
+  const editablePeriodSet = useMemo(() => new Set(editablePeriodList), [editablePeriodList]);
+  const hasTerminalEditable = editableRows.some((row) => row.group === "terminal");
 
   useEffect(() => {
     setPresentation(initialPresentation ?? null);
     setPresentationStatus([]);
     setPresentationError(null);
     setPresentationRunning(false);
+    setEditMode(false);
+    setDraftValues({});
+    setPreview(null);
+    setPreviewError(null);
+    setBriefPrompt("");
+    setBriefError(null);
+    setDrawerPeriod(null);
+    setInlineEdit(null);
   }, [initialPresentation, path]);
+
+  useEffect(() => {
+    if (!editMode || patches.length === 0) {
+      setPreview(null);
+      setPreviewLoading(false);
+      setPreviewError(null);
+      return;
+    }
+    setPreviewLoading(true);
+    const timer = window.setTimeout(() => {
+      previewAssumptions(companyId, patches)
+        .then((result) => {
+          setPreview(result);
+          const firstError = result.errors?.[0]?.message;
+          setPreviewError(typeof firstError === "string" ? firstError : null);
+        })
+        .catch((error) => {
+          setPreview(null);
+          setPreviewError(error instanceof Error ? error.message : "Preview failed");
+        })
+        .finally(() => setPreviewLoading(false));
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [companyId, editMode, patches]);
 
   function generatePresentation() {
     setPresentationRunning(true);
@@ -1263,12 +2262,43 @@ function YamlWorkbook({
     };
   }
 
-  if (!revenueView && !assumptionsView && !stashView?.length) {
+  function updateDraft(pointer: string, value: number | null) {
+    setDraftValues((current) => ({ ...current, [pointer]: value }));
+    setBriefPrompt("");
+    setBriefError(null);
+  }
+
+  function startInlineEdit(assumption: EditableAssumption, cell: EditableAssumptionCell) {
+    setInlineEdit({ pointer: cell.pointer, raw: editableInputValue(assumption, editableValueForCell(cell, draftValues)) });
+  }
+
+  function commitInlineEdit(assumption: EditableAssumption, cell: EditableAssumptionCell) {
+    if (!inlineEdit || inlineEdit.pointer !== cell.pointer) return;
+    updateDraft(cell.pointer, parseEditableInput(assumption, inlineEdit.raw));
+    setInlineEdit(null);
+  }
+
+  async function generateBrief() {
+    if (!patches.length) return;
+    setBriefLoading(true);
+    setBriefError(null);
+    try {
+      const result = await generateAssumptionBrief(companyId, patches, preview?.dcf_summary ?? null);
+      setBriefPrompt(result.prompt);
+    } catch (error) {
+      setBriefError(error instanceof Error ? error.message : "生成 prompt 失败");
+    } finally {
+      setBriefLoading(false);
+    }
+  }
+
+  if (!revenueView && !assumptionsView && !editableRows.length && !stashView?.length && !annualRevenueBreakdown?.length) {
     return <EmptyState title="No YAML1" body="Compiler output yaml1_*.yaml was not found or could not be parsed." />;
   }
 
   const insightItems = presentation?.insights?.filter(Boolean) ?? [];
   const riskItems = presentation?.risks?.filter(Boolean) ?? [];
+  const hasBusinessRead = insightItems.length > 0 || riskItems.length > 0;
 
   // 三区一轴：每区一张表、一个共享年份轴，缺数据留空。约定分派，非公司特判。
   const allStash = stashView ?? [];
@@ -1285,23 +2315,31 @@ function YamlWorkbook({
         [String(revenueView.base_year)],
       ])
     : [];
-  const revenueGroups = revenueView ? buildRevenueGroups(revenueView, presentation, secondaryBlocks, fullStatementSheets) : [];
+  const revenueGroups = revenueView ? buildRevenueGroups(revenueView, presentation, secondaryBlocks, fullStatementSheets, preview?.statement_sheets) : [];
 
   // ② 关键假设区
   const asmBase = assumptionsView ? Number(assumptionsView.base_period) : 0;
-  const asmYears = assumptionsView ? assumptionsView.years.filter((y) => isYearKeyStr(y)) : [];
-  const asmGroups = assumptionsView ? buildAssumptionsGroups(assumptionsView) : [];
+  const assumptionGroups = assumptionsView ? buildAssumptionsGroups(assumptionsView) : [];
+  const assumptionYears = assumptionsView?.years ?? [];
   const terminal = assumptionsView?.terminal;
 
   // ③ 参考区
   const refBase = revenueBase || asmBase;
   const { groups: refGroups, rest: refRest } = buildReferenceGroups(refBlocks);
   const refYears = unionYears(refGroups.map((g) => g.rows.flatMap((r) => Object.keys(r.values))));
+  const revenueLastYear = revenueView?.years.length ? revenueView.years[revenueView.years.length - 1] : null;
+  const overrideCount = editableRows.length;
+  const yamlHeroStats = [
+    { label: "BASE", value: String(revenueBase || asmBase || "-") },
+    { label: "FORECAST", value: revenueView?.years.length ? `${revenueView.years[0]}-${revenueLastYear}` : "-" },
+    { label: "SEGMENTS", value: String(revenueView?.segments.length ?? 0) },
+    { label: "EDITABLE", value: String(overrideCount) },
+  ];
 
   return (
     <div className="view-stack yaml1-spec">
-      <section className="hero-block">
-        <div>
+      <section className="hero-block yaml-hero-card">
+        <div className="yaml-hero-copy">
           <div className="eyebrow">YAML1 · 模型说明书</div>
           <h1>{presentation?.title || "收入拆分 + 关键假设 + 参考项"}</h1>
           <div className="hero-meta">
@@ -1309,68 +2347,200 @@ function YamlWorkbook({
           </div>
           {presentation?.subtitle ? <p className="hero-subtitle">{presentation.subtitle}</p> : null}
         </div>
-        <button className="primary-button" disabled={presentationRunning} onClick={generatePresentation} type="button">
-          {presentationRunning ? "生成中..." : presentation ? "重新生成业务解读" : "生成业务解读"}
-        </button>
+        <div className="yaml-hero-side">
+          <div className="yaml-hero-stats">
+            {yamlHeroStats.map((item) => (
+              <div key={item.label}>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
 
-      {presentationStatus.length || presentationError ? (
-        <section className="ai-stream">
-          {presentationStatus.map((item, index) => (
-            <div className={index === presentationStatus.length - 1 && presentationRunning ? "active" : ""} key={`${item}-${index}`}>
-              {item}
-            </div>
-          ))}
-          {presentationError ? <div className="error">{presentationError}</div> : null}
-        </section>
-      ) : null}
+      <section className="card yaml-region assumption-workbench-toolbar">
+        <div className="yaml-region-heading">
+          <div>
+            <div className="eyebrow">Model edit mode</div>
+            <h2>假设试算工作台</h2>
+          </div>
+          <div className="assumption-toolbar-actions">
+            <button className={editMode ? "primary-button" : "secondary-button"} onClick={() => setEditMode((value) => !value)} type="button">
+              {editMode ? "退出编辑" : "进入编辑"}
+            </button>
+            <button
+              className="secondary-button"
+              disabled={!patches.length}
+              onClick={() => {
+                setDraftValues({});
+                setPreview(null);
+                setPreviewError(null);
+                setBriefPrompt("");
+                setDrawerPeriod(null);
+                setInlineEdit(null);
+              }}
+              type="button"
+            >
+              重置
+            </button>
+            <button className="primary-button" disabled={!patches.length || briefLoading} onClick={generateBrief} type="button">
+              {briefLoading ? "生成中..." : "生成 /ka prompt"}
+            </button>
+          </div>
+        </div>
+        <div className="assumption-preview-status">
+          <span>{patches.length ? `${patches.length} 处改动` : "无草稿改动"}</span>
+          <span>{previewLoading ? "Preview 重算中..." : preview ? "Preview 已更新" : "使用正式 forecast"}</span>
+          {preview?.dcf_summary?.per_share_value != null ? <strong>试算每股 {formatNumber(preview.dcf_summary.per_share_value, 2)}</strong> : null}
+        </div>
+        {editMode && (editablePeriodList.length > 0 || hasTerminalEditable) ? (
+          <div className="assumption-period-strip">
+            {editablePeriodList.map((period) => (
+              <button className={drawerPeriod === period ? "active" : ""} key={period} onClick={() => setDrawerPeriod(period)} type="button">
+                {period}E
+              </button>
+            ))}
+            {hasTerminalEditable ? (
+              <button className={drawerPeriod === "terminal" ? "active" : ""} onClick={() => setDrawerPeriod("terminal")} type="button">
+                Terminal
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {previewError ? <div className="error-banner">{previewError}</div> : null}
+        {briefError ? <div className="error-banner">{briefError}</div> : null}
+        {briefPrompt ? (
+          <div className="ka-prompt-box">
+            <div className="eyebrow">KA prompt</div>
+            <textarea readOnly value={briefPrompt} />
+          </div>
+        ) : null}
+      </section>
 
-      {insightItems.length || riskItems.length ? (
-        <section className="presentation-notes">
-          {insightItems.length ? (
-            <div className="business-read">
-              <div className="eyebrow">Business read</div>
-              <ul>{insightItems.map((item) => <li key={item}>{item}</li>)}</ul>
-            </div>
-          ) : null}
-          {riskItems.length ? (
-            <aside className="risk-footnote">
-              <div className="eyebrow">Things to review</div>
-              <ul>{riskItems.map((item) => <li key={item}>{item}</li>)}</ul>
-            </aside>
-          ) : null}
-        </section>
+      {editMode && drawerPeriod ? (
+        <AssumptionPeriodDrawer
+          drafts={draftValues}
+          editable={editableRows}
+          onClose={() => setDrawerPeriod(null)}
+          onDraft={updateDraft}
+          period={drawerPeriod}
+        />
       ) : null}
 
       {revenueGroups.length > 0 ? (
         <section className="card yaml-region">
           <div className="yaml-region-heading">
             <div className="eyebrow">① Revenue breakdown</div>
-            <h2>收入拆分</h2>
-            <p>总收入 · 主拆分（业务线）· 副拆分（地域 / 子公司）共享同一时间轴；无数据留空。副拆分来自外部模型，不参与营收计算。</p>
+            <h2>收入拆分 + 利润路径</h2>
           </div>
-          <UnifiedYearTable years={revenueYears} baseYear={revenueBase} groups={revenueGroups} />
+          <UnifiedYearTable
+            years={revenueYears}
+            baseYear={revenueBase}
+            groups={revenueGroups}
+            editMode={editMode}
+            editableByPath={editablePathMap}
+            editablePeriods={editablePeriodSet}
+            drafts={draftValues}
+            inlineEdit={inlineEdit}
+            onCancelInlineEdit={() => setInlineEdit(null)}
+            onCommitInlineEdit={commitInlineEdit}
+            onInlineEditChange={(raw) => setInlineEdit((current) => current ? { ...current, raw } : current)}
+            onOpenPeriod={setDrawerPeriod}
+            onStartInlineEdit={startInlineEdit}
+          />
         </section>
       ) : null}
 
-      {asmGroups.length > 0 ? (
+      {assumptionGroups.length > 0 ? (
         <section className="card yaml-region">
           <div className="yaml-region-heading">
-            <div className="eyebrow">② Key assumptions · knobs</div>
+            <div className="eyebrow">② Key assumptions</div>
             <h2>关键假设</h2>
-            <p>毛利率 · 费用率 · 营业利润调节 · 税率少数股东，共享同一预测期时间轴。蓝点 = 主动覆盖 / 查证；缺失 = 落 yaml2 平推。</p>
           </div>
-          <UnifiedYearTable years={asmYears} baseYear={asmBase} groups={asmGroups} />
+          <UnifiedYearTable
+            years={assumptionYears}
+            baseYear={asmBase}
+            groups={assumptionGroups}
+            editMode={editMode}
+            editableByPath={editablePathMap}
+            editablePeriods={editablePeriodSet}
+            drafts={draftValues}
+            inlineEdit={inlineEdit}
+            onCancelInlineEdit={() => setInlineEdit(null)}
+            onCommitInlineEdit={commitInlineEdit}
+            onInlineEditChange={(raw) => setInlineEdit((current) => current ? { ...current, raw } : current)}
+            onOpenPeriod={setDrawerPeriod}
+            onStartInlineEdit={startInlineEdit}
+          />
           {terminal && terminal.explicit_end != null ? <TerminalBlock terminal={terminal} /> : null}
         </section>
       ) : null}
 
-      {refGroups.length > 0 || refRest.length > 0 ? (
-        <section className="card yaml-region">
+      {editableRows.length > 0 ? (
+        <details className="card yaml-region assumption-advanced-list">
+          <summary>
+            <span>全部可调假设</span>
+            <small>{editableRows.length} knobs</small>
+          </summary>
+          <EditableAssumptionsTable editable={editableRows} editMode={editMode} drafts={draftValues} onDraft={updateDraft} />
+        </details>
+      ) : null}
+
+      <section className="card yaml-region business-read-panel">
+        <div className="yaml-region-heading business-read-heading">
+          <div>
+            <div className="eyebrow">③ Business read</div>
+            <h2>业务解读</h2>
+          </div>
+          <button className="primary-button" disabled={presentationRunning} onClick={generatePresentation} type="button">
+            {presentationRunning ? "生成中..." : presentation ? "重新生成业务解读" : "生成业务解读"}
+          </button>
+        </div>
+
+        {presentationStatus.length ? (
+          <div className="ai-stream business-read-stream">
+            {presentationStatus.map((item, index) => (
+              <div className={index === presentationStatus.length - 1 && presentationRunning ? "active" : ""} key={`${item}-${index}`}>
+                {item}
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {presentationError ? (
+          <div className="error-banner business-read-error">{presentationError}</div>
+        ) : null}
+
+        {!presentationRunning && !presentationError && !hasBusinessRead ? (
+          <div className="error-banner business-read-error">
+            尚未生成业务解读，或当前 YAML1 presentation schema 不完整。请点击“生成业务解读”；若仍失败，请检查后端服务和 .env 中的大模型配置。
+          </div>
+        ) : null}
+
+        {hasBusinessRead ? (
+          <section className="presentation-notes business-read-notes">
+            {insightItems.length ? (
+              <div className="business-read">
+                <div className="eyebrow">Business read</div>
+                <ul>{insightItems.map((item) => <li key={item}>{item}</li>)}</ul>
+              </div>
+            ) : null}
+            {riskItems.length ? (
+              <aside className="risk-footnote">
+                <div className="eyebrow">Things to review</div>
+                <ul>{riskItems.map((item) => <li key={item}>{item}</li>)}</ul>
+              </aside>
+            ) : null}
+          </section>
+        ) : null}
+      </section>
+
+      {(refGroups.length > 0 || refRest.length > 0) ? (
+        <section className="card yaml-region business-read-panel">
           <div className="yaml-region-heading">
-            <div className="eyebrow">③ Reference items · stash</div>
+            <div className="eyebrow">④ Reference items · stash</div>
             <h2>参考项</h2>
-            <p>历史观测 · 核对项共享同一时间轴；口径说明 / 溯源附注 / 定性情报见下方折叠。无删减，无数据留空。</p>
           </div>
           {refGroups.length > 0 ? (
             <UnifiedYearTable years={refYears} baseYear={refBase} groups={refGroups} />
@@ -1384,6 +2554,8 @@ function YamlWorkbook({
           ) : null}
         </section>
       ) : null}
+
+      <AnnualRevenueDisclosure rows={annualRevenueBreakdown} modelSegments={revenueView?.segments ?? []} />
 
       {yaml1Text ? (
         <details className="raw-yaml-block">
@@ -1486,11 +2658,13 @@ function SensitivityPanel({
   onChange,
   loading,
   error,
+  compact = false,
 }: {
   initial: SensitivityState;
   onChange: (state: SensitivityState) => void;
   loading: boolean;
   error?: string | null;
+  compact?: boolean;
 }) {
   const [values, setValues] = useState(initial);
 
@@ -1508,7 +2682,7 @@ function SensitivityPanel({
   };
 
   return (
-    <section className="card sensitivity-card">
+    <section className={`card sensitivity-card ${compact ? "compact" : ""}`}>
       <div className="section-heading">
         <div>
           <div className="eyebrow">DCF sensitivity</div>
@@ -1572,6 +2746,7 @@ function StatementsView({ detail }: { detail: CompanyDetail }) {
   const sheets = detail.full_statement_sheets?.length ? detail.full_statement_sheets : detail.statement_sheets ?? [];
   const [active, setActive] = useState(sheets[0]?.key ?? "is");
   const [showZeroRows, setShowZeroRows] = useState(false);
+  const [showTechnicalRows, setShowTechnicalRows] = useState(false);
   const [rangeMode, setRangeMode] = useState<"full" | "recent">("recent");
   const activeSheet = sheets.find((sheet) => sheet.key === active);
   const basePeriod = String(detail.dcf_summary?.base_period ?? detail.summary.base_period ?? "");
@@ -1610,13 +2785,17 @@ function StatementsView({ detail }: { detail: CompanyDetail }) {
             </div>
             <label className="zero-toggle">
               <input checked={showZeroRows} onChange={(event) => setShowZeroRows(event.currentTarget.checked)} type="checkbox" />
-              Show zero rows
+              显示零值行
+            </label>
+            <label className="zero-toggle">
+              <input checked={showTechnicalRows} onChange={(event) => setShowTechnicalRows(event.currentTarget.checked)} type="checkbox" />
+              显示技术口径
             </label>
           </div>
         </div>
         <SheetTabs active={active} items={sheets.map((sheet) => ({ key: sheet.key, label: sheet.name, count: sheet.rows.length }))} onSelect={setActive} />
         {activeSheet ? (
-          <FullStatementTable basePeriod={basePeriod} sheet={activeSheet} showZeroRows={showZeroRows} years={visibleYears} />
+          <FullStatementTable basePeriod={basePeriod} sheet={activeSheet} showTechnicalRows={showTechnicalRows} showZeroRows={showZeroRows} years={visibleYears} />
         ) : null}
       </div>
     </div>
@@ -1661,19 +2840,22 @@ function DcfView({ detail }: { detail: CompanyDetail }) {
 
   return (
     <div className="view-stack">
-      <section className="metric-grid">
-        <MetricCard label="Per-share value" value={formatNumber(dcf?.per_share_value)} caption="DCF 输出" />
-        <MetricCard label="Enterprise value" value={formatNumber(dcf?.enterprise_value)} />
-        <MetricCard label="Equity value" value={formatNumber(dcf?.equity_value)} />
-        <MetricCard label="Terminal PV" value={formatNumber(dcf?.terminal_pv)} />
-      </section>
+      <div className="dcf-topline">
+        <section className="metric-grid dcf-metric-grid">
+          <MetricCard label="Per-share value" value={formatNumber(dcf?.per_share_value)} caption="DCF 输出" />
+          <MetricCard label="Enterprise value" value={formatNumber(dcf?.enterprise_value)} />
+          <MetricCard label="Equity value" value={formatNumber(dcf?.equity_value)} />
+          <MetricCard label="Terminal PV" value={formatNumber(dcf?.terminal_pv)} />
+        </section>
+        <SensitivityPanel
+          compact
+          error={sensitivityError}
+          initial={initialSensitivity}
+          loading={sensitivityLoading}
+          onChange={handleSensitivityChange}
+        />
+      </div>
       <ValuationBridge dcf={dcf} detail={detail.dcf_detail ?? []} />
-      <SensitivityPanel
-        error={sensitivityError}
-        initial={initialSensitivity}
-        loading={sensitivityLoading}
-        onChange={handleSensitivityChange}
-      />
     </div>
   );
 }
@@ -1717,6 +2899,374 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
+const QUARTERS = ["Q1", "Q2", "Q3", "Q4"] as const;
+
+const STATE_LABELS: Record<string, string> = {
+  actual: "① 实际",
+  inherit: "② 默认季节性",
+  manual: "③ 人工",
+  q4: "④ Q4",
+};
+
+type QuarterlyDriverOption = {
+  key: string;
+  field: string;
+  param: string;
+  label: string;
+  step: string;
+  displayField: string;
+  format: "percent" | "number";
+};
+
+const QUARTERLY_DRIVER_OPTIONS: QuarterlyDriverOption[] = [
+  { key: "revenue_yoy", field: "revenue", param: "revenue_yoy", label: "收入同比", step: "0.01", displayField: "revenue_yoy", format: "percent" },
+  { key: "gpm", field: "oper_cost", param: "gpm", label: "毛利率", step: "0.01", displayField: "gross_margin", format: "percent" },
+  { key: "sell_exp_rate", field: "sell_exp", param: "sell_exp_rate", label: "销售费用率", step: "0.01", displayField: "sell_exp_rate", format: "percent" },
+  { key: "admin_exp_rate", field: "admin_exp", param: "admin_exp_rate", label: "管理费用率", step: "0.01", displayField: "admin_exp_rate", format: "percent" },
+  { key: "rd_exp_rate", field: "rd_exp", param: "rd_exp_rate", label: "研发费用率", step: "0.01", displayField: "rd_exp_rate", format: "percent" },
+  { key: "biz_tax_surchg_rate", field: "biz_tax_surchg", param: "biz_tax_surchg_rate", label: "税附加率", step: "0.001", displayField: "biz_tax_surchg_rate", format: "percent" },
+  { key: "fin_exp_abs", field: "fin_exp", param: "fin_exp_abs", label: "财务费用额", step: "1", displayField: "fin_exp", format: "number" },
+  { key: "income_tax_rate", field: "income_tax", param: "income_tax_rate", label: "所得税率", step: "0.01", displayField: "income_tax_rate", format: "percent" },
+];
+
+type QuarterlyEdit = {
+  row: QuarterlyRow;
+  period: string;
+  param: string;
+  value: string;
+};
+
+function periodQuarterNumber(period: string): number {
+  const match = period.match(/Q([1-4])$/);
+  return match ? Number(match[1]) : 0;
+}
+
+function periodYear(period: string): number | null {
+  const match = period.match(/^(\d{4})Q[1-4]$/);
+  return match ? Number(match[1]) : null;
+}
+
+function periodLabel(period: string): string {
+  const match = period.match(/^(\d{4})Q([1-4])$/);
+  return match ? `${match[2]}Q${match[1]}` : period;
+}
+
+function periodBoundaryClass(period: string): string {
+  const quarter = periodQuarterNumber(period);
+  if (quarter === 1) return "year-start";
+  if (quarter === 4) return "year-end";
+  return "";
+}
+
+function formatQuarterlyValue(row: QuarterlyRow, value: number | null | undefined): string {
+  if (row.format === "percent") return formatPercent(value, 1);
+  return formatNumber(value);
+}
+
+function editableAssumptionOption(row: QuarterlyRow, period: string, viewYear: number): QuarterlyDriverOption | null {
+  const option = QUARTERLY_DRIVER_OPTIONS.find((item) => item.displayField === row.field);
+  if (!option) return null;
+  const state = row.states[period];
+  const quarter = periodQuarterNumber(period);
+  if (periodYear(period) !== viewYear || quarter === 4 || state === "actual" || state === "q4") return null;
+  return option;
+}
+
+function parseQuarterlyInput(raw: string, option: QuarterlyDriverOption): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (option.format === "percent") {
+    const hasPercent = trimmed.endsWith("%");
+    const normalized = trimmed.replace("%", "").replace(/,/g, "");
+    const numeric = Number(normalized);
+    if (!Number.isFinite(numeric)) return null;
+    return hasPercent || Math.abs(numeric) > 1 ? numeric / 100 : numeric;
+  }
+  const numeric = Number(trimmed.replace(/,/g, ""));
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function quarterlyInputPlaceholder(option: QuarterlyDriverOption): string {
+  return option.format === "percent" ? "0.02 / 2%" : "百万元";
+}
+
+function QuarterlyTable({ companyId, initialView }: { companyId: string; initialView?: QuarterlyView | null }) {
+  const [view, setView] = useState<QuarterlyView | null | undefined>(initialView);
+  const [edit, setEdit] = useState<QuarterlyEdit | null>(null);
+  const [drawerPeriod, setDrawerPeriod] = useState<string | null>(null);
+  const [drawerDrafts, setDrawerDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setView(initialView);
+  }, [initialView]);
+
+  const editableAssumptionPeriods = view
+    ? QUARTERS.slice(0, 3)
+        .map((quarter) => `${view.year}${quarter}`)
+        .filter((period) => {
+          const state = view.period_states?.[period] ?? view.quarter_states[String(periodQuarterNumber(period))] ?? "inherit";
+          return state !== "actual" && state !== "q4";
+        })
+    : [];
+
+  if (!view) return <EmptyState title="无季度视图" body="forecast_is.csv 或 data.db 暂不可用。" />;
+
+  const periods = view.periods?.length ? view.periods : QUARTERS.map((quarter) => `${view.year}${quarter}`);
+  const visibleRows = view.rows.filter((row) => !row.is_zero);
+  const yearGroups = periods.reduce<Array<{ year: string; periods: string[] }>>((groups, period) => {
+    const year = String(periodYear(period) ?? "");
+    const last = groups[groups.length - 1];
+    if (last?.year === year) {
+      last.periods.push(period);
+    } else {
+      groups.push({ year, periods: [period] });
+    }
+    return groups;
+  }, []);
+  const firstPeriodYear = periodYear(periods[0] ?? "") ?? view.year;
+  const lastPeriodYear = periodYear(periods[periods.length - 1] ?? "") ?? view.year;
+  const timeRangeLabel = firstPeriodYear === lastPeriodYear ? String(view.year) : `${firstPeriodYear}-${lastPeriodYear}`;
+
+  const saveOverride = async (period: string, param: string, rawValue: string, option: QuarterlyDriverOption) => {
+    const numericValue = parseQuarterlyInput(rawValue, option);
+    if (numericValue == null) {
+      setError("请输入有效数字");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await apiPutJson<{ ok: boolean; view: QuarterlyView }>(
+        `/api/companies/${encodeURIComponent(companyId)}/quarterly/override`,
+        { period, param, value: numericValue },
+      );
+      setView(result.view);
+      setEdit(null);
+      setDrawerDrafts((drafts) => {
+        const next = { ...drafts };
+        delete next[`${period}:${param}`];
+        return next;
+      });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openEdit = (row: QuarterlyRow, period: string) => {
+    const option = editableAssumptionOption(row, period, view.year);
+    if (!option) return;
+    setError(null);
+    setEdit({ row, period, param: option.param, value: formatQuarterlyValue(row, row.values[period]) });
+  };
+
+  const saveEdit = async () => {
+    if (!edit) return;
+    const option = QUARTERLY_DRIVER_OPTIONS.find((item) => item.param === edit.param);
+    if (!option) return;
+    await saveOverride(edit.period, edit.param, edit.value, option);
+  };
+
+  const clearPeriod = async (period: string) => {
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await apiDelete<{ ok: boolean; view: QuarterlyView }>(
+        `/api/companies/${encodeURIComponent(companyId)}/quarterly/override/${period}`,
+      );
+      setView(result.view);
+      setEdit(null);
+      setDrawerDrafts({});
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="view-stack">
+      <section className="card quarterly-panel">
+        <div className="section-heading compact">
+          <div>
+            <div className="eyebrow">Quarterly tracking · 百万元</div>
+            <h2>{timeRangeLabel} 季度利润表追踪</h2>
+          </div>
+          <div className="quarter-state-row">
+            {QUARTERS.map((quarter) => {
+              const key = String(periodQuarterNumber(`${view.year}${quarter}`));
+              const state = view.quarter_states[key] ?? "inherit";
+              return (
+                <span className={`quarter-state state-${state}`} key={quarter}>
+                  {quarter} · {STATE_LABELS[state] ?? state}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+        {error ? <div className="error-banner compact-error">{error}</div> : null}
+        {view.q4_flags.length ? (
+          <div className="q4-flag-strip">
+            {view.q4_flags.map((flag) => (
+              <span key={flag.ratio}>{flag.ratio}: {formatPercent(flag.implied, 1)}</span>
+            ))}
+          </div>
+        ) : null}
+        <div className="table-scroll workbook-scroll quarterly-scroll">
+          <table className="financial-table statement-table quarterly-table">
+            <thead>
+              <tr>
+                <th className="quarter-axis-corner"></th>
+                {yearGroups.map((group) => (
+                  <th className={`numeric quarter-year-head ${Number(group.year) === view.year ? "forecast-year" : "history-year"}`} colSpan={group.periods.length} key={group.year}>
+                    {group.year}
+                  </th>
+                ))}
+                <th className="numeric annual-head">年度</th>
+              </tr>
+              <tr>
+                <th className="quarter-subhead-label">科目</th>
+                {periods.map((period) => {
+                  const periodState = view.period_states?.[period] ?? view.quarter_states[String(periodQuarterNumber(period))] ?? "inherit";
+                  const canOpenDrawer = editableAssumptionPeriods.includes(period);
+                  return (
+                    <th className={`numeric quarter-period-head ${periodYear(period) === view.year ? "forecast-year" : "history-year"} ${periodBoundaryClass(period)}`} key={period}>
+                      {canOpenDrawer ? (
+                        <button className={`quarter-period-button state-${periodState}`} onClick={() => setDrawerPeriod(period)} type="button">
+                          <span>{periodLabel(period)}</span>
+                          <small>{STATE_LABELS[periodState] ?? periodState}</small>
+                        </button>
+                      ) : (
+                        periodLabel(period)
+                      )}
+                    </th>
+                  );
+                })}
+                <th className="numeric quarter-period-head annual-head">年度</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((row) => {
+                const rowClass = row.role === "total" ? "total" : row.role === "metric" ? "metric" : row.category === "subtotal" ? "subtotal" : "normal";
+                return (
+                  <tr className={`${rowClass} ${QUARTERLY_KEY_ROWS.has(row.field) ? "key-row" : ""} ${row.highlight ? "highlight-row" : ""}`} key={row.field}>
+                    <td className="statement-label" title={`${row.label} (${row.field})`}><span>{row.label}</span></td>
+                    {periods.map((period) => {
+                      const value = row.values[period];
+                      const state = row.states[period] ?? view.period_states?.[period] ?? "inherit";
+                      const editableOption = editableAssumptionOption(row, period, view.year);
+                      const isEditing = edit?.row.field === row.field && edit.period === period;
+                      return (
+                        <td className={`numeric quarter-cell state-${state} ${periodYear(period) === view.year ? "forecast-year" : "history-year"} ${periodBoundaryClass(period)} ${typeof value === "number" && value < 0 ? "negative" : ""}`} key={`${row.field}-${period}`}>
+                          {isEditing && editableOption ? (
+                            <span className="quarter-inline-editor">
+                              <input
+                                autoFocus
+                                inputMode="decimal"
+                                onChange={(event) => {
+                                  setError(null);
+                                  setEdit({ ...edit, value: event.currentTarget.value });
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") void saveEdit();
+                                  if (event.key === "Escape") setEdit(null);
+                                }}
+                                onFocus={(event) => event.currentTarget.select()}
+                                placeholder={formatQuarterlyValue(row, value)}
+                                type="text"
+                                value={edit.value}
+                              />
+                              <button disabled={saving} onClick={saveEdit} type="button">OK</button>
+                            </span>
+                          ) : editableOption ? (
+                            <button className={`quarter-cell-button assumption-editable-cell ${state === "manual" ? "is-manual" : ""}`} onClick={() => openEdit(row, period)} type="button">
+                              {formatQuarterlyValue(row, value)}
+                            </button>
+                          ) : (
+                            formatQuarterlyValue(row, value)
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td className={`numeric annual-cell ${typeof view.annual[row.field] === "number" && (view.annual[row.field] ?? 0) < 0 ? "negative" : ""}`}>
+                      {formatQuarterlyValue(row, view.annual[row.field])}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {drawerPeriod ? (
+        <div className="quarter-drawer-backdrop" role="presentation" onMouseDown={() => setDrawerPeriod(null)}>
+          <aside className="quarter-drawer" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="quarter-drawer-head">
+              <div>
+                <div className="eyebrow">
+                  {periodLabel(drawerPeriod)} · {STATE_LABELS[view.period_states?.[drawerPeriod] ?? "inherit"] ?? "② 默认季节性"}
+                </div>
+                <h2>季度假设</h2>
+              </div>
+              <button className="secondary-button icon-button" onClick={() => setDrawerPeriod(null)} type="button">×</button>
+            </div>
+            <div className="quarter-drawer-list">
+              {QUARTERLY_DRIVER_OPTIONS.map((option) => {
+                const row = view.rows.find((item) => item.field === option.displayField);
+                const draftKey = `${drawerPeriod}:${option.param}`;
+                const currentValue = row ? row.values[drawerPeriod] : null;
+                return (
+                  <div className="quarter-drawer-row" key={option.key}>
+                    <div className="quarter-drawer-row-copy">
+                      <strong>{option.label}</strong>
+                      <span>{row ? formatQuarterlyValue(row, currentValue) : "-"}</span>
+                    </div>
+                    <input
+                      inputMode="decimal"
+                      onChange={(event) => {
+                        setError(null);
+                        setDrawerDrafts((drafts) => ({ ...drafts, [draftKey]: event.currentTarget.value }));
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void saveOverride(drawerPeriod, option.param, drawerDrafts[draftKey] ?? "", option);
+                        if (event.key === "Escape") setDrawerDrafts((drafts) => ({ ...drafts, [draftKey]: "" }));
+                      }}
+                      placeholder={quarterlyInputPlaceholder(option)}
+                      type="text"
+                      value={drawerDrafts[draftKey] ?? ""}
+                    />
+                    <button
+                      className="secondary-button"
+                      disabled={saving || !(drawerDrafts[draftKey] ?? "").trim()}
+                      onClick={() => saveOverride(drawerPeriod, option.param, drawerDrafts[draftKey] ?? "", option)}
+                      type="button"
+                    >
+                      保存
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="quarter-drawer-actions">
+              <button
+                className="secondary-button"
+                disabled={saving || (view.period_states?.[drawerPeriod] ?? "inherit") !== "manual"}
+                onClick={() => clearPeriod(drawerPeriod)}
+                type="button"
+              >
+                清回默认季节性
+              </button>
+            </div>
+          </aside>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DetailView({
   detail,
   tab,
@@ -1730,6 +3280,7 @@ function DetailView({
 }) {
   if (tab === "overview") return <Overview detail={detail} running={running} onRun={onRun} />;
   if (tab === "statements") return <StatementsView detail={detail} />;
+  if (tab === "quarterly") return <QuarterlyTable companyId={detail.summary.id} initialView={detail.quarterly_view} />;
   if (tab === "yaml1") {
     return (
       <YamlWorkbook
@@ -1741,6 +3292,8 @@ function DetailView({
         fullStatementSheets={detail.full_statement_sheets}
         stashView={detail.yaml1_stash_view}
         assumptionsView={detail.yaml1_assumptions_view}
+        editableAssumptions={detail.editable_assumptions}
+        annualRevenueBreakdown={detail.annual_revenue_breakdown}
         yaml1Text={detail.yaml1_text}
       />
     );

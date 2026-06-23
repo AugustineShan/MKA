@@ -1,4 +1,4 @@
-# MKA - A股财务数据拉取与校验系统
+﻿# MKA - A股财务数据拉取与校验系统
 
 两阶段流水线：① 从 TuShare Pro API 拉取三表数据 → 标准化 → 入库 SQLite；② 从 SQLite 读取原始数据 → 透视宽表 → 严格配平校验 → 写入 SQLite clean 表。
 
@@ -31,7 +31,7 @@
 
 - **语言**: Python 3.11+（系统全局 Python，禁止 venv）
 - **依赖**: `tushare>=1.4.0`, `pandas>=2.0.0`, `requests>=2.31`, `pymupdf>=1.24`（见 `requirements.txt`）
-- **存储**: SQLite（每家公司一个 `data.db`，路径 `companies/{公司名}_{代码}/data.db`）
+- **存储**: SQLite（每家公司一个 `data.db`，路径 `companies/{公司名}_{代码}/Agent/data.db`）
 - **数据源**: TuShare Pro API，经中转站 `fastapic.stockai888.top` 代理；巨潮资讯网 cninfo 用于年报 PDF + Markdown 下载
 
 ## 项目结构
@@ -52,25 +52,38 @@ MKA/
 │   ├── financial_expense_analyzer.py # 财务费用附注细则分析 → financial_expense.yaml（多年档案）
 │   ├── defaults_gen.py       # clean_annual/meta → defaults.yaml
 │   ├── yaml1_cleaner.py      # yaml1 + defaults.yaml → 内部 forecast params + report
-│   ├── forecast.py           # 正式入口：defaults.yaml + yaml1*.yaml → forecast/
+│   ├── forecast.py           # 正式入口：defaults.yaml + yaml1*.yaml → Agent/forecast/
 │   ├── calc.py               # 标准参数表 → 预测三表 + DCF
 │   └── yaml2_schema.py       # YAML2 读写与校验
 ├── docs/                     # 项目文档
-│   ├── ARCHITECTURE.md       # 系统架构文档（每次开发完必须更新）
+│   ├── ARCHITECTURE.md       # 系统架构文档（当前状态描述，每次开发完必须更新）
+│   ├── CHANGELOG.md          # 里程碑变更日志（从 ARCHITECTURE 第11节分离，按日期倒序追加）
 │   ├── CLAUDE.md             # 项目约定与关键规则
 │   └── ...
 ├── requirements.txt          # Python依赖
 ├── .env                      # TUSHARE_TOKEN / HTTP_URL / 限速间隔
 ├── companies/                # 输出目录，每公司一个子目录
 │   └── {公司名}_{代码}/
-│       ├── data.db           # SQLite（raw_tushare/meta/clean_annual/clean_quarterly）
-│       ├── defaults.yaml     # 唯一 YAML2：机器平推底座
-│       ├── financial_expense.yaml  # 年报财务费用附注多年明细档案
-│       ├── yaml1*.yaml      # compiler 输出：人的判断覆盖层
-│       ├── .modelking/       # 内部编译产物，不作为人工维护界面
-│       ├── forecast/         # 唯一正式 DCF 输出，每次重算先清空再生成
-│       ├── annuals/          # 年度报告 PDF + Markdown
-│       └── recon/            # 年报核对 evidence JSON
+│       ├── 公司判断和最新观点.md
+│       ├── *核心假设*.md
+│       ├── active_vore/      # 活跃收集，外部模型和当前材料，不移动
+│       ├── WEBCLAUDE/        # 高频打包区，供网页 Claude 上传使用
+│       ├── 公告/
+│       │   ├── 年报/         # 年度报告 PDF + Markdown
+│       │   ├── 季报/         # 季报/半年报 PDF + Markdown
+│       │   └── 临时公告/
+│       ├── 研报/
+│       ├── 纪要/
+│       ├── 收集/
+│       ├── 重要文件/
+│       └── Agent/            # 建模 Agent 运行区
+│           ├── data.db       # SQLite（raw_tushare/meta/clean_annual/clean_quarterly）
+│           ├── defaults.yaml # 唯一 YAML2：机器平推底座
+│           ├── financial_expense.yaml
+│           ├── yaml1*.yaml   # compiler 输出：人的判断覆盖层
+│           ├── recon/        # 年报核对 evidence JSON
+│           ├── .modelking/   # 内部编译产物，不作为人工维护界面
+│           └── forecast/     # 唯一正式 DCF 输出，每次重算先清空再生成
 ├── vendor/
 │   └── use_cninfo/           # vendored rollysys/use_cninfo（MIT）
 └── .refs/                    # TuShare官方文档缓存
@@ -83,7 +96,7 @@ MKA/
 ```
 TuShare API
     ↓ data_fetcher.py（阶段①）
-companies/{公司名}_{代码}/data.db
+companies/{公司名}_{代码}/Agent/data.db
   ├── raw_tushare      (EAV: ticker, endpoint, report_type, end_date, field, value, ...)
   ├── meta             (KV: key, value)
   ├── clean_annual     (wide: period + 325 official fields + 6 QA plug fields)
@@ -94,14 +107,14 @@ companies/{公司名}_{代码}/data.db
 SQLite data.db: clean_annual / clean_quarterly
   （宽表：行=period，列=统一 331 数据字段，严格配平并保留 warning）
     ↓ financial_expense_analyzer.py（可选增强）
-companies/{公司名}_{代码}/financial_expense.yaml
+companies/{公司名}_{代码}/Agent/financial_expense.yaml
   （按年份归档的年报财务费用附注拆解：components / derived / checks / status）
     ↓ defaults_gen.py
-companies/{公司名}_{代码}/defaults.yaml
+companies/{公司名}_{代码}/Agent/defaults.yaml
   （唯一 YAML2：完整、配平、无判断的机器平推底座；financial_expense 可能来自 annual_report.fin_exp_note）
     ↓ forecast.py：yaml1*.yaml + defaults.yaml
-companies/{公司名}_{代码}/forecast/
-  （唯一正式 DCF 输出；中间参数/报告写入 .modelking/）
+companies/{公司名}_{代码}/Agent/forecast/
+  （唯一正式 DCF 输出；中间参数/报告写入 Agent/.modelking/）
 ```
 
 ## DCF 运行规则（必须遵守）
@@ -112,26 +125,26 @@ companies/{公司名}_{代码}/forecast/
 py -m src.forecast --ticker 002946.SZ
 ```
 
-这条命令内部执行 `yaml1_cleaner.py` 的 fold / expand / resolve / backtest，再把标准参数交给 `calc.py`。默认只在公司目录顶层暴露最终结果：
+这条命令内部执行 `yaml1_cleaner.py` 的 fold / expand / resolve / backtest，再把标准参数交给 `calc.py`。默认只在 `Agent/forecast/` 暴露最终结果：
 
 ```text
-companies/{公司名}_{代码}/forecast/
+companies/{公司名}_{代码}/Agent/forecast/
 ```
 
 中间产物是内部编译缓存，默认写入：
 
 ```text
-companies/{公司名}_{代码}/.modelking/forecast_params.yaml
-companies/{公司名}_{代码}/.modelking/yaml1_clean_report.json
+companies/{公司名}_{代码}/Agent/.modelking/forecast_params.yaml
+companies/{公司名}_{代码}/Agent/.modelking/yaml1_clean_report.json
 ```
 
-不要在公司目录顶层生成或维护 `yaml2_yearly.yaml`、`forecast_params.yaml`、`yaml1_clean_report.json`。`defaults.yaml` 是唯一 YAML2；清洗后的逐年标准参数表不是 YAML2。正式输出目录只能是 `forecast/`，每次重算必须先清空旧 `forecast/` 再生成，禁止用 `forecast_current/forecast_fixed/forecast_yaml1` 这类目录承载正式结果。
+不要在公司目录顶层生成或维护 `yaml2_yearly.yaml`、`forecast_params.yaml`、`yaml1_clean_report.json`。`defaults.yaml` 是唯一 YAML2；清洗后的逐年标准参数表不是 YAML2。正式输出目录只能是 `Agent/forecast/`，每次重算必须先清空旧 `Agent/forecast/` 再生成，禁止用 `forecast_current/forecast_fixed/forecast_yaml1` 这类目录承载正式结果。
 
-`calc.py` 是纯算账核/回归工具，只接受 `--forecast-params` 参数（清洗后的逐年标准参数表，如 `.modelking/forecast_params.yaml`），永远看不到 yaml1，也不直接读取 `defaults.yaml`。`defaults.yaml` 进入 `calc.py` 的唯一合法路径是先经过 `yaml1_cleaner.py`（无 yaml1 时用 `--defaults-only` 做恒等清洗）。有 yaml1 的公司请走正式入口 `py -m src.forecast --ticker ...`。
+`calc.py` 是纯算账核/回归工具，只接受 `--forecast-params` 参数（清洗后的逐年标准参数表，如 `Agent/.modelking/forecast_params.yaml`），永远看不到 yaml1，也不直接读取 `defaults.yaml`。`defaults.yaml` 进入 `calc.py` 的唯一合法路径是先经过 `yaml1_cleaner.py`（无 yaml1 时用 `--defaults-only` 做恒等清洗）。有 yaml1 的公司请走正式入口 `py -m src.forecast --ticker ...`。
 
 ## 本地 Web 工作台（FastAPI + React）
 
-ModelKing 前端是本地文件工作台：把 `companies/{公司名}_{代码}/` 映射为一家公司的一页。第一版只读展示 + 一键重算，不直接改写核心假设或 yaml1。工作台不是新的建模入口，重算按钮必须调用 `src.forecast`，仍遵守 `defaults.yaml + yaml1*.yaml -> forecast/`。
+ModelKing 前端是本地文件工作台：把 `companies/{公司名}_{代码}/` 映射为一家公司的一页。第一版只读展示 + 一键重算，不直接改写核心假设或 yaml1。工作台不是新的建模入口，重算按钮必须调用 `src.forecast`，仍遵守 `defaults.yaml + yaml1*.yaml -> Agent/forecast/`。
 
 ```bash
 npm install
@@ -167,7 +180,7 @@ python -m src.report_downloader --ticker 000333.SZ --no-markdown
 
 ### 输出与规则
 
-- 输出目录：`companies/{公司名}_{代码}/annuals/`
+- 输出目录：`companies/{公司名}_{代码}/公告/年报/`
 - 文件名：`{年份}_年度报告.pdf`；修订版为 `{年份}_年度报告_修订版.pdf`
 - Markdown 文件与 PDF 同名：`{年份}_年度报告.md`；修订版为 `{年份}_年度报告_修订版.md`
 - Markdown 默认生成，内容包含 YAML frontmatter + PyMuPDF 提取全文
@@ -202,7 +215,7 @@ python -m src.annual_report_reconciler --ticker 000333.SZ --no-llm
 python -m src.annual_report_reconciler --ticker 000333.SZ --write-overrides --approve-high-confidence
 ```
 
-输出目录：`companies/{公司名}_{代码}/recon/`，包含时间戳 JSON、`annual_report_reconciliation_latest.json`，以及可选的 `annual_report_overrides.json`。
+输出目录：`companies/{公司名}_{代码}/Agent/recon/`，包含时间戳 JSON、`annual_report_reconciliation_latest.json`，以及可选的 `annual_report_overrides.json`。
 
 `annual_report_overrides.json` 必须由 LLM 结构化结论生成；`--write-overrides` 与 `--no-llm` 互斥。`clean.py` 只应用 `annual_report_overrides.json` 中 `status=approved` 且 `source` 为 approved LLM provider（当前 `glm`，历史 `kimi` 仍兼容）的记录，且只应用到年度 clean 宽表；每条应用记录写入 `clean_adjustments`，补数 warning 和软校验 warning 写入 `clean_warnings`。
 
@@ -228,7 +241,7 @@ python -m src.annual_report_reconciler --ticker {ticker} --db {data.db} --max-fa
 
 1. **第一轮**：clean 失败 → 内部强触发 reconciler（rule + LLM fallback）提议 override。
 2. **第二轮（核对第一轮）**：reconciler 在 `collect_failures` 前先用 `clean.load_approved_overrides`+`apply_annual_overrides` 应用已有 approved override——第二次跑天然只见第一轮补完后的残差，LLM 在 field_context 看到 round 1 已补的值、专攻更小残差。每轮 = 应用新 override 重跑 clean +（非末轮）再强触发 reconciler。
-3. **两轮都不过 → plug 提示**：`_offer_annual_plug` 交互问用户是否对残余硬失败塞年度 QA plug。用户同意 → 写 `companies/{公司}/recon/annual_plugs.json`（`period` 为**纯年份**，匹配 annual wide.index）→ 重跑 `clean.py --mode annual --allow-annual-plug`。
+3. **两轮都不过 → plug 提示**：`_offer_annual_plug` 交互问用户是否对残余硬失败塞年度 QA plug。用户同意 → 写 `companies/{公司}/Agent/recon/annual_plugs.json`（`period` 为**纯年份**，匹配 annual wide.index）→ 重跑 `clean.py --mode annual --allow-annual-plug`。
 
 `clean.py` 年度 plug：`apply_annual_bs_plugs`（镜像季度 `apply_quarterly_bs_plugs`，但**只在用户指令的 (period, code) 生效**，非自动全期）+ `--allow-annual-plug` flag + `load_annual_plugs`/`default_plugs_path`。`bs_bucket_sum` 已含 `qa_bs_*_plug` 故 check_bs 自动吸收残差；写 `annual_bs_plug` warning（带公式 + "硬问题 plug，非披露不完整" + 建议人工核对后改用 LLM override 并删 plug）。年度 plug 是诚实逃生通道，不是常规兜底——关键科目建议拒绝 plug、如实留 exit 3。
 
@@ -308,14 +321,14 @@ python -m src.data_fetcher --ticker 300866.SZ --verbose # 调试日志
 ### 公共 API
 
 ```python
-clean("D:\\MKA\\companies\\某公司_002946\\data.db", "002946.SZ") -> pd.DataFrame
+clean("D:\\MKA\\companies\\某公司_002946\\Agent\\data.db", "002946.SZ") -> pd.DataFrame
 ```
 
 ### CLI
 
 ```bash
 python -m src.clean --ticker 002946.SZ          # 自动定位 data.db 并清洗
-python -m src.clean --ticker 002946.SZ --db path/to/data.db  # 指定 db
+python -m src.clean --ticker 002946.SZ --db path/to/Agent/data.db  # 指定 db
 python -m src.clean --ticker 000333.SZ --mode annual          # 只生成年度 clean 表
 python -m src.clean --ticker 000333.SZ --mode quarterly       # 只生成季度 clean 表，必要时写显式 QA plug warning
 python -m src.clean --ticker 000333.SZ --no-overrides         # 不应用 approved 年报补数
@@ -461,7 +474,10 @@ py -m src.report_downloader --ticker 000333.SZ --list-only
 
 ## 开发流程
 
-- **每次开发完成后必须更新 `ARCHITECTURE.md`**：包括新增/修改的模块、数据模型变更、校验规则变更、设计决策等。在「变更日志」中追加日期和变更摘要。
+- **架构变更 vs 变更日志，分两个文档维护**（2026-06-22 从原 ARCHITECTURE 第 11 节分离）：
+  - **`docs/ARCHITECTURE.md` 写"当前状态"**：新增/修改的模块、数据模型、校验规则、设计决策（第 10 节）、已验证公司口径教训（第 9 节）。改架构时直接改对应章节。第 11 节已改为指向 CHANGELOG 的指针，不再在此维护条目。
+  - **`docs/CHANGELOG.md` 写"发生了什么"**：按日期倒序的里程碑变更条目。每次开发完成后在表首追加一行（日期 + 里程碑摘要），**不修改既有历史条目**。完整逐条仍以 `git log` 为准，本表只留里程碑级。
+  - 判断口径：描述"系统现在长什么样"→ ARCHITECTURE；记录"这次改了什么"→ CHANGELOG。两者都要，不二选一。
 - **凡是修改数据流水线，必须同步更新 `docs/数据流水线.md`**：包括 `data_fetcher.py`、`clean.py`、`financial_expense_analyzer.py` / `financial_expense.yaml`、`defaults_gen.py`、`yaml1_cleaner.py`、`calc.py`、`forecast.py`、`workbench.py` 中任何影响取数、clean、YAML 合并、DCF、历史预测拼接或输出目录契约的变化。
 
 ## 运行注意

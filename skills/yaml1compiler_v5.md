@@ -20,7 +20,7 @@
 - **带判断**:每个数字背后是人的决定("吨价抬一档反映高端化""常温主动收缩")。
 - **有损、宽容**:用了省略("2026-2031 全程 +6%")、显示惯例(把营业外支出写成 `-47.39` 表示负贡献)、口径注脚、偶尔自相矛盾的措辞(如"6 年 fade 至 2038"——这是个端点不自洽的**反例**,详见 §7.3,此处先记下"措辞可能自相矛盾"即可)。人读得懂,因为人会补全。
 
-**目标语言 `yaml1`** 是**机器话**。它是下游确定性 Python(`清洗yaml1.py`)和前端要消费的结构化容器。它的特征:
+**目标语言 `yaml1`** 是**机器话**。它是下游确定性 Python(`src/yaml1_cleaner.py`)和前端要消费的结构化容器。它的特征:
 
 - **按路径组织**:每条判断落到一个命名空间路径上(`income.cost_rates.sell_exp`),而不是按业务线段落。
 - **无损、零容忍**:数组必须摊满、符号必须按引擎口径、路径必须和 yaml2 对得上、省略和歧义都不被容许。机器不会替你补全——你没翻的,它就当没有(静默落平推);你翻错的,它照单全收(静默算错)。
@@ -81,6 +81,8 @@
 
 **defaults.yaml 是 fallback,不是上限。** `defaults.yaml` / YAML2 是机器平推底座,专门等人类判断覆盖。凡是 `核心假设.md` 里已经由分析师确认的显式期、衰减期、永续增速、收入拆分、毛利率、费用率、below-OP、其他财务费用等 A 类判断,都应翻成 yaml1 覆盖 defaults。只有 `.md` 没给、明确说"交系统默认/维持 defaults"、或该项压根没被老板动过时,才让它缺席并回落到 defaults。**不要拿 defaults 的 `forecast_years`、`terminal_growth` 或平推值反向否定 `.md` 里已拍板的覆盖。**
 
+本 skill 里说 `defaults.yaml` / `yaml1` / `forecast` / `recon` 时,多半是逻辑名字;磁盘位置默认都在 `companies/{公司}_{代码}/Agent/`: `Agent/defaults.yaml`、`Agent/yaml1*.yaml`、`Agent/forecast/`、`Agent/recon/`。不要把它们理解成公司工作台根目录材料。
+
 ### 0.6 你不算账(这是翻译,不是计算)
 
 最后一条认知,也是最容易破的:**翻译器不算账。** 你唯一允许的机械动作是把已写明的旋钮值**摊成满数组**(`+6% 全程` → `[0.06]×7`)——那是搬运,是"形变"。凡是"从旋钮推出一个新数列"的(收入、毛利率、占比、净利、fade 逐年展开),都不归你,归下游 Python。
@@ -98,7 +100,7 @@
                                        │
                             ┌──────────┴───────────────┐
                             │                          │
-                  [清洗yaml1.py·Python]            [前端]
+                  [src/yaml1_cleaner.py·Python]    [前端]
                   折叠 decomposition→收入总额        读 yaml1 中不进 DCF 的部分
                   展开 flat&fade→逐年                (decomposition 拆分、各 leaf history、stash)
                   尊重再参数化 / resolve⊕yaml2
@@ -109,7 +111,7 @@
                   [calc.py·纯 DCF 算账核]──> 三表 + DCF
 ```
 
-这张图解释了你为什么这么翻:**`yaml1` 不是引擎能直接吃的东西**(正如 `raw_tushare` 不是)。把它清洗成引擎能吃的"标准科目逐年参数"的,是下游 `清洗yaml1.py`(理解层的 `clean.py`)。所以 **`calc.py` 永远看不到 yaml1**——你写的 decomposition 子树、formula 节点、leaf history、stash,引擎一概不认;它们是给 `清洗yaml1.py` 和前端的。你的活到 yaml1 为止;折叠、展开、算账都在你下游。
+这张图解释了你为什么这么翻:**`yaml1` 不是引擎能直接吃的东西**(正如 `raw_tushare` 不是)。把它清洗成引擎能吃的"标准科目逐年参数"的,是下游 `src/yaml1_cleaner.py`(理解层的 `clean.py`)。所以 **`calc.py` 永远看不到 yaml1**——你写的 decomposition 子树、formula 节点、leaf history、stash,引擎一概不认;它们是给 `src/yaml1_cleaner.py` 和前端的。你的活到 yaml1 为止;折叠、展开、算账都在你下游。
 
 ---
 
@@ -119,7 +121,7 @@
 |------|------|--------|
 | `核心假设.md` | **源文** | 逐条读判断:族/规则、旋钮逐年值、上挂、基年原子、是否主动覆盖、收纳区 |
 | `数据格式参考.md` | **字典** | 只做一件事:中文科目 ↔ TuShare 字段名的语义匹配(营业税金及附加 ↔ `biz_tax_surchg`) |
-| `defaults.yaml`(本公司 yaml2) | **目标命名空间** | 告诉你这家公司**实际有哪些路径、什么结构、放哪个层级**。覆盖路径**以它为准** |
+| `defaults.yaml`(本公司 yaml2；磁盘位置 `companies/{公司}_{代码}/Agent/defaults.yaml`) | **目标命名空间** | 告诉你这家公司**实际有哪些路径、什么结构、放哪个层级**。覆盖路径**以它为准** |
 | `docs/yaml1算法模板契约.md` | **算法契约** | 告诉你当前下游真正支持哪些收入 leaf、margin fold、terminal fade 和 formula 边界。凡是算法族/模板形态,以它为硬边界 |
 
 **这是弥合差异 1(组织维度)的核心机制。** 源语言按业务线说"销售费用怎么拍",目标语言要落到一个路径上。这个转换是**三步**,字典、defaults.yaml、算法契约各管一段,别混:
@@ -159,7 +161,7 @@
 
 ### 3.3 校对(翻译后:自审 + 报告,详见 §9)
 
-对着 3.1 的清单做双射,出一份简短报告。这是翻译这层唯一的质量闸(计算忠实度的回测在下游 `清洗yaml1.py`,这层只能靠自审)。
+对着 3.1 的清单做双射,出一份简短报告。这是翻译这层唯一的质量闸(计算忠实度的回测在下游 `src/yaml1_cleaner.py`,这层只能靠自审)。
 
 ---
 
@@ -205,13 +207,13 @@ income.revenue:
         <sku_1>: { revenue_family: factor_product, base: {...}, factors: {...}, history: {...} }
 ```
 
-这棵子树只有 `清洗yaml1.py`(折叠成总额)和前端(breakdown)消费,`calc.py` 看不到。**你写的是结构;折叠成 `revenue_yoy` 是下游的活——你不产 `revenue_yoy`,不手算收入序列**(§0.6)。
+这棵子树只有 `src/yaml1_cleaner.py`(折叠成总额)和前端(breakdown)消费,`calc.py` 看不到。**你写的是结构;折叠成 `revenue_yoy` 是下游的活——你不产 `revenue_yoy`,不手算收入序列**(§0.6)。
 
 **结构级自洽:一个节点要么 rollup、要么 leaf,不能既是又是。** 旋钮、base、history 只挂 leaf,绝不挂 rollup。撞到一个节点既有聚合历史又有子块 → 不猜,举旗。
 
 ### 4.3 `formula`(算法模式:受限可执行,只接长尾)
 
-下游 `清洗yaml1.py` 已有受限 formula/DAG 求值器,但它不是默认选择。绝大多数常见收入线仍要先尝试模板:`factor_product`(n 因子连乘)、`growth`、`abs`、leaf margin。只有模板装不下的跨期递推、分段函数、滞后关系、中间变量复用,才进入 formula。
+下游 `src/yaml1_cleaner.py` 已有受限 formula/DAG 求值器,但它不是默认选择。绝大多数常见收入线仍要先尝试模板:`factor_product`(n 因子连乘)、`growth`、`abs`、leaf margin。只有模板装不下的跨期递推、分段函数、滞后关系、中间变量复用,才进入 formula。
 
 formula 的唯一合法形态是顶层 `formulas.nodes` 定义节点,再在 revenue leaf 或标准 YAML2 path 上用 `formula_ref` 引用。不要把 bridge、ratio_to_driver、lag_ref 写成新 `kind`,也不要发明新的 `revenue_family`。
 
@@ -274,7 +276,7 @@ base:
   unit_factor_to_million_cny: <100|1>
 ```
 
-**`unit_factor_to_million_cny` 必须结构化输出,按族给,不全局拍一个。** 这是因为下游 `清洗yaml1.py` 是纯确定性 Python,折叠时用它把 base 换算成百万元——**它绝不解析中文 note 拿系数**(把"读人话"塞给最不可靠的一侧,数错就静默差 100 倍)。所以系数必须结构化:
+**`unit_factor_to_million_cny` 必须结构化输出,按族给,不全局拍一个。** 这是因为下游 `src/yaml1_cleaner.py` 是纯确定性 Python,折叠时用它把 base 换算成百万元——**它绝不解析中文 note 拿系数**(把"读人话"塞给最不可靠的一侧,数错就静默差 100 倍)。所以系数必须结构化:
 
 - `factor_product` 族按因子连乘后的单位给:如 万吨×元/吨 → `100`;若因子连乘已经是百万元 → `1`。
 - `vol_price` / `vol_price_margin` 是 `factor_product` 的旧兼容写法(量×价,如 万吨×元/吨):`100`。
@@ -322,7 +324,7 @@ history:
 
 `base` 只取折叠用的**单年锚**;leaf 的**完整多年历史**落在**同一个 leaf 的 `history.series` 下**,逐年照搬、一个不丢。占位/异常/断点年照标进 `note`,值照搬不删。
 
-**为什么历史必须挂 leaf、不能另起一个顶层平行块?** 这是上一版踩过的坑,值得把因果讲透:历史与这条线的 `base`/`knobs` 是同一条线的三段,它们靠**同一个 segment slug** 锚定。若把历史另起一个 `stash.分线历史_X` 平行块,就和 leaf 的 slug 脱钩了——(a) 下次 `modify` 改这条线,slug 一变,平行块对不上,历史漂移;(b) 前端按路径 `…segments.<slug>.history` 取数,平行块取不到。所以历史与 base/knobs **共用同一个 slug**,这是 modify 不崩、前端能取的前提。`history` 本身不参与折叠——`清洗yaml1.py` 与 resolver **显式跳过它**,它只供前端 breakdown 与溯源。
+**为什么历史必须挂 leaf、不能另起一个顶层平行块?** 这是上一版踩过的坑,值得把因果讲透:历史与这条线的 `base`/`knobs` 是同一条线的三段,它们靠**同一个 segment slug** 锚定。若把历史另起一个 `stash.分线历史_X` 平行块,就和 leaf 的 slug 脱钩了——(a) 下次 `modify` 改这条线,slug 一变,平行块对不上,历史漂移;(b) 前端按路径 `…segments.<slug>.history` 取数,平行块取不到。所以历史与 base/knobs **共用同一个 slug**,这是 modify 不崩、前端能取的前提。`history` 本身不参与折叠——`src/yaml1_cleaner.py` 与 resolver **显式跳过它**,它只供前端 breakdown 与溯源。
 
 > 三件套各管一段:`base` = 起点(单年),`knobs` = 未来(数组),`history` = 过去(完整序列)。缺 base 折叠没起点;缺 knobs 落平推;缺 history 丢信息。
 
@@ -422,7 +424,7 @@ terminal:
 | 显式期末年已归零的绝对值(below-OP 已归零项) | → 不进(已是 0,留 0 自然成立) |
 | 非增速类绝对值/比率(税率、少数股东率、未归零稳定项) | → 不进(fade 碰不到,hold 是答非所问) |
 
-> 落地写法:`hold_paths` 通常就是 `income.gpm` + .md 明示维持稳态的几条 `cost_rates.*`。拿不准某条 knob 在衰减期会不会被下游误推,宁可在收尾报告举旗问清 `清洗yaml1.py` 的 fade 默认行为,也别为"保险"塞进 hold_paths——多塞一条是语义噪声。
+> 落地写法:`hold_paths` 通常就是 `income.gpm` + .md 明示维持稳态的几条 `cost_rates.*`。拿不准某条 knob 在衰减期会不会被下游误推,宁可在收尾报告举旗问清 `src/yaml1_cleaner.py` 的 fade 默认行为,也别为"保险"塞进 hold_paths——多塞一条是语义噪声。
 
 > **这是差异 4(歧义)的教科书场景。** .md 的措辞常自相矛盾,例:"2032 起 6 年 fade 至 2038"——"6 年"(2032–2037)与"至 2038 / 2038 起永续"在端点上不自洽(含端 2032–2038 是 7 年)。**处理四步:(1) 识别出这是源语言的信息缺口,不是你能机械翻的形变;(2) 取一个内部自洽解(如:让"6 年"成立 → fade 2032–2037、2038 首个永续年);(3) 在该字段加 `# to_year 语义待核` 注释;(4) 在收尾报告里写明歧义本身 + 你取的解,交人裁定。** 绝不静默选一个字面值放行——因为你选的可能恰好是 .md 写错的那一半,而机器不会报错。
 
@@ -659,4 +661,4 @@ B 类把分线历史落进各 leaf 的 `history`、收纳区独立成块进 `sta
 
 你不算账、不重算、不折叠、不展开 fade、不发明路径、不自创公式族、不把 B 类塞进 `note`;formula 只接跨期递推、DAG、分段函数、中间变量复用等长尾。
 
-能翻就翻、翻不了举旗、绝不猜。收尾对着盘点清单校对(双射 + B 类完整性 + unaligned/待核 + 主动覆盖人话回读 + 结构异常硬停),交下游 `清洗yaml1.py` 折叠展开 resolve、`calc.py` 纯算 DCF。
+能翻就翻、翻不了举旗、绝不猜。收尾对着盘点清单校对(双射 + B 类完整性 + unaligned/待核 + 主动覆盖人话回读 + 结构异常硬停),交下游 `src/yaml1_cleaner.py` 折叠展开 resolve、`calc.py` 纯算 DCF。

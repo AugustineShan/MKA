@@ -40,7 +40,24 @@ from pathlib import Path
 from typing import Any
 
 import src.data_fetcher as df_mod
+from src.business_breakdown_extractor import (
+    business_breakdown_max_workers,
+    discover_reports as discover_business_breakdown_reports,
+    extract_reports as extract_business_breakdown_reports,
+    write_outputs as write_business_breakdown_files,
+    write_company_outputs as write_business_breakdown_outputs,
+)
 from src.clean import approved_override_count, default_overrides_path, default_plugs_path, RECONCILE_MIN_YEAR
+from src.company_paths import (
+    active_vore_dir,
+    annual_reports_dir,
+    company_dir_from_db_path,
+    db_path as agent_db_path,
+    ensure_workspace_layout,
+    find_company_dir as find_company_root,
+    official_breakdowns_dir,
+    quarterly_reports_dir,
+)
 from src.financial_expense_analyzer import (
     analyze_all_periods,
     default_yaml_path,
@@ -121,9 +138,10 @@ def _resolve_name_via_tushare(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def find_db_path(ticker: str) -> Path | None:
-    code = ticker.split(".")[0]
-    candidates = sorted(COMPANIES_DIR.glob(f"*_{code}/data.db"))
-    return candidates[0] if candidates else None
+    try:
+        return agent_db_path(find_company_root(ticker, COMPANIES_DIR))
+    except FileNotFoundError:
+        return None
 
 
 def read_meta(db_path: Path) -> dict[str, str]:
@@ -181,8 +199,9 @@ def stage_reports(
     2010 前披露稀疏、reconciler 也不核对，下载纯浪费 cninfo 请求与磁盘。
     失败不致命：仅当后续 clean 需要年报补全时才会暴露为真问题。
     """
-    annuals_dir = db_path.parent / "annuals"
-    quarterly_dir = db_path.parent / "quarterlyreports"
+    company_dir = company_dir_from_db_path(db_path)
+    annuals_dir = annual_reports_dir(company_dir)
+    quarterly_dir = quarterly_reports_dir(company_dir)
 
     pdf_before, md_before = _count_reports(annuals_dir)
     if not no_quarterly:
@@ -191,10 +210,10 @@ def stage_reports(
         md_before += q_md_before
 
     cmd = [sys.executable, str(BASE_DIR / "src" / "report_downloader.py"), "--ticker", ticker]
-    # 报告落到 data_fetcher 已建的公司目录（db_path.parent），避免 cninfo 与 TuShare
-    # 公司名口径不一致（半角万科A vs 全角万科Ａ）导致 annuals/ 与 data.db 分家、
+    # 报告落到 data_fetcher 已建的公司目录，避免 cninfo 与 TuShare
+    # 公司名口径不一致（半角万科A vs 全角万科Ａ）导致公告目录与 Agent/data.db 分家、
     # find_company_dir 命中多个目录而崩溃。
-    cmd.extend(["--company-dir", str(db_path.parent)])
+    cmd.extend(["--company-dir", str(company_dir)])
     cmd.extend(["--min-year", str(min_year)])
     if not no_quarterly:
         cmd.append("--all-reports")
@@ -226,6 +245,37 @@ def stage_reports(
     return status
 
 
+def stage_business_breakdown(
+    ticker: str,
+    db_path: Path,
+    *,
+    no_markdown: bool,
+    max_workers: int | None,
+) -> str:
+    """Extract annual-report disclosed revenue breakdowns into Agent/OfficialBreakdowns."""
+    if no_markdown:
+        return "skipped (--no-markdown)"
+
+    company_dir = company_dir_from_db_path(db_path)
+    workers = max_workers or business_breakdown_max_workers()
+    try:
+        reports = discover_business_breakdown_reports(COMPANIES_DIR, tickers={ticker})
+        if not reports:
+            write_business_breakdown_files([], official_breakdowns_dir(company_dir))
+            return "0 reports, wrote empty OfficialBreakdowns"
+
+        rows = extract_business_breakdown_reports(reports, max_workers=workers)
+        if rows:
+            outputs = write_business_breakdown_outputs(rows, COMPANIES_DIR)
+        else:
+            csv_path, jsonl_path = write_business_breakdown_files([], official_breakdowns_dir(company_dir))
+            outputs = [(company_dir.name, csv_path, jsonl_path)]
+        return f"{len(reports)} reports, {len(rows)} rows, {len(outputs)} company file set(s), workers={workers}"
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("annual revenue breakdown extraction failed: %s", exc)
+        return f"warning: extraction failed: {exc}"
+
+
 def _fmt_dur(seconds: float) -> str:
     """格式化耗时：'1m 23s' / '45s'。供阶段计时展示。"""
     s = max(0, int(round(seconds)))
@@ -252,7 +302,7 @@ def _run_clean(
     the plug prompt. stdout (clean only prints 'All checks passed!') is discarded.
     """
     cmd = [
-        sys.executable, str(BASE_DIR / "src" / "clean.py"),
+        sys.executable, "-m", "src.clean",
         "--ticker", ticker,
         "--db", str(db_path),
         "--mode", mode,
@@ -308,17 +358,18 @@ CORE_VIEW_TEMPLATE = """# 公司判断和最新观点
 
 
 def ensure_company_artifacts(db_path: Path) -> str:
-    """确保公司根目录存在人工维护入口：公司判断和最新观点.md 与 active_vore/ 文件夹。
+    """确保公司根目录存在人工维护入口与基本面工作台骨架。
 
     若文件/文件夹已存在则跳过，不覆盖已有内容。
     返回状态描述供报告使用。
     """
-    company_dir = db_path.parent
+    company_dir = company_dir_from_db_path(db_path)
     created: list[str] = []
+    ensure_workspace_layout(company_dir)
 
-    active_vore_dir = company_dir / "active_vore"
-    if not active_vore_dir.exists():
-        active_vore_dir.mkdir(parents=True, exist_ok=True)
+    active_dir = active_vore_dir(company_dir)
+    if not active_dir.exists():
+        active_dir.mkdir(parents=True, exist_ok=True)
         created.append("active_vore/")
 
     core_view_path = company_dir / "公司判断和最新观点.md"
@@ -465,7 +516,7 @@ def stage_financial_expense(
 ) -> tuple[str, dict[str, Any] | None]:
     """阶段③：财务费用细则分析（clean 之后、defaults 之前）。
 
-    生成 companies/{公司}/financial_expense.yaml 多年档案；失败仅 warning，不阻塞管线。
+    生成 companies/{公司}/Agent/financial_expense.yaml 多年档案；失败仅 warning，不阻塞管线。
     返回 (状态描述, archive dict 或 None)。
     """
     LOGGER.info("[4/4] 财务费用细则分析 %s ...", ticker)
@@ -491,6 +542,7 @@ def build_report(
     artifacts_status: str,
     fetch_status: str,
     report_status: str,
+    revenue_breakdown_status: str,
     clean_status: str,
     fin_exp_status: str,
 ) -> str:
@@ -551,6 +603,7 @@ def build_report(
         lines.append("  说明：纯 TuShare 部分已配平通过；标注科目经本地年报确认后补全，全程可追溯。")
     else:
         lines.append("  说明：全部为 TuShare 原始数据，未使用任何年报补数。")
+    lines.append(f"  annual revenue split: {revenue_breakdown_status}")
     lines.append("=" * 64)
     return "\n".join(lines)
 
@@ -568,6 +621,7 @@ def run_one(
     no_quarterly: bool,
     mode: str,
     verbose: bool,
+    breakdown_workers: int | None,
     min_year: int = RECONCILE_MIN_YEAR,
 ) -> int:
     try:
@@ -603,6 +657,15 @@ def run_one(
         min_year=min_year,
     )
     t_report = time.monotonic() - t0
+    t0 = time.monotonic()
+    revenue_breakdown_status = stage_business_breakdown(
+        ticker,
+        db_path,
+        no_markdown=no_markdown,
+        max_workers=breakdown_workers,
+    )
+    t_breakdown = time.monotonic() - t0
+    LOGGER.info("annual revenue breakdown extraction took %s", _fmt_dur(t_breakdown))
     LOGGER.info("⏱ 阶段② 年报/季报下载用时 %s", _fmt_dur(t_report))
 
     t0 = time.monotonic()
@@ -624,7 +687,8 @@ def run_one(
     )
 
     print("\n" + build_report(
-        ticker, db_path, artifacts_status, fetch_status, report_status, clean_status, fin_exp_status
+        ticker, db_path, artifacts_status, fetch_status, report_status,
+        revenue_breakdown_status, clean_status, fin_exp_status
     ))
 
     return 0 if ok else 3
@@ -641,6 +705,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force-markdown", action="store_true", help="即使已存在也重抽 Markdown")
     parser.add_argument("--no-quarterly", action="store_true",
                         help="跳过季报下载，仅下载年报（默认下载年报+季报）")
+    parser.add_argument("--breakdown-workers", type=int, default=None,
+                        help="annual revenue breakdown extraction workers")
     parser.add_argument("--min-year", type=int, default=RECONCILE_MIN_YEAR,
                         help=f"年报/季报只下载该年及以后（默认 {RECONCILE_MIN_YEAR}，"
                         "与 clean.RECONCILE_MIN_YEAR 对齐；2010 前不核对不值得下载）")
@@ -672,6 +738,7 @@ def main(argv: list[str] | None = None) -> int:
                 no_quarterly=args.no_quarterly,
                 mode=args.mode,
                 verbose=args.verbose,
+                breakdown_workers=args.breakdown_workers,
                 min_year=args.min_year,
             )
         except Exception as exc:  # noqa: BLE001

@@ -9,10 +9,11 @@ import pytest
 from conftest import copy_fixture_company
 import src.financial_expense_analyzer as fea
 from src import defaults_gen
+from src.company_paths import db_path, financial_expense_path, recon_dir
 
 
 def _copy_new_hope_dairy(tmp_path: Path) -> Path:
-    # Frozen snapshot incl. annuals/2025_年度报告.md note stub (see tests/conftest.py).
+    # Frozen snapshot incl. 公告/年报/2025_年度报告.md note stub (see tests/conftest.py).
     return copy_fixture_company(tmp_path)
 
 
@@ -36,7 +37,7 @@ def test_analyze_all_periods_writes_yaml_archive(tmp_path, monkeypatch):
     monkeypatch.setattr(fea, "call_llm", lambda _messages: _mock_llm_response())
 
     path = fea.analyze_all_periods("002946.SZ", company_dir=company_dir, force=True)
-    assert path == company_dir / "financial_expense.yaml"
+    assert path == financial_expense_path(company_dir)
     assert path.exists()
 
     archive = fea.load_financial_expense_yaml(company_dir)
@@ -60,7 +61,7 @@ def test_defaults_gen_overrides_financial_expense_from_yaml_archive(tmp_path, mo
 
     fea.analyze_all_periods("002946.SZ", company_dir=company_dir, force=True)
 
-    defaults = defaults_gen.build_defaults(company_dir / "data.db", ticker="002946.SZ")
+    defaults = defaults_gen.build_defaults(db_path(company_dir), ticker="002946.SZ")
     fin_exp = defaults["income"]["financial_expense"]
     assert fin_exp["interest_expense_rate"]["source"] == "annual_report.fin_exp_note"
     assert fin_exp["cash_interest_rate"]["source"] == "annual_report.fin_exp_note"
@@ -86,7 +87,7 @@ def test_defaults_gen_keeps_mechanical_values_when_no_approved_period(tmp_path, 
 
     fea.analyze_all_periods("002946.SZ", company_dir=company_dir, force=True)
 
-    defaults = defaults_gen.build_defaults(company_dir / "data.db", ticker="002946.SZ")
+    defaults = defaults_gen.build_defaults(db_path(company_dir), ticker="002946.SZ")
     fin_exp = defaults["income"]["financial_expense"]
     assert fin_exp["interest_expense_rate"]["source"] == "clean_annual.fin_exp_int_exp / base_interest_bearing_debt"
     assert fin_exp["other_fin_exp_abs"]["source"] == "clean_annual.fin_exp - clean_annual.fin_exp_int_exp + clean_annual.fin_exp_int_inc"
@@ -110,7 +111,7 @@ def test_analyze_latest_only_writes_debug_evidence(tmp_path, monkeypatch):
     monkeypatch.setattr(fea, "call_llm", lambda _messages: _mock_llm_response())
 
     path = fea.analyze("002946.SZ", company_dir=company_dir, force=True)
-    assert path == company_dir / "recon" / "financial_expense_detail_latest.json"
+    assert path == recon_dir(company_dir) / "financial_expense_detail_latest.json"
     evidence = fea.load_evidence(company_dir)
     assert evidence is not None
     assert evidence["base_period"] == "2024"

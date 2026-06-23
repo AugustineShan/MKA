@@ -1,6 +1,7 @@
 import json
 
 from src import annual_report_reconciler as ar
+from src.company_paths import annual_reports_dir
 
 
 def _candidate(period, code, field, value):
@@ -69,8 +70,8 @@ def test_batch_confirm_empty_candidates_returns_empty():
 
 
 def test_comparative_annual_markdown_path_uses_later_report(tmp_path):
-    annuals = tmp_path / "annuals"
-    annuals.mkdir()
+    annuals = annual_reports_dir(tmp_path)
+    annuals.mkdir(parents=True)
     report = annuals / "2020_年度报告.md"
     report.write_text("placeholder", encoding="utf-8")
 
@@ -345,4 +346,3 @@ def test_llm_propose_fallback_rejects_nonzero_old_value(monkeypatch):
     fields = [a.get("field") for a in adjustments]
     assert "sell_exp" not in fields
     assert adjustments == []
-

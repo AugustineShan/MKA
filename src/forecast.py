@@ -1,11 +1,11 @@
 """One-command company forecast pipeline.
 
 User-facing contract:
-    defaults.yaml + yaml1*.yaml -> forecast/
+    Agent/defaults.yaml + Agent/yaml1*.yaml -> Agent/forecast/
 
 The resolved forecast parameters and yaml1 clean report are implementation
-artifacts. They are written under .modelking/ for audit/debug instead of the
-company directory top level.
+artifacts. They are written under Agent/.modelking/ for audit/debug instead
+of the company directory top level.
 """
 
 from __future__ import annotations
@@ -27,11 +27,18 @@ from src.calc import (
 )
 from src.yaml1_cleaner import (
     clean_yaml1,
-    default_yaml1_path,
     find_company_dir,
     load_clean_annual,
     mark_hidden,
     write_json,
+)
+from src.company_paths import (
+    company_dir_from_agent_path,
+    db_path as company_db_path,
+    defaults_path as company_defaults_path,
+    forecast_dir as company_forecast_dir,
+    latest_yaml1_path,
+    modelking_dir,
 )
 from src.yaml2_schema import DEFAULT_TERMINAL_CAPEX_DA_RATIO, get_path, write_yaml2
 
@@ -61,9 +68,9 @@ def _infer_company_dir(ticker: str | None, yaml1_path: Path | None, defaults_pat
     if ticker:
         return find_company_dir(ticker)
     if yaml1_path:
-        return yaml1_path.resolve().parent
+        return company_dir_from_agent_path(yaml1_path)
     if defaults_path:
-        return defaults_path.resolve().parent
+        return company_dir_from_agent_path(defaults_path)
     raise ValueError("--ticker, --yaml1, or --defaults is required")
 
 
@@ -79,7 +86,7 @@ def _manifest(
 ) -> dict[str, Any]:
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "contract": "defaults.yaml + yaml1*.yaml -> forecast/",
+        "contract": "Agent/defaults.yaml + Agent/yaml1*.yaml -> Agent/forecast/",
         "yaml2_defaults_path": str(run.defaults_path),
         "yaml1_path": str(run.yaml1_path),
         "clean_annual_path": str(run.clean_annual_path),
@@ -159,13 +166,13 @@ def run_company_forecast(
     company_dir = _infer_company_dir(ticker, yaml1, defaults)
     code = _infer_code(company_dir, ticker)
 
-    yaml1 = yaml1 or default_yaml1_path(company_dir)
-    defaults = defaults or company_dir / "defaults.yaml"
-    clean_annual = Path(clean_annual_path) if clean_annual_path else company_dir / "data.db"
-    internal = Path(internal_dir) if internal_dir else company_dir / INTERNAL_DIR_NAME
+    yaml1 = yaml1 or latest_yaml1_path(company_dir)
+    defaults = defaults or company_defaults_path(company_dir)
+    clean_annual = Path(clean_annual_path) if clean_annual_path else company_db_path(company_dir)
+    internal = Path(internal_dir) if internal_dir else modelking_dir(company_dir)
     forecast_params_path = internal / FORECAST_PARAMS_FILENAME
     clean_report_path = internal / CLEAN_REPORT_FILENAME
-    out_dir = Path(output_dir) if output_dir else company_dir / "forecast"
+    out_dir = Path(output_dir) if output_dir else company_forecast_dir(company_dir)
     manifest_path = out_dir / MANIFEST_FILENAME
 
     cleaned = clean_yaml1(yaml1, defaults, clean_annual)
@@ -229,12 +236,12 @@ def run_company_forecast(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run company DCF from defaults.yaml + yaml1.")
+    parser = argparse.ArgumentParser(description="Run company DCF from Agent/defaults.yaml + Agent/yaml1.")
     parser.add_argument("--ticker", help="A-share ticker used to infer company paths")
     parser.add_argument("--yaml1", help="Path to yaml1; defaults to latest company yaml1*.yaml")
-    parser.add_argument("--defaults", help="Path to defaults.yaml; defaults to company/defaults.yaml")
-    parser.add_argument("--clean-annual", help="Path to clean_annual data source; defaults to company/data.db")
-    parser.add_argument("--output-dir", help="Output directory; defaults to company/forecast and must be named forecast")
+    parser.add_argument("--defaults", help="Path to defaults.yaml; defaults to company/Agent/defaults.yaml")
+    parser.add_argument("--clean-annual", help="Path to clean_annual data source; defaults to company/Agent/data.db")
+    parser.add_argument("--output-dir", help="Output directory; defaults to company/Agent/forecast and must be named forecast")
     return parser.parse_args(argv)
 
 

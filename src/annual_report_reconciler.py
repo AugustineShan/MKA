@@ -42,6 +42,7 @@ from src.annual_report_utils import (
     read_md_lines,
     write_json,
 )
+from src.company_paths import recon_dir
 
 
 DOCS_DIR = ROOT / "TushareOfficialAPIMD"
@@ -726,7 +727,7 @@ def output_path(company_dir: Path, explicit: str | None = None) -> Path:
     if explicit:
         return Path(explicit).resolve()
     ts = time.strftime("%Y%m%d_%H%M%S")
-    return company_dir / "recon" / f"annual_report_reconciliation_{ts}.json"
+    return recon_dir(company_dir) / f"annual_report_reconciliation_{ts}.json"
 
 
 def parse_report_number(value: str) -> float | None:
@@ -1697,16 +1698,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ticker", required=True, help="A-share ticker, e.g. 000333.SZ")
     parser.add_argument("--company-dir", help="Company directory; defaults to companies/*_{code}")
-    parser.add_argument("--db", help="SQLite data.db path; defaults to company-dir/data.db")
+    parser.add_argument("--db", help="SQLite data.db path; defaults to company-dir/Agent/data.db")
     parser.add_argument("--output", help="Output JSON path")
     parser.add_argument("--max-failures", type=int, default=DEFAULT_MAX_FAILURES)
     parser.add_argument("--only-year", help="Limit to one annual period, e.g. 2025")
     parser.add_argument("--only-code", help="Limit to one check code, e.g. 'BS 2.1'")
     parser.add_argument("--no-llm", action="store_true", help="Do not call the configured LLM; only collect snippets/context")
     parser.add_argument("--no-kimi", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--write-overrides", action="store_true", help="Write recon/annual_report_overrides.json from high-confidence LLM evidence")
+    parser.add_argument("--write-overrides", action="store_true", help="Write Agent/recon/annual_report_overrides.json from high-confidence LLM evidence")
     parser.add_argument("--approve-high-confidence", action="store_true", help="Mark exact high-confidence LLM override suggestions as approved")
-    parser.add_argument("--override-output", help="Override JSON path; defaults to recon/annual_report_overrides.json")
+    parser.add_argument("--override-output", help="Override JSON path; defaults to Agent/recon/annual_report_overrides.json")
     parser.add_argument("--fail-on-findings", action="store_true", help="Exit with code 1 when hard-check failures are found")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
@@ -1749,7 +1750,7 @@ def main(argv: list[str] | None = None) -> int:
     # off instead of re-proposing the already-closed failures). Uses clean's own
     # load_approved_overrides + apply_annual_overrides so the reconciler applies
     # exactly the set clean.py would apply (same source/status filter).
-    override_path = company_dir / "recon" / "annual_report_overrides.json"
+    override_path = recon_dir(company_dir) / "annual_report_overrides.json"
     existing_overrides = clean.load_approved_overrides(override_path, ticker)
     if existing_overrides:
         clean.apply_annual_overrides(wide, present_by_period, ticker, existing_overrides)
@@ -1813,12 +1814,12 @@ def main(argv: list[str] | None = None) -> int:
 
     path = output_path(company_dir, args.output)
     write_json(path, out)
-    latest_path = company_dir / "recon" / "annual_report_reconciliation_latest.json"
+    latest_path = recon_dir(company_dir) / "annual_report_reconciliation_latest.json"
     write_json(latest_path, out)
 
     override_path: Path | None = None
     if args.write_overrides:
-        override_path = Path(args.override_output).resolve() if args.override_output else company_dir / "recon" / "annual_report_overrides.json"
+        override_path = Path(args.override_output).resolve() if args.override_output else recon_dir(company_dir) / "annual_report_overrides.json"
         rule_candidates = collect_rule_candidates(out)
         llm_confirmation = batch_llm_confirm_candidates(ticker, rule_candidates, known_defects=known_defects)
         overrides = build_override_file_from_batch_llm(

@@ -74,6 +74,7 @@ from src.annual_report_reconciler import (  # noqa: E402
     parse_failure_message,
     read_tushare_field_docs,
 )
+from src.company_paths import recon_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 TOLERANCE = clean.TOLERANCE
@@ -607,7 +608,8 @@ def cmd_context(args: argparse.Namespace) -> int:
     ticker = args.ticker.strip().upper()
     company_dir = _find_company_dir(ticker)
     db_path = _default_db_path(company_dir)
-    override_path = company_dir / "recon" / "annual_report_overrides.json"
+    company_recon_dir = recon_dir(company_dir)
+    override_path = company_recon_dir / "annual_report_overrides.json"
 
     stderr_text = run_clean_annual(ticker, db_path)
     failures = parse_hard_check_failures(stderr_text)
@@ -645,7 +647,7 @@ def cmd_context(args: argparse.Namespace) -> int:
         )
         contexts.append(ctx)
 
-    out_path = Path(args.out) if args.out else company_dir / "recon" / "subagent_context.json"
+    out_path = Path(args.out) if args.out else company_recon_dir / "subagent_context.json"
     out_path.write_text(json.dumps({"ticker": ticker, "contexts": contexts}, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({
         "failures": len(failures),
@@ -665,10 +667,10 @@ def cmd_context(args: argparse.Namespace) -> int:
 def cmd_apply(args: argparse.Namespace) -> int:
     ticker = args.ticker.strip().upper()
     company_dir = _find_company_dir(ticker)
-    recon_dir = company_dir / "recon"
-    context_path = Path(args.context) if args.context else recon_dir / "subagent_context.json"
-    proposals_path = Path(args.proposals) if args.proposals else recon_dir / "subagent_proposals.json"
-    override_path = recon_dir / "annual_report_overrides.json"
+    company_recon_dir = recon_dir(company_dir)
+    context_path = Path(args.context) if args.context else company_recon_dir / "subagent_context.json"
+    proposals_path = Path(args.proposals) if args.proposals else company_recon_dir / "subagent_proposals.json"
+    override_path = company_recon_dir / "annual_report_overrides.json"
 
     if not context_path.exists():
         print(f"context not found: {context_path}（先跑 `context` 模式）", file=sys.stderr)
@@ -682,7 +684,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
     if isinstance(proposals, dict):
         proposals = proposals.get("proposals", [])
 
-    source_recon = str(recon_dir / "annual_report_reconciliation_latest.json")
+    source_recon = str(company_recon_dir / "annual_report_reconciliation_latest.json")
     all_new_records: list[dict[str, Any]] = []
     verdict: list[dict[str, Any]] = []
     for ctx in contexts:
@@ -721,10 +723,10 @@ def cmd_apply_restatements(args: argparse.Namespace) -> int:
     """吃 subagent 重述确认，服务端验证据 + 写 restatement_exemptions.json。"""
     ticker = args.ticker.strip().upper()
     company_dir = _find_company_dir(ticker)
-    recon_dir = company_dir / "recon"
-    context_path = Path(args.context) if args.context else recon_dir / "subagent_context.json"
-    proposals_path = Path(args.proposals) if args.proposals else recon_dir / "subagent_restatement_proposals.json"
-    exemption_path = recon_dir / "restatement_exemptions.json"
+    company_recon_dir = recon_dir(company_dir)
+    context_path = Path(args.context) if args.context else company_recon_dir / "subagent_context.json"
+    proposals_path = Path(args.proposals) if args.proposals else company_recon_dir / "subagent_restatement_proposals.json"
+    exemption_path = company_recon_dir / "restatement_exemptions.json"
 
     if not context_path.exists():
         print(f"context not found: {context_path}（先跑 `context` 模式）", file=sys.stderr)

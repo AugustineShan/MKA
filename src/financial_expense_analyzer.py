@@ -2,9 +2,9 @@
 
 This module produces two artifacts:
 
-1. ``companies/{公司}/financial_expense.yaml`` — the canonical historical archive
+1. ``companies/{公司}/Agent/financial_expense.yaml`` — the canonical historical archive
    of financial-expense decompositions, one entry per clean_annual period.
-2. ``companies/{公司}/recon/financial_expense_detail_latest.json`` — a debug/
+2. ``companies/{公司}/Agent/recon/financial_expense_detail_latest.json`` — a debug/
    audit snapshot of the most recent single-period run.
 
 It never writes ``defaults.yaml``.  The downstream consumer is
@@ -39,6 +39,7 @@ from src.annual_report_utils import (
     read_md_lines,
     write_json,
 )
+from src.company_paths import financial_expense_path, recon_dir
 
 
 EVIDENCE_VERSION = 1
@@ -71,11 +72,11 @@ BASIS_HYPOTHESES = {
 
 
 def default_evidence_path(company_dir: Path) -> Path:
-    return company_dir / "recon" / "financial_expense_detail_latest.json"
+    return recon_dir(company_dir) / "financial_expense_detail_latest.json"
 
 
 def default_yaml_path(company_dir: Path) -> Path:
-    return company_dir / "financial_expense.yaml"
+    return financial_expense_path(company_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +570,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--ticker", required=True, help="A-share ticker, e.g. 002946.SZ")
     parser.add_argument("--company-dir", help="Company directory; defaults to companies/*_{code}")
-    parser.add_argument("--db", help="SQLite data.db path; defaults to company-dir/data.db")
+    parser.add_argument("--db", help="SQLite data.db path; defaults to company-dir/Agent/data.db")
     parser.add_argument("--force", action="store_true", help="Regenerate archive even if it exists")
     parser.add_argument(
         "--latest-only",

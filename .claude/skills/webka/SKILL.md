@@ -1,4 +1,4 @@
----
+﻿---
 name: webka
 description: 一键打包网页端生成核心假设.md 所需源文件（含核心假设生成修改器 skill）到公司目录下的 WEBCLAUDE/核心假设部分/ 文件夹，方便在 Claude.ai 网页端上传使用。每次执行先清空旧文件夹，再复制最新源文件。
 argument-hint: [公司名或代码，如 新乳业 / 002946]

@@ -283,16 +283,16 @@ Expected: PASS.
 ### Task 5: Reconcile Anker Official Data Without Company Hardcoding
 
 **Files:**
-- Read: `companies/安克创新_300866/data.db`
-- Read: `companies/安克创新_300866/annuals/2024_年度报告.md`
-- Generated: `companies/安克创新_300866/recon/annual_report_overrides.json`
+- Read: `companies/安克创新_300866/Agent/data.db`
+- Read: `companies/安克创新_300866/公告/年报/2024_年度报告.md`
+- Generated: `companies/安克创新_300866/Agent/recon/annual_report_overrides.json`
 
 **Step 1: Run clean annual**
 
 Run:
 
 ```bash
-py -3 -m src.clean --ticker 300866.SZ --db companies/安克创新_300866/data.db --mode annual
+py -3 -m src.clean --ticker 300866.SZ --db companies/安克创新_300866/Agent/data.db --mode annual
 ```
 
 Expected: if no overrides exist yet, failures should point to generic official-source patterns.
@@ -302,7 +302,7 @@ Expected: if no overrides exist yet, failures should point to generic official-s
 Run:
 
 ```bash
-py -3 -m src.annual_report_reconciler --ticker 300866.SZ --db companies/安克创新_300866/data.db --max-failures 30 --write-overrides --approve-high-confidence
+py -3 -m src.annual_report_reconciler --ticker 300866.SZ --db companies/安克创新_300866/Agent/data.db --max-failures 30 --write-overrides --approve-high-confidence
 ```
 
 Expected: approved overrides for fields justified by annual-report lines, without company-specific code.
@@ -312,7 +312,7 @@ Expected: approved overrides for fields justified by annual-report lines, withou
 Run:
 
 ```bash
-py -3 -m src.clean --ticker 300866.SZ --db companies/安克创新_300866/data.db --mode annual
+py -3 -m src.clean --ticker 300866.SZ --db companies/安克创新_300866/Agent/data.db --mode annual
 ```
 
 Expected: annual hard checks pass or remaining failures are reduced to clearly documented non-field issues.

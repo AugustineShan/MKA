@@ -16,9 +16,14 @@ from typing import Any, Callable, Iterable, TypeVar
 
 import requests
 
+from src.company_paths import (
+    COMPANIES_DIR,
+    annual_reports_dir,
+    db_path as agent_db_path,
+    find_company_dir as find_company_root,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPANIES_DIR = ROOT / "companies"
 
 # 默认 LLM 请求超时（秒）。结构化的年报勾稽确认是推理型任务，glm-5-turbo 单批可达
 # ~150s，kimi 更慢；统一兑齐到 300s，避免未显式配置 *_TIMEOUT_SECONDS 的 provider
@@ -52,19 +57,14 @@ def find_company_dir(ticker: str, explicit: str | None = None) -> Path:
         return company_dir
 
     code, _ = parse_ticker(ticker)
-    matches = sorted(COMPANIES_DIR.glob(f"*_{code}"))
-    if not matches:
-        raise FileNotFoundError(f"No company directory matching companies/*_{code}")
-    if len(matches) > 1:
-        raise RuntimeError(f"Multiple company directories match {code}: {matches}")
-    return matches[0]
+    return find_company_root(code, COMPANIES_DIR)
 
 
 def default_db_path(company_dir: Path, explicit: str | None = None) -> Path:
     if explicit:
         db_path = Path(explicit).resolve()
     else:
-        db_path = company_dir / "data.db"
+        db_path = agent_db_path(company_dir)
     if not db_path.exists():
         raise FileNotFoundError(db_path)
     return db_path
@@ -76,7 +76,7 @@ def default_db_path(company_dir: Path, explicit: str | None = None) -> Path:
 
 
 def annual_markdown_path(company_dir: Path, year: str) -> Path | None:
-    annuals = company_dir / "annuals"
+    annuals = annual_reports_dir(company_dir)
     if not annuals.exists():
         return None
     matches = sorted(annuals.glob(f"{year}_*.md"))

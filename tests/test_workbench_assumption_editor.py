@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import pytest
+from fastapi import HTTPException
+
+from src.workbench import (
+    _apply_assumption_patches,
+    _editable_assumptions,
+    _format_ka_change_prompt,
+)
+
+
+def test_editable_assumptions_include_top_level_values():
+    data = {
+        "meta": {"horizon": [2025, 2026]},
+        "income.gpm": {"values": [0.29, 0.30], "src": "test"},
+    }
+
+    rows = _editable_assumptions(data)
+
+    row = next(item for item in rows if item["path"] == "income.gpm")
+    assert row["group"] == "standard_knob"
+    assert row["cells"][0]["pointer"] == "/income.gpm/values/0"
+    assert row["cells"][0]["year"] == "2025"
+
+
+def test_editable_assumptions_include_revenue_driver_values():
+    data = {
+        "meta": {"horizon": [2025, 2026]},
+        "income.revenue": {
+            "kind": "decomposition",
+            "segments": {
+                "低温鲜奶": {
+                    "revenue_family": "factor_product",
+                    "factors": [
+                        {"key": "volume", "projection": {"kind": "yoy", "values": [0.07, 0.06]}},
+                        {"key": "price", "projection": {"kind": "yoy", "values": [0.003, 0.003]}},
+                    ],
+                }
+            },
+        },
+    }
+
+    rows = _editable_assumptions(data)
+    labels = {row["label"] for row in rows}
+
+    assert "低温鲜奶 · volume" in labels
+    assert "低温鲜奶 · price" in labels
+    assert any(row["path"] == "income.revenue.低温鲜奶.volume" for row in rows)
+
+
+def test_editable_assumptions_include_terminal_growth():
+    data = {"terminal": {"perpetual_growth": 0.025}}
+
+    rows = _editable_assumptions(data)
+
+    assert any(row["cells"][0]["pointer"] == "/terminal/perpetual_growth" for row in rows)
+
+
+def test_apply_assumption_patches_updates_only_requested_pointer():
+    data = {
+        "meta": {"horizon": [2025, 2026]},
+        "income.gpm": {"values": [0.29, 0.30]},
+    }
+
+    patched = _apply_assumption_patches(
+        data,
+        [{"pointer": "/income.gpm/values/1", "old_value": 0.30, "new_value": 0.31}],
+    )
+
+    assert patched["income.gpm"]["values"] == [0.29, 0.31]
+    assert data["income.gpm"]["values"] == [0.29, 0.30]
+
+
+def test_apply_assumption_patches_rejects_unknown_pointer():
+    data = {
+        "meta": {"horizon": [2025]},
+        "income.gpm": {"values": [0.29]},
+    }
+
+    with pytest.raises(HTTPException, match="Unsupported editable pointer"):
+        _apply_assumption_patches(
+            data,
+            [{"pointer": "/income.gpm/src", "old_value": None, "new_value": 0.31}],
+        )
+
+
+def test_apply_assumption_patches_rejects_old_value_mismatch():
+    data = {
+        "meta": {"horizon": [2025]},
+        "income.gpm": {"values": [0.29]},
+    }
+
+    with pytest.raises(HTTPException, match="changed since preview"):
+        _apply_assumption_patches(
+            data,
+            [{"pointer": "/income.gpm/values/0", "old_value": 0.28, "new_value": 0.31}],
+        )
+
+
+def test_format_ka_change_prompt_lists_changed_revenue_driver_and_standard_knob():
+    data = {
+        "meta": {"horizon": [2025, 2026]},
+        "income.gpm": {"values": [0.29, 0.30], "src": "#整体毛利率"},
+        "income.revenue": {
+            "segments": {
+                "低温鲜奶": {
+                    "factors": [
+                        {"key": "volume", "label": "销量", "projection": {"values": [0.07, 0.06]}},
+                    ]
+                }
+            }
+        },
+    }
+    patches = [
+        {"pointer": "/income.gpm/values/0", "old_value": 0.29, "new_value": 0.31},
+        {
+            "pointer": "/income.revenue/segments/低温鲜奶/factors/0/projection/values/0",
+            "old_value": 0.07,
+            "new_value": 0.08,
+        },
+    ]
+
+    prompt = _format_ka_change_prompt(
+        company_name="新乳业_002946",
+        core_path="D:/MKA/companies/新乳业_002946/新乳业-20260618-核心假设.md",
+        yaml1_path="D:/MKA/companies/新乳业_002946/Agent/yaml1_新乳业_20260616.yaml",
+        yaml1_data=data,
+        patches=patches,
+        preview_summary={"per_share_value": 18.5},
+    )
+
+    assert "不要直接修改 yaml1" in prompt
+    assert "核心假设.md" in prompt
+    assert "income.gpm" in prompt
+    assert "低温鲜奶 · 销量" in prompt
+    assert "2025" in prompt
+    assert "0.29 -> 0.31" in prompt
+    assert "/ka" in prompt
+    assert "/comp" in prompt

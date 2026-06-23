@@ -20,13 +20,22 @@ from pathlib import Path
 from typing import Any
 
 from src.clean import resolve_is_signs
+from src.company_paths import (
+    COMPANIES_DIR as DEFAULT_COMPANIES_DIR,
+    company_dir_from_agent_path,
+    db_path as company_db_path,
+    defaults_path as company_defaults_path,
+    find_company_dir as find_company_root,
+    latest_yaml1_path,
+    modelking_dir,
+)
 from src.yaml1_formula import FormulaError, FormulaResult, evaluate_formula_graph
 from src.yaml2_schema import plain_value, read_yaml2, write_yaml2
 
 
 TOLERANCE_MILLION_CNY = 1.0
 BASE_DIR = Path(__file__).resolve().parent.parent
-COMPANIES_DIR = BASE_DIR / "companies"
+COMPANIES_DIR = DEFAULT_COMPANIES_DIR
 
 MODEL_REVENUE_YOY = "model.revenue_yoy"
 REVENUE_ALIASES = {"revenue", "income.revenue", MODEL_REVENUE_YOY}
@@ -106,9 +115,10 @@ def load_clean_annual(path: str | Path) -> dict[int, dict[str, float]]:
     if path.suffix.lower() == ".db":
         return _load_clean_annual_db(path)
     if not path.exists():
-        db_path = path.parent / "data.db"
-        if db_path.exists():
-            return _load_clean_annual_db(db_path)
+        company_dir = company_dir_from_agent_path(path)
+        for db_path in (path.parent / "data.db", company_db_path(company_dir)):
+            if db_path.exists():
+                return _load_clean_annual_db(db_path)
     rows: dict[int, dict[str, float]] = {}
     with path.open(encoding="utf-8-sig", newline="") as fh:
         for row in csv.DictReader(fh):
@@ -143,22 +153,11 @@ def _load_clean_annual_db(path: Path) -> dict[int, dict[str, float]]:
 
 
 def find_company_dir(ticker: str) -> Path:
-    code = ticker.split(".")[0]
-    candidates = sorted(COMPANIES_DIR.glob(f"*_{code}"))
-    if not candidates:
-        raise FileNotFoundError(f"No company directory found for {ticker}")
-    return candidates[0]
+    return find_company_root(ticker, COMPANIES_DIR)
 
 
 def default_yaml1_path(company_dir: Path) -> Path:
-    candidates = sorted(
-        company_dir.glob("yaml1*.yaml"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    if not candidates:
-        raise FileNotFoundError(f"No yaml1*.yaml found under {company_dir}")
-    return candidates[0]
+    return latest_yaml1_path(company_dir)
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -652,21 +651,21 @@ def _empty_terminal_from_yaml2(yaml2: dict[str, Any], explicit_horizon: list[int
     }
 
 
-def clean_yaml1(
-    yaml1_path: str | Path | None,
+def clean_yaml1_data(
+    yaml1: dict[str, Any],
     defaults_path: str | Path,
     clean_annual_path: str | Path,
+    *,
+    yaml1_label: str = "<memory>",
 ) -> CleanResult:
     yaml2 = read_yaml2(defaults_path)
     clean_annual = load_clean_annual(clean_annual_path)
 
-    if yaml1_path is None:
-        yaml1: dict[str, Any] = {}
+    if not yaml1:
         fold = _empty_fold_from_yaml2(yaml2)
         formula_result = evaluate_formula_graph(yaml1, fold.explicit_horizon)
         defaults_only = True
     else:
-        yaml1 = load_yaml(yaml1_path)
         explicit_horizon = _explicit_horizon_from_yaml1(yaml1)
         try:
             formula_result = evaluate_formula_graph(yaml1, explicit_horizon)
@@ -676,7 +675,7 @@ def clean_yaml1(
         defaults_only = False
 
     report = _initial_report(
-        str(yaml1_path) if yaml1_path else "<defaults-only>",
+        yaml1_label if yaml1 else "<defaults-only>",
         defaults_path,
         clean_annual_path,
         fold,
@@ -711,6 +710,20 @@ def clean_yaml1(
         first = report["errors"][0]
         raise Yaml1CleanError(first["message"])
     return CleanResult(forecast_params=forecast_params, report=report)
+
+
+def clean_yaml1(
+    yaml1_path: str | Path | None,
+    defaults_path: str | Path,
+    clean_annual_path: str | Path,
+) -> CleanResult:
+    yaml1 = load_yaml(yaml1_path) if yaml1_path is not None else {}
+    return clean_yaml1_data(
+        yaml1,
+        defaults_path,
+        clean_annual_path,
+        yaml1_label=str(yaml1_path) if yaml1_path else "<defaults-only>",
+    )
 
 
 def _initial_report(
@@ -1131,8 +1144,8 @@ def mark_hidden(path: str | Path) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Clean yaml1 into forecast parameters.")
     parser.add_argument("--yaml1", help="Path to yaml1; defaults to latest company yaml1*.yaml")
-    parser.add_argument("--defaults", help="Path to defaults.yaml")
-    parser.add_argument("--clean-annual", help="Path to clean_annual data source; defaults to company/data.db")
+    parser.add_argument("--defaults", help="Path to defaults.yaml; defaults to company/Agent/defaults.yaml")
+    parser.add_argument("--clean-annual", help="Path to clean_annual data source; defaults to company/Agent/data.db")
     parser.add_argument("--ticker", help="Ticker used to infer paths")
     parser.add_argument("--output", help="Output forecast_params.yaml path")
     parser.add_argument("--report", help="Output report JSON path")
@@ -1151,16 +1164,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.ticker:
         company_dir = find_company_dir(args.ticker)
     elif args.yaml1:
-        company_dir = Path(args.yaml1).resolve().parent
+        company_dir = company_dir_from_agent_path(args.yaml1)
     elif args.defaults:
-        company_dir = Path(args.defaults).resolve().parent
+        company_dir = company_dir_from_agent_path(args.defaults)
     else:
         raise SystemExit("--ticker, --yaml1, or --defaults is required")
 
     yaml1_path = None if args.defaults_only else (Path(args.yaml1) if args.yaml1 else default_yaml1_path(company_dir))
-    defaults_path = Path(args.defaults) if args.defaults else company_dir / "defaults.yaml"
-    clean_annual_path = Path(args.clean_annual) if args.clean_annual else company_dir / "data.db"
-    internal_dir = company_dir / ".modelking"
+    defaults_path = Path(args.defaults) if args.defaults else company_defaults_path(company_dir)
+    clean_annual_path = Path(args.clean_annual) if args.clean_annual else company_db_path(company_dir)
+    internal_dir = modelking_dir(company_dir)
     output_path = Path(args.output) if args.output else internal_dir / "forecast_params.yaml"
     report_path = Path(args.report) if args.report else internal_dir / "yaml1_clean_report.json"
 

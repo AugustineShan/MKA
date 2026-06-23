@@ -23,6 +23,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from src.company_paths import defaults_path, webclaude_dir as company_webclaude_dir
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 COMPANIES_DIR = BASE_DIR / "companies"
 DOCS_DIR = BASE_DIR / "docs"
@@ -99,7 +101,7 @@ def newest_yaml1compiler_skill(skills_dir: Path = SKILLS_DIR) -> Path | None:
 
 def copy_to_webcomp(company_dir: Path) -> dict[str, str]:
     """清空并重新填充 WEBCLAUDE/yaml1编译部分/，返回打包报告字典。"""
-    webcomp_dir = company_dir / "WEBCLAUDE" / "yaml1编译部分"
+    webcomp_dir = company_webclaude_dir(company_dir) / "yaml1编译部分"
     if webcomp_dir.exists():
         shutil.rmtree(webcomp_dir)
     webcomp_dir.mkdir(parents=True)
@@ -115,7 +117,7 @@ def copy_to_webcomp(company_dir: Path) -> dict[str, str]:
     report["核心假设.md"] = f"✅ {latest_core.name}"
 
     # 2. defaults.yaml（必须）
-    defaults = company_dir / "defaults.yaml"
+    defaults = defaults_path(company_dir)
     if not defaults.exists():
         raise FileNotFoundError(f"缺少 defaults.yaml: {defaults}")
     shutil.copy2(defaults, webcomp_dir / "01_defaults.yaml")

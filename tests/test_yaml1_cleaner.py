@@ -9,6 +9,7 @@ import pytest
 
 from src import yaml1_cleaner
 from src.calc import build_forecast_statements
+from src.company_paths import db_path as company_db_path, defaults_path as company_defaults_path
 from src.yaml1_formula import evaluate_formula_graph
 
 
@@ -43,8 +44,8 @@ def paths() -> tuple[Path, Path, Path]:
     base = company_dir()
     return (
         yaml1_cleaner.default_yaml1_path(base),
-        base / "defaults.yaml",
-        base / "data.db",
+        company_defaults_path(base),
+        company_db_path(base),
     )
 
 
@@ -52,6 +53,22 @@ def write_yaml1_fixture(tmp_path: Path, data: dict[str, object]) -> Path:
     path = tmp_path / "yaml1_contract.yaml"
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+def test_clean_yaml1_data_matches_file_path():
+    yaml1_path, defaults_path, clean_path = paths()
+    yaml1_data = yaml1_cleaner.load_yaml(yaml1_path)
+
+    from_path = yaml1_cleaner.clean_yaml1(yaml1_path, defaults_path, clean_path)
+    from_data = yaml1_cleaner.clean_yaml1_data(
+        yaml1_data,
+        defaults_path,
+        clean_path,
+        yaml1_label=str(yaml1_path),
+    )
+
+    assert from_data.forecast_params == from_path.forecast_params
+    assert from_data.report["backtest"]["status"] == from_path.report["backtest"]["status"]
 
 
 def test_fold_revenue_uses_structured_unit_factor_and_clean_anchor():
@@ -401,8 +418,8 @@ def test_fold_revenue_supports_formula_leaf():
 
 def test_clean_yaml1_formula_leaf_and_formula_overlay_reach_calc(tmp_path):
     base = company_dir()
-    defaults_path = base / "defaults.yaml"
-    clean_path = base / "data.db"
+    defaults_path = company_defaults_path(base)
+    clean_path = company_db_path(base)
     base_revenue = 10665.42345785
     yaml1 = {
         "meta": {"horizon": [2025, 2026, 2027]},
