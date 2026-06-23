@@ -30,6 +30,7 @@ from src.defaults_gen import (
 )
 from src.yaml2_schema import (
     DEFAULT_TERMINAL_CAPEX_DA_RATIO,
+    REVIEW_FLAG_CAPEX_BELOW_NON_PPE_AMORT,
     REVIEW_FLAG_NEGATIVE_CASH,
     get_path,
     plain_value,
@@ -275,6 +276,18 @@ def build_balance_sheet(
         + get_year_float(yaml2, "balance_sheet.lt_amort_deferred_exp", idx)
     )
     capex_ppe = capex - non_ppe_reinvest
+    if capex_ppe < 0.0:
+        capex_ppe = 0.0
+        if review_flags is not None:
+            review_flags.append(
+                {
+                    "code": REVIEW_FLAG_CAPEX_BELOW_NON_PPE_AMORT,
+                    "severity": "warning",
+                    "period": None,
+                    "message": "合并 capex 不足以覆盖非 PP&E 稳态再投资，PP&E 基数在缩，稳态假设吃紧",
+                    "value": capex - non_ppe_reinvest,
+                }
+            )
     prev_fix = max(prev_bs.get("fix_assets", 0.0), prev_bs.get("fix_assets_total", 0.0), 0.0)
     depreciation = prev_fix * depr_rate
     row["fix_assets"] = max(prev_fix + capex_ppe - depreciation, 0.0)

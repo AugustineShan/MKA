@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from src.calc import build_balance_sheet
+from src.yaml2_schema import REVIEW_FLAG_CAPEX_BELOW_NON_PPE_AMORT
 
 
 def _income_row(revenue=1000.0, n_income_attr_p=10.0):
@@ -102,3 +103,25 @@ def test_asset_light_company_unchanged():
     # capex_ppe = 100 - 0 = 100; fix_assets = 50 + 100 = 150
     assert bs_row["fix_assets"] == pytest.approx(150.0)
     assert metrics["capex"] == pytest.approx(100.0)
+
+
+def test_capex_below_non_ppE_amort_floors_and_flags():
+    """合并 capex < 非 PP&E 摊销时，capex_ppe 落底 0 并发 review flag。"""
+    yaml2 = {
+        "balance_sheet": {
+            "capex_pct": {"value": [0.001]},      # capex = 0.1% x 1000 = 1.0
+            "depr_rate": {"value": [0.0]},
+            "amort_intang_assets": {"value": [3.0]},
+            "use_right_asset_dep": {"value": [2.0]},
+            "lt_amort_deferred_exp": {"value": [1.0]},
+        }
+    }
+    flags = []
+    bs_row, metrics = build_balance_sheet(
+        yaml2, _prev_bs(), _income_row(), idx=1, review_flags=flags
+    )
+
+    # capex=1.0 < amort_sum=6.0 -> capex_ppe 落底 0; fix_assets = 50 + 0 - 0 = 50
+    assert bs_row["fix_assets"] == pytest.approx(50.0)
+    assert metrics["capex"] == pytest.approx(1.0)   # 完整 capex 仍 1.0
+    assert any(f["code"] == REVIEW_FLAG_CAPEX_BELOW_NON_PPE_AMORT for f in flags)

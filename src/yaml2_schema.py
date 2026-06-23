@@ -26,6 +26,7 @@ DEFAULT_TERMINAL_CAPEX_DA_RATIO = 1.0
 DEFAULT_PLUG = "cash"
 
 REVIEW_FLAG_NEGATIVE_CASH = "negative_cash_from_plug"
+REVIEW_FLAG_CAPEX_BELOW_NON_PPE_AMORT = "capex_below_non_ppE_amort"
 
 REQUIRED_PATHS = [
     "version",
