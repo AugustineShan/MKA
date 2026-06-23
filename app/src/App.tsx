@@ -4,7 +4,6 @@ import type {
   AssumptionPatch,
   AssumptionPreview,
   AssumptionsKnob,
-  AssumptionsSection,
   CompanyDetail,
   CompanySummary,
   DcfDetailRow,
@@ -18,7 +17,6 @@ import type {
   StatementSheet,
   TabKey,
   TerminalView,
-  TraceabilityItem,
   Yaml1AssumptionsView,
   Yaml1Presentation,
   Yaml1RevenueSegment,
@@ -792,28 +790,7 @@ function StashView({ blocks }: { blocks: StashBlock[] }) {
   );
 }
 
-// ─────────────────────────── Assumptions panel ───────────────────────────
-
-function KnobRow({ knob, years }: { knob: AssumptionsKnob; years: string[] }) {
-  const label = knob.src.replace(/^#/, "").replace(/\(.*\)$/, "").trim() || knob.path;
-  return (
-    <tr className={knob.is_override ? "override-row" : ""}>
-      <td className="statement-label" title={`${knob.path}${knob.note ? " · " + knob.note : ""}`}>
-        {knob.is_override ? <span className="override-dot" title="主动覆盖 / 查证" /> : null}
-        {label}
-      </td>
-      {years.map((y, i) => {
-        const v = knob.values[i];
-        const isRate = knob.path.includes("gpm") || knob.path.includes("cost_rates") || knob.path.includes("tax_rate") || knob.path.includes("minority");
-        return (
-          <td className={`numeric ${typeof v === "number" && v < 0 ? "negative" : ""}`} key={y}>
-            {typeof v === "number" ? (isRate ? formatPercent(v, 2) : formatNumber(v)) : "-"}
-          </td>
-        );
-      })}
-    </tr>
-  );
-}
+// ─────────────────────────── Terminal assumptions ───────────────────────────
 
 function TerminalBlock({ terminal }: { terminal: TerminalView }) {
   if (!terminal || terminal.explicit_end == null) return null;
@@ -833,61 +810,6 @@ function TerminalBlock({ terminal }: { terminal: TerminalView }) {
         <div className="terminal-paths"><span className="path-tag-label">hold</span>{terminal.hold_paths.map((p) => <code key={p}>{p}</code>)}</div>
       ) : null}
     </div>
-  );
-}
-
-function AssumptionsPanel({ view }: { view: Yaml1AssumptionsView | null | undefined }) {
-  if (!view) return <EmptyState title="无假设旋钮" body="这份 yaml1 没有结构化假设视图。" />;
-  const base = Number(view.base_period);
-  const yearLabel = (y: string) => (Number(y) > base ? `${y}E` : y);
-  return (
-    <section className="card assumptions-panel">
-      <div className="section-heading">
-        <div>
-          <div className="eyebrow">② Key assumptions · knobs</div>
-          <h2>关键假设</h2>
-          <p>老板拍板的旋钮：毛利率、费用率、营业利润调节项、税率、少数股东。蓝点 = 主动覆盖/查证。缺失 = 落 yaml2 平推。</p>
-        </div>
-        <StatusPill label={`${view.years.join(" · ")}`} />
-      </div>
-      <div className="assumptions-sections">
-        {view.sections.map((sec: AssumptionsSection) => (
-          <div className="assumptions-section" key={sec.key}>
-            <h3>{sec.title}</h3>
-            <div className="table-scroll workbook-scroll">
-              <table className="financial-table assumption-table">
-                <thead>
-                  <tr className="year-header-row">
-                    <th>科目</th>
-                    {view.years.map((y) => <th className="numeric" key={y}>{yearLabel(y)}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {sec.knobs.map((k) => <KnobRow key={k.path} knob={k} years={view.years} />)}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ))}
-        <TerminalBlock terminal={view.terminal} />
-        {view.traceability.length > 0 ? (
-          <details className="traceability-block">
-            <summary>
-              <span>溯源附注</span>
-              <small>{view.traceability.length}</small>
-            </summary>
-            <div className="stash-text-dict">
-              {view.traceability.map((t: TraceabilityItem, i) => (
-                <div className="stash-text-row" key={i}>
-                  <span className="stash-text-label">{t.name}</span>
-                  <span className="stash-text-body">{t.text}</span>
-                </div>
-              ))}
-            </div>
-          </details>
-        ) : null}
-      </div>
-    </section>
   );
 }
 
@@ -1222,6 +1144,7 @@ type AxisRow = {
   bold?: boolean;
   override?: boolean;
   muted?: boolean;
+  driver?: boolean;
   editablePath?: string;
   // int=整数金额(百万元) · num2=2位小数(参考项通用) · decimal=小数比率×100+%(旋钮) ·
   // signedDecimal=带符号同比% · volume=1位小数(万吨)
@@ -1322,7 +1245,6 @@ function UnifiedYearTable({
   onStartInlineEdit,
   onCommitInlineEdit,
   onCancelInlineEdit,
-  onOpenPeriod,
 }: {
   years: string[];
   baseYear: number;
@@ -1336,7 +1258,6 @@ function UnifiedYearTable({
   onStartInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell) => void;
   onCommitInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell) => void;
   onCancelInlineEdit?: () => void;
-  onOpenPeriod?: (period: string) => void;
 }) {
   const periodClass = (year: string) => {
     const numericYear = Number(year);
@@ -1363,15 +1284,7 @@ function UnifiedYearTable({
           <tr className="year-header-row">
             <th>项目</th>
             {years.map((y) => (
-              <th className={`numeric ${periodClass(y)} ${editablePeriodSet?.has(y) ? "editable-period-head" : ""}`} key={y}>
-                {editMode && editablePeriodSet?.has(y) && onOpenPeriod ? (
-                  <button className="assumption-period-button" onClick={() => onOpenPeriod(y)} type="button">
-                    {yearLabel(y, baseYear)}
-                  </button>
-                ) : (
-                  yearLabel(y, baseYear)
-                )}
-              </th>
+              <th className={`numeric ${periodClass(y)} ${editMode && editablePeriodSet?.has(y) ? "editable-period-head" : ""}`} key={y}>{yearLabel(y, baseYear)}</th>
             ))}
           </tr>
         </thead>
@@ -1395,7 +1308,7 @@ function UnifiedYearTable({
                 </tr>
               ) : null}
               {g.rows.map((r, ri) => (
-                <tr key={ri} className={`${r.bold ? "key-row" : ""} ${r.muted ? "muted-row" : ""}`}>
+                <tr key={ri} className={`${r.bold ? "key-row" : ""} ${r.muted ? "muted-row" : ""} ${r.driver ? "driver-assumption-row" : ""}`}>
                   <td className="statement-label" title={r.note ?? r.label}>
                     {r.override ? <span className="override-dot" title="主动覆盖 / 查证" /> : null}
                     {r.label}
@@ -1407,7 +1320,11 @@ function UnifiedYearTable({
                     const changed = editable ? editableCellChanged(editable.cell, drafts) : false;
                     const isInline = Boolean(editable && inlineEdit?.pointer === editable.cell.pointer);
                     return (
-                      <td className={`numeric ${periodClass(y)} ${typeof currentValue === "number" && currentValue < 0 ? "negative" : ""} ${changed ? "assumption-cell-changed" : ""}`} key={y}>
+                      <td
+                        className={`numeric ${periodClass(y)} ${typeof currentValue === "number" && currentValue < 0 ? "negative" : ""} ${editable ? "assumption-editable-cell" : ""} ${changed ? "assumption-cell-changed" : ""}`}
+                        key={y}
+                        onClick={editable && !isInline ? () => onStartInlineEdit?.(editable.assumption, editable.cell) : undefined}
+                      >
                         {editable && isInline ? (
                           <div className="assumption-inline-editor">
                             <input
@@ -1425,7 +1342,10 @@ function UnifiedYearTable({
                         ) : editable ? (
                           <button
                             className={`assumption-inline-cell ${changed ? "is-manual" : ""}`}
-                            onClick={() => onStartInlineEdit?.(editable.assumption, editable.cell)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onStartInlineEdit?.(editable.assumption, editable.cell);
+                            }}
                             type="button"
                           >
                             {editableDisplayValue(editable.assumption, currentValue)}
@@ -1497,10 +1417,47 @@ function profitRowsForRevenueBlock(
   ];
 }
 
+const REVENUE_DRIVER_LABELS: Record<string, string> = {
+  volume: "销量增速",
+  price: "吨价增速",
+  revenue_yoy: "营收增速",
+  margin: "毛利率",
+};
+
+function revenueDriversForSegment(editable: EditableAssumption[], segmentName: string): EditableAssumption[] {
+  const prefix = `income.revenue.${segmentName}.`;
+  const rank: Record<string, number> = { revenue_yoy: 0, volume: 1, price: 2, margin: 3 };
+  return editable
+    .filter((row) => row.group === "revenue_driver" && row.path.startsWith(prefix))
+    .sort((a, b) => (rank[revenueDriverKey(a, segmentName)] ?? 99) - (rank[revenueDriverKey(b, segmentName)] ?? 99) || a.label.localeCompare(b.label, "zh-Hans-CN"));
+}
+
+function revenueDriverKey(row: EditableAssumption, segmentName: string): string {
+  const prefix = `income.revenue.${segmentName}.`;
+  return row.path.startsWith(prefix) ? row.path.slice(prefix.length) : (row.family ?? "");
+}
+
+function revenueDriverAxisRow(row: EditableAssumption, segmentName: string): AxisRow {
+  const values: Record<string, number | null> = {};
+  for (const cell of row.cells) values[cell.year] = cell.value;
+  const key = revenueDriverKey(row, segmentName);
+  const label = REVENUE_DRIVER_LABELS[key] ?? row.label.replace(`${segmentName} · `, "");
+  return {
+    label: `${segmentName} · ${label}`,
+    values,
+    note: [row.path, row.src, row.note].filter(Boolean).join("\n"),
+    muted: true,
+    driver: true,
+    editablePath: row.path,
+    format: editableAxisFormat(row),
+  };
+}
+
 function buildRevenueGroups(
   view: Yaml1RevenueView,
   presentation: Yaml1Presentation | null | undefined,
   secondaryBlocks: StashBlock[],
+  editable: EditableAssumption[] = [],
   fullStatementSheets?: StatementSheet[],
   previewStatementSheets?: StatementSheet[],
 ): AxisGroup[] {
@@ -1538,13 +1495,22 @@ function buildRevenueGroups(
     : view.segments;
   const segRows: AxisRow[] = [];
   for (const seg of orderedSegments) {
+    const segmentDrivers = revenueDriversForSegment(editable, seg.name);
+    const revenueYoyDriver = segmentDrivers.find((row) => revenueDriverKey(row, seg.name) === "revenue_yoy");
+    const inlineDriverRows = segmentDrivers.filter((row) => row !== revenueYoyDriver);
     const revValues: Record<string, number | null> = { ...(seg.history_revenues ?? {}), ...seg.revenues };
     segRows.push({ label: `${seg.name} · 收入`, values: revValues, note: seg.note, format: "int" });
     const yoyValues: Record<string, number | null> = { ...yoySeries(seg.history_revenues), ...seg.yoys };
-    segRows.push({ label: `${seg.name} · 同比`, muted: true, values: yoyValues, format: "signedDecimal" });
+    if (revenueYoyDriver) {
+      for (const cell of revenueYoyDriver.cells) yoyValues[cell.year] = cell.value;
+    }
+    segRows.push({ label: `${seg.name} · 同比`, muted: true, values: yoyValues, format: "signedDecimal", editablePath: revenueYoyDriver?.path });
     if (seg.history_volumes || seg.volumes) {
       const volValues: Record<string, number | null> = { ...(seg.history_volumes ?? {}), ...(seg.volumes ?? {}) };
       segRows.push({ label: `${seg.name} · 销量(万吨)`, muted: true, values: volValues, format: "volume" });
+    }
+    for (const driver of inlineDriverRows) {
+      segRows.push(revenueDriverAxisRow(driver, seg.name));
     }
   }
   groups.push({ title: "主拆分 · 业务线", unit: "百万元", rows: segRows });
@@ -1582,7 +1548,7 @@ const EDITABLE_GROUP_LABELS: Record<EditableAssumption["group"], string> = {
 };
 
 function editableYears(rows: EditableAssumption[]): string[] {
-  return unionYears(rows.flatMap((row) => row.cells.map((cell) => cell.year)));
+  return unionYears([rows.flatMap((row) => row.cells.map((cell) => cell.year))]);
 }
 
 function editableOriginalValue(row: EditableAssumption, year: string): number | null {
@@ -1634,6 +1600,34 @@ function editableRowsByPath(rows: EditableAssumption[]): Map<string, EditableAss
 
 function editablePeriods(rows: EditableAssumption[]): string[] {
   return unionYears([rows.filter((row) => row.group !== "terminal").flatMap((row) => row.cells.map((cell) => cell.year))]);
+}
+
+function editableAxisFormat(row: EditableAssumption): AxisRow["format"] {
+  if (row.format === "percent") return "decimal";
+  if (row.format === "integer") return "int";
+  return "num2";
+}
+
+function buildEditableAxisGroups(editable: EditableAssumption[], representedPaths: Set<string>): AxisGroup[] {
+  const grouped = new Map<EditableAssumption["group"], EditableAssumption[]>();
+  for (const row of editable) {
+    if (row.group === "terminal" || representedPaths.has(row.path)) continue;
+    grouped.set(row.group, [...(grouped.get(row.group) ?? []), row]);
+  }
+  return [...grouped.entries()].map(([group, rows]) => ({
+    title: EDITABLE_GROUP_LABELS[group] ?? group,
+    rows: rows.map((row) => {
+      const values: Record<string, number | null> = {};
+      for (const cell of row.cells) values[cell.year] = cell.value;
+      return {
+        label: row.label,
+        values,
+        note: [row.path, row.src, row.note].filter(Boolean).join("\n"),
+        editablePath: row.path,
+        format: editableAxisFormat(row),
+      };
+    }),
+  }));
 }
 
 function buildAssumptionPatches(editable: EditableAssumption[], drafts: Record<string, number | null>): AssumptionPatch[] {
@@ -1744,67 +1738,6 @@ function EditableAssumptionsTable({
           })}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function AssumptionPeriodDrawer({
-  period,
-  editable,
-  drafts,
-  onDraft,
-  onClose,
-}: {
-  period: string;
-  editable: EditableAssumption[];
-  drafts: Record<string, number | null>;
-  onDraft: (pointer: string, value: number | null) => void;
-  onClose: () => void;
-}) {
-  const rows = editable.filter((row) => row.cells.some((cell) => cell.year === period));
-  const grouped = new Map<EditableAssumption["group"], EditableAssumption[]>();
-  for (const row of rows) grouped.set(row.group, [...(grouped.get(row.group) ?? []), row]);
-  const title = period === "terminal" ? "Terminal" : `${period}E`;
-
-  return (
-    <div className="assumption-drawer-backdrop" role="presentation" onMouseDown={onClose}>
-      <aside className="assumption-drawer" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="assumption-drawer-head">
-          <div>
-            <div className="eyebrow">Assumption panel</div>
-            <h2>{title}</h2>
-          </div>
-          <button className="icon-button" onClick={onClose} type="button">×</button>
-        </div>
-        <div className="assumption-drawer-list">
-          {[...grouped.entries()].map(([group, groupRows]) => (
-            <Fragment key={group}>
-              <div className="assumption-drawer-group">{EDITABLE_GROUP_LABELS[group] ?? group}</div>
-              {groupRows.map((row) => {
-                const cell = editableCellForPeriod(row, period);
-                if (!cell) return null;
-                const currentValue = editableValueForCell(cell, drafts);
-                const changed = editableCellChanged(cell, drafts);
-                return (
-                  <div className={`assumption-drawer-row ${changed ? "changed" : ""}`} key={`${row.id}-${cell.pointer}`}>
-                    <div className="assumption-drawer-row-copy">
-                      <strong>{row.label}</strong>
-                      <span>{editableDisplayValue(row, currentValue)}</span>
-                      <small>{row.path}</small>
-                    </div>
-                    <input
-                      onChange={(event) => onDraft(cell.pointer, parseEditableInput(row, event.currentTarget.value))}
-                      placeholder={row.format === "percent" ? "1.5 / 1.5%" : row.format === "integer" ? "整数" : "数值"}
-                      type="text"
-                      value={editableInputValue(row, currentValue)}
-                    />
-                  </div>
-                );
-              })}
-            </Fragment>
-          ))}
-        </div>
-      </aside>
     </div>
   );
 }
@@ -2191,14 +2124,12 @@ function YamlWorkbook({
   const [briefPrompt, setBriefPrompt] = useState("");
   const [briefLoading, setBriefLoading] = useState(false);
   const [briefError, setBriefError] = useState<string | null>(null);
-  const [drawerPeriod, setDrawerPeriod] = useState<string | null>(null);
   const [inlineEdit, setInlineEdit] = useState<AssumptionInlineEdit | null>(null);
   const editableRows = editableAssumptions ?? [];
   const patches = useMemo(() => buildAssumptionPatches(editableRows, draftValues), [editableRows, draftValues]);
   const editablePathMap = useMemo(() => editableRowsByPath(editableRows), [editableRows]);
   const editablePeriodList = useMemo(() => editablePeriods(editableRows), [editableRows]);
   const editablePeriodSet = useMemo(() => new Set(editablePeriodList), [editablePeriodList]);
-  const hasTerminalEditable = editableRows.some((row) => row.group === "terminal");
 
   useEffect(() => {
     setPresentation(initialPresentation ?? null);
@@ -2211,7 +2142,6 @@ function YamlWorkbook({
     setPreviewError(null);
     setBriefPrompt("");
     setBriefError(null);
-    setDrawerPeriod(null);
     setInlineEdit(null);
   }, [initialPresentation, path]);
 
@@ -2315,13 +2245,24 @@ function YamlWorkbook({
         [String(revenueView.base_year)],
       ])
     : [];
-  const revenueGroups = revenueView ? buildRevenueGroups(revenueView, presentation, secondaryBlocks, fullStatementSheets, preview?.statement_sheets) : [];
+  const revenueGroups = revenueView ? buildRevenueGroups(revenueView, presentation, secondaryBlocks, editableRows, fullStatementSheets, preview?.statement_sheets) : [];
 
   // ② 关键假设区
   const asmBase = assumptionsView ? Number(assumptionsView.base_period) : 0;
   const assumptionGroups = assumptionsView ? buildAssumptionsGroups(assumptionsView) : [];
   const assumptionYears = assumptionsView?.years ?? [];
   const terminal = assumptionsView?.terminal;
+  const representedEditablePaths = new Set<string>();
+  for (const group of [...revenueGroups, ...assumptionGroups]) {
+    for (const row of group.rows) {
+      if (row.editablePath) representedEditablePaths.add(row.editablePath);
+    }
+  }
+  const nonInlineEditableRows = revenueView ? editableRows.filter((row) => row.group !== "revenue_driver") : editableRows;
+  const supplementalEditableRows = nonInlineEditableRows;
+  const supplementalEditableGroups = buildEditableAxisGroups(supplementalEditableRows, representedEditablePaths);
+  const modelGroups = [...revenueGroups, ...supplementalEditableGroups, ...assumptionGroups];
+  const modelYears = unionYears([revenueYears, assumptionYears, editablePeriodList]);
 
   // ③ 参考区
   const refBase = revenueBase || asmBase;
@@ -2377,7 +2318,6 @@ function YamlWorkbook({
                 setPreview(null);
                 setPreviewError(null);
                 setBriefPrompt("");
-                setDrawerPeriod(null);
                 setInlineEdit(null);
               }}
               type="button"
@@ -2394,20 +2334,6 @@ function YamlWorkbook({
           <span>{previewLoading ? "Preview 重算中..." : preview ? "Preview 已更新" : "使用正式 forecast"}</span>
           {preview?.dcf_summary?.per_share_value != null ? <strong>试算每股 {formatNumber(preview.dcf_summary.per_share_value, 2)}</strong> : null}
         </div>
-        {editMode && (editablePeriodList.length > 0 || hasTerminalEditable) ? (
-          <div className="assumption-period-strip">
-            {editablePeriodList.map((period) => (
-              <button className={drawerPeriod === period ? "active" : ""} key={period} onClick={() => setDrawerPeriod(period)} type="button">
-                {period}E
-              </button>
-            ))}
-            {hasTerminalEditable ? (
-              <button className={drawerPeriod === "terminal" ? "active" : ""} onClick={() => setDrawerPeriod("terminal")} type="button">
-                Terminal
-              </button>
-            ) : null}
-          </div>
-        ) : null}
         {previewError ? <div className="error-banner">{previewError}</div> : null}
         {briefError ? <div className="error-banner">{briefError}</div> : null}
         {briefPrompt ? (
@@ -2418,26 +2344,16 @@ function YamlWorkbook({
         ) : null}
       </section>
 
-      {editMode && drawerPeriod ? (
-        <AssumptionPeriodDrawer
-          drafts={draftValues}
-          editable={editableRows}
-          onClose={() => setDrawerPeriod(null)}
-          onDraft={updateDraft}
-          period={drawerPeriod}
-        />
-      ) : null}
-
-      {revenueGroups.length > 0 ? (
+      {modelGroups.length > 0 ? (
         <section className="card yaml-region">
           <div className="yaml-region-heading">
-            <div className="eyebrow">① Revenue breakdown</div>
-            <h2>收入拆分 + 利润路径</h2>
+            <div className="eyebrow">① Model table</div>
+            <h2>收入拆分 + 关键假设</h2>
           </div>
           <UnifiedYearTable
-            years={revenueYears}
-            baseYear={revenueBase}
-            groups={revenueGroups}
+            years={modelYears}
+            baseYear={revenueBase || asmBase}
+            groups={modelGroups}
             editMode={editMode}
             editableByPath={editablePathMap}
             editablePeriods={editablePeriodSet}
@@ -2446,44 +2362,19 @@ function YamlWorkbook({
             onCancelInlineEdit={() => setInlineEdit(null)}
             onCommitInlineEdit={commitInlineEdit}
             onInlineEditChange={(raw) => setInlineEdit((current) => current ? { ...current, raw } : current)}
-            onOpenPeriod={setDrawerPeriod}
-            onStartInlineEdit={startInlineEdit}
-          />
-        </section>
-      ) : null}
-
-      {assumptionGroups.length > 0 ? (
-        <section className="card yaml-region">
-          <div className="yaml-region-heading">
-            <div className="eyebrow">② Key assumptions</div>
-            <h2>关键假设</h2>
-          </div>
-          <UnifiedYearTable
-            years={assumptionYears}
-            baseYear={asmBase}
-            groups={assumptionGroups}
-            editMode={editMode}
-            editableByPath={editablePathMap}
-            editablePeriods={editablePeriodSet}
-            drafts={draftValues}
-            inlineEdit={inlineEdit}
-            onCancelInlineEdit={() => setInlineEdit(null)}
-            onCommitInlineEdit={commitInlineEdit}
-            onInlineEditChange={(raw) => setInlineEdit((current) => current ? { ...current, raw } : current)}
-            onOpenPeriod={setDrawerPeriod}
             onStartInlineEdit={startInlineEdit}
           />
           {terminal && terminal.explicit_end != null ? <TerminalBlock terminal={terminal} /> : null}
         </section>
       ) : null}
 
-      {editableRows.length > 0 ? (
+      {nonInlineEditableRows.length > 0 ? (
         <details className="card yaml-region assumption-advanced-list">
           <summary>
             <span>全部可调假设</span>
-            <small>{editableRows.length} knobs</small>
+            <small>{nonInlineEditableRows.length} knobs</small>
           </summary>
-          <EditableAssumptionsTable editable={editableRows} editMode={editMode} drafts={draftValues} onDraft={updateDraft} />
+          <EditableAssumptionsTable editable={nonInlineEditableRows} editMode={editMode} drafts={draftValues} onDraft={updateDraft} />
         </details>
       ) : null}
 

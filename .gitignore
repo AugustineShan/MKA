@@ -1,14 +1,21 @@
 # ====================================================================
 # 私人项目部署须知
 #   .env       — TuShare / GLM 等凭证与配置，纳入版本控制（私人仓库，切勿转公开）
-#   companies/ — 运行数据，体积大且含可再生二进制（PDF/db 等），不纳入版本控制
-#                部署时凭 .env 用 data_fetcher / report_downloader / clean 重新生成
+#   companies/ — 默认不纳入版本控制（体积大、含可再生二进制 PDF/db）。
+#                例外：新乳业_002946 作为测试公司整体纳入（除 公告/ 外）。
+#                其余公司部署时凭 .env 用 data_fetcher / report_downloader / clean 重新生成。
 # ====================================================================
 
 # Generated data directories
-companies/
+# 用 companies/*（而非 companies/）才能用 ! 重新放行新乳业_002946 子目录
+companies/*
 .recon/
 annuals/
+
+# 测试公司新乳业_002946 整体纳入版本控制……
+!companies/新乳业_002946/
+# ……但 公告/ 不纳入（83M 可再生 PDF/Markdown，部署时用 report_downloader 重新下载）
+companies/新乳业_002946/公告/
 
 # ...but keep committed test fixtures even though annuals/ is ignored globally
 !tests/fixtures/company_002946/annuals/
@@ -19,11 +26,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+.pytest_cache/
 
 # Frontend
 node_modules/
-app/dist/
-dist/
+# app/dist（前端构建产物）纳入版本控制：workbench 直接服务 app/dist/index.html，
+# 缺失即报 "run npm run build first"，提交后 clone 即可 `py -m src.workbench` 开箱跑。
 
 # Logs
 *.log
@@ -33,10 +41,7 @@ dist/
 worktrees/
 
 # IDE / local config
-# .claude/ holds project skills (skills/) that MUST be committed;
-# ignore everything else under .claude/ (local settings, caches).
-.claude/*
-!.claude/skills/
+# .claude/（项目 skills + 配置）整体纳入版本控制
 .obsidian/
 .serena/
 .vscode/

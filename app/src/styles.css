@@ -3258,62 +3258,55 @@ p {
   width: 100%;
 }
 
-.assumption-period-strip {
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding-top: 10px;
-}
-
-.assumption-period-strip button,
-.assumption-period-button {
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  background: #ffffff;
-  color: var(--secondary);
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 700;
-  min-height: 28px;
-  padding: 4px 8px;
-}
-
-.assumption-period-strip button:hover,
-.assumption-period-strip button.active,
-.assumption-period-button:hover {
-  border-color: var(--blue);
-  color: var(--blue);
-}
-
 .editable-period-head {
-  padding: 0 !important;
+  box-shadow: inset 0 -3px 0 rgba(0, 61, 122, 0.32);
 }
 
-.assumption-period-button {
-  border: 0;
-  border-radius: 0;
-  color: #ffffff;
-  background: transparent;
-  height: 100%;
-  width: 100%;
+.assumption-editable-cell {
+  background: #f6faff;
+  box-shadow: inset 0 0 0 1px rgba(0, 61, 122, 0.2);
+  cursor: text;
+  padding: 3px 4px;
 }
 
-.assumption-period-button:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: #ffffff;
+.assumption-editable-cell:hover {
+  background: #eef6ff;
+  box-shadow: inset 0 0 0 1px rgba(0, 61, 122, 0.5);
+}
+
+.driver-assumption-row .statement-label {
+  color: var(--secondary);
+  font-size: 12px;
+  padding-left: 28px;
+}
+
+.driver-assumption-row .statement-label::before {
+  content: "assumption";
+  display: inline-block;
+  margin-right: 8px;
+  border: 1px solid rgba(0, 61, 122, 0.28);
+  border-radius: 3px;
+  color: var(--blue);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 3px 4px;
+  text-transform: uppercase;
 }
 
 .assumption-inline-cell {
   width: 100%;
   min-height: 28px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid rgba(0, 61, 122, 0.45);
   border-radius: 4px;
-  background: #ffffff;
+  background: transparent;
   color: var(--blue);
   font-family: var(--mono);
   font-size: 12px;
   font-weight: 800;
+  cursor: text;
   text-align: right;
 }
 
@@ -3360,111 +3353,6 @@ p {
   font-size: 11px;
   font-weight: 800;
   padding: 0 7px;
-}
-
-.assumption-drawer-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 35;
-  display: flex;
-  justify-content: flex-end;
-  background: rgba(255, 255, 255, 0.18);
-}
-
-.assumption-drawer {
-  width: min(460px, calc(100vw - 24px));
-  height: 100%;
-  overflow: auto;
-  border-left: 1px solid var(--border-strong);
-  background: #ffffff;
-  padding: 18px;
-}
-
-.assumption-drawer-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.assumption-drawer-head h2 {
-  margin: 3px 0 0;
-  font-size: 22px;
-}
-
-.assumption-drawer-list {
-  display: grid;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.assumption-drawer-group {
-  border-top: 1px solid var(--border);
-  color: var(--secondary);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  padding-top: 12px;
-  text-transform: uppercase;
-}
-
-.assumption-drawer-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(110px, 0.62fr);
-  align-items: end;
-  gap: 10px;
-  padding: 8px 0;
-}
-
-.assumption-drawer-row.changed {
-  box-shadow: inset 3px 0 0 var(--blue);
-  padding-left: 8px;
-}
-
-.assumption-drawer-row-copy {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.assumption-drawer-row-copy strong {
-  color: var(--text);
-  font-size: 13px;
-}
-
-.assumption-drawer-row-copy span {
-  color: var(--blue);
-  font-family: var(--mono);
-  font-size: 14px;
-  font-weight: 800;
-}
-
-.assumption-drawer-row-copy small {
-  overflow: hidden;
-  color: var(--tertiary);
-  font-family: var(--mono);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.assumption-drawer-row input {
-  width: 100%;
-  height: 34px;
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 4px 8px;
-  text-align: right;
-}
-
-.assumption-drawer-row input:focus {
-  border-color: var(--blue);
-  outline: 2px solid rgba(0, 61, 122, 0.12);
 }
 
 .assumption-advanced-list summary {
