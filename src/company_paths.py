@@ -26,6 +26,8 @@ MEETING_NOTES_DIR = "纪要"
 COLLECTION_DIR = "收集"
 IMPORTANT_FILES_DIR = "重要文件"
 ACTIVE_VORE_DIR = "active_vore"
+KA_MODEL_SUBDIR = "核心假设生成（模型放在这里）"
+BRKD_MATERIAL_SUBDIR = "业务理解器（研报和纪要放在这里）"
 WEBCLAUDE_DIR = "WEBCLAUDE"
 
 TICKER_RE = re.compile(r"^\d{6}\.(SZ|SH|BJ)$")
@@ -148,6 +150,16 @@ def active_vore_dir(company_dir: Path) -> Path:
     return company_dir / ACTIVE_VORE_DIR
 
 
+def ka_model_dir(company_dir: Path) -> Path:
+    """ka 读活跃素材的子文件夹（外部模型放这里）。"""
+    return active_vore_dir(company_dir) / KA_MODEL_SUBDIR
+
+
+def brkd_material_dir(company_dir: Path) -> Path:
+    """/brkd 读研报/纪要的子文件夹。"""
+    return active_vore_dir(company_dir) / BRKD_MATERIAL_SUBDIR
+
+
 def webclaude_dir(company_dir: Path) -> Path:
     return company_dir / WEBCLAUDE_DIR
 
@@ -170,6 +182,8 @@ def ensure_workspace_layout(company_dir: Path) -> None:
         collection_dir(company_dir),
         important_files_dir(company_dir),
         active_vore_dir(company_dir),
+        ka_model_dir(company_dir),
+        brkd_material_dir(company_dir),
         webclaude_dir(company_dir),
     ):
         path.mkdir(parents=True, exist_ok=True)
