@@ -2328,7 +2328,8 @@ p {
 
 .annual-disclosure-controls {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
   border-top: 1px solid var(--border);
   padding-top: 14px;
@@ -2336,6 +2337,109 @@ p {
 
 .annual-mode-toggle {
   width: max-content;
+}
+
+.annual-structure-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.annual-structure-card {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.annual-structure-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: #f5f6f8;
+}
+
+.annual-structure-card-head span {
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.annual-structure-card-head strong {
+  color: var(--secondary);
+  font-family: var(--mono);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.annual-structure-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.annual-structure-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.15fr) minmax(140px, 0.85fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.annual-structure-row:last-child {
+  border-bottom: 0;
+}
+
+.annual-structure-copy {
+  min-width: 0;
+}
+
+.annual-structure-copy span {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annual-structure-copy small {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--secondary);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annual-structure-share {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) 48px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.annual-structure-share strong {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .compact-tabs {
@@ -3276,7 +3380,7 @@ p {
 
 .driver-assumption-row .statement-label {
   color: var(--secondary);
-  font-size: 12px;
+  font-size: 15px;
   padding-left: 28px;
 }
 
@@ -3288,7 +3392,7 @@ p {
   border-radius: 3px;
   color: var(--blue);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0;
   line-height: 1;
@@ -3381,6 +3485,19 @@ p {
     grid-template-columns: 1fr;
   }
 
+  .annual-disclosure-heading,
+  .annual-disclosure-controls {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .annual-disclosure-stats,
+  .annual-structure-grid {
+    grid-template-columns: 1fr;
+    min-width: 0;
+    width: 100%;
+  }
+
   .dcf-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3400,4 +3517,125 @@ p {
   .bridge-op {
     align-self: center;
   }
+}
+
+/* ===== 使用教程页 ===== */
+.tutorial-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: var(--bg);
+  overflow-y: auto;
+}
+.tutorial-page {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 40px 48px 80px;
+}
+.tutorial-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 32px;
+}
+.tutorial-header h1 { margin: 4px 0 0; }
+.tutorial-close {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 16px;
+  color: var(--secondary);
+  cursor: pointer;
+}
+.tutorial-close:hover { border-color: var(--border-strong); color: var(--text); }
+
+.tutorial-section { margin-bottom: 40px; }
+.tutorial-section h2 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--secondary);
+  margin: 0 0 16px;
+}
+
+/* 管线图 */
+.pipeline-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 4px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.pipeline-node {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  color: var(--text);
+}
+.pipeline-cmd { color: var(--blue); border-color: var(--blue); }
+.pipeline-arrow { color: var(--tertiary); padding: 0 2px; }
+.pipeline-side { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+.pipeline-side-item { font-size: 13px; color: var(--secondary); }
+.pipeline-side-item code { color: var(--blue); font-family: var(--mono); margin-right: 8px; }
+
+/* 新手 4 步 */
+.quickstart { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.quickstart li { display: flex; align-items: baseline; gap: 12px; font-size: 14px; }
+.quickstart-step {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--blue); color: #fff; font-size: 12px; flex-shrink: 0;
+}
+.quickstart code { font-family: var(--mono); color: var(--blue); }
+.quickstart-desc { color: var(--secondary); }
+
+/* skill 卡片网格 */
+.skill-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+.skill-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  background: var(--card);
+}
+.skill-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--grid-soft);
+}
+.skill-name { font-family: var(--mono); font-size: 16px; color: var(--blue); font-weight: 600; }
+.skill-tag {
+  font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--secondary); border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+}
+.skill-tag-主线 .skill-tag { color: var(--blue); border-color: var(--blue); }
+.skill-fields { margin: 0; display: grid; grid-template-columns: 64px 1fr; gap: 8px 12px; font-size: 13px; }
+.skill-fields dt { color: var(--tertiary); }
+.skill-fields dd { margin: 0; color: var(--text); }
+.skill-fields code { font-family: var(--mono); color: var(--blue); }
+.skill-discipline { margin: 0; padding-left: 16px; }
+.skill-discipline li { color: var(--secondary); margin-bottom: 2px; }
+
+/* topbar 按钮 */
+.topbar-right { display: flex; align-items: center; gap: 20px; }
+.tutorial-btn {
+  background: none; border: 1px solid var(--blue); color: var(--blue);
+  border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer; white-space: nowrap;
+}
+.tutorial-btn:hover { background: var(--blue); color: #fff; }
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .tutorial-page { padding: 24px 20px 60px; }
+  .skill-grid { grid-template-columns: 1fr; }
+  .pipeline-main { font-size: 12px; }
+  .topbar-right { gap: 12px; }
 }
