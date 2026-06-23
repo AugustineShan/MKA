@@ -65,8 +65,11 @@ MKA/
 ├── companies/                # 输出目录，每公司一个子目录
 │   └── {公司名}_{代码}/
 │       ├── 公司判断和最新观点.md
+│       ├── Agent业务讨论.md   # /brkd 产出：业务预理解参考
 │       ├── *核心假设*.md
 │       ├── active_vore/      # 活跃收集，外部模型和当前材料，不移动
+│       │   ├── 核心假设生成（模型放在这里）/  # /ka 读取外部模型
+│       │   └── 业务理解器（研报和纪要放在这里）/ # /brkd 读取研报/纪要
 │       ├── WEBCLAUDE/        # 高频打包区，供网页 Claude 上传使用
 │       ├── 公告/
 │       │   ├── 年报/         # 年度报告 PDF + Markdown
@@ -116,6 +119,20 @@ companies/{公司名}_{代码}/Agent/defaults.yaml
 companies/{公司名}_{代码}/Agent/forecast/
   （唯一正式 DCF 输出；中间参数/报告写入 Agent/.modelking/）
 ```
+
+## 建模三站管线（/brkd → /ka → /comp）
+
+取数流水线之外，建模有三个串行 skill 站：
+
+```text
+研报/纪要 → /brkd → Agent业务讨论.md → /ka → 核心假设.md → /comp → yaml1
+            读懂        记全              译准
+         discernment   fidelity         翻译
+```
+
+- `/brkd`（业务预理解器）：读 `active_vore/业务理解器（研报和纪要放在这里）/` 下的研报和纪要，产出 `Agent业务讨论.md`（公司根目录），作为 `/ka` 的业务预理解参考。
+- `/ka`（核心假设生成）：消费 `Agent业务讨论.md` + `active_vore/核心假设生成（模型放在这里）/` 中的外部模型，产出 `*核心假设*.md`。
+- `/comp`（yaml1 编译器）：把 `核心假设.md` 编译为 `yaml1*.yaml`。
 
 ## DCF 运行规则（必须遵守）
 
