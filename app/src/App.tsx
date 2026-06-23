@@ -22,6 +22,7 @@ import type {
   Yaml1RevenueSegment,
   Yaml1RevenueView,
 } from "./types";
+import { Tutorial } from "./Tutorial";
 
 const tabs: Array<{ key: TabKey; label: string }> = [
   { key: "overview", label: "Overview" },
@@ -3202,6 +3203,7 @@ export default function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string>();
+  const [showTutorial, setShowTutorial] = useState(false);
 
   async function loadCompanies() {
     setLoading(true);
@@ -3272,13 +3274,16 @@ export default function App() {
             <div className="eyebrow">Workbench</div>
             <h1>{selectedCompany?.name ?? "Company folder"}</h1>
           </div>
-          <div className="topbar-stats">
-            {headerStats.map(([label, value]) => (
-              <div className="topbar-stat" key={label}>
-                <span>{label}</span>
-                <strong>{value}</strong>
-              </div>
-            ))}
+          <div className="topbar-right">
+            <div className="topbar-stats">
+              {headerStats.map(([label, value]) => (
+                <div className="topbar-stat" key={label}>
+                  <span>{label}</span>
+                  <strong>{value}</strong>
+                </div>
+              ))}
+            </div>
+            <button className="tutorial-btn" onClick={() => setShowTutorial(true)} type="button">使用教程</button>
           </div>
         </header>
 
@@ -3295,6 +3300,7 @@ export default function App() {
         {!detailLoading && detail ? <DetailView detail={detail} onRun={regenerateForecast} running={running} tab={tab} /> : null}
         {!detailLoading && !detail && !error ? <EmptyState title="No company selected" body="Select a company from the sidebar to inspect its model folder." /> : null}
       </main>
+      {showTutorial ? <Tutorial onClose={() => setShowTutorial(false)} /> : null}
     </div>
   );
 }
