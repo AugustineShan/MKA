@@ -262,9 +262,22 @@ def build_balance_sheet(
             row[field] = oper_cost * cogs_days[field] / 365.0
 
     capex = revenue * capex_pct
+    # Non-PP&E long-lived assets (intangible / right-of-use / long-term deferred)
+    # are held flat in the model (net change = 0). Their steady-state reinvestment
+    # equals their amortization and must NOT roll into fix_assets, otherwise the
+    # depreciation base is inflated with phantom PP&E that was never bought.
+    # Precondition: capex_pct must be the combined rate (c_pay_acq_const_fiolta /
+    # revenue) as produced by defaults_gen; if yaml1 overrides it to a fixed-asset
+    # scope, the subtraction double-counts (no automatic guard, doc constraint only).
+    non_ppe_reinvest = (
+        get_year_float(yaml2, "balance_sheet.amort_intang_assets", idx)
+        + get_year_float(yaml2, "balance_sheet.use_right_asset_dep", idx)
+        + get_year_float(yaml2, "balance_sheet.lt_amort_deferred_exp", idx)
+    )
+    capex_ppe = capex - non_ppe_reinvest
     prev_fix = max(prev_bs.get("fix_assets", 0.0), prev_bs.get("fix_assets_total", 0.0), 0.0)
     depreciation = prev_fix * depr_rate
-    row["fix_assets"] = max(prev_fix + capex - depreciation, 0.0)
+    row["fix_assets"] = max(prev_fix + capex_ppe - depreciation, 0.0)
     if prev_bs.get("fix_assets_total", 0.0) != 0.0:
         row["fix_assets_total"] = row["fix_assets"]
 
@@ -604,7 +617,16 @@ def reset_forecast_dir(output_dir: Path) -> None:
     if output_dir.exists() and not output_dir.is_dir():
         raise CalcError(f"Forecast output path exists and is not a directory: {output_dir}")
     if output_dir.exists():
-        shutil.rmtree(output_dir)
+        for child in list(output_dir.iterdir()):
+            if child.suffix.lower() in {".xlsm", ".xlsx"} and (child.name.startswith("company_output") or child.name.startswith("~$")):
+                try:
+                    child.unlink()
+                except PermissionError:
+                    continue
+            elif child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
     output_dir.mkdir(parents=True, exist_ok=True)
 
 
