@@ -49,7 +49,6 @@ from src.business_breakdown_extractor import (
 )
 from src.clean import approved_override_count, default_overrides_path, default_plugs_path, RECONCILE_MIN_YEAR
 from src.company_paths import (
-    active_vore_dir,
     annual_reports_dir,
     company_dir_from_db_path,
     db_path as agent_db_path,
@@ -366,11 +365,6 @@ def ensure_company_artifacts(db_path: Path) -> str:
     company_dir = company_dir_from_db_path(db_path)
     created: list[str] = []
     ensure_workspace_layout(company_dir)
-
-    active_dir = active_vore_dir(company_dir)
-    if not active_dir.exists():
-        active_dir.mkdir(parents=True, exist_ok=True)
-        created.append("active_vore/")
 
     core_view_path = company_dir / "公司判断和最新观点.md"
     if not core_view_path.exists():
