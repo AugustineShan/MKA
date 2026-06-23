@@ -617,16 +617,7 @@ def reset_forecast_dir(output_dir: Path) -> None:
     if output_dir.exists() and not output_dir.is_dir():
         raise CalcError(f"Forecast output path exists and is not a directory: {output_dir}")
     if output_dir.exists():
-        for child in list(output_dir.iterdir()):
-            if child.suffix.lower() in {".xlsm", ".xlsx"} and (child.name.startswith("company_output") or child.name.startswith("~$")):
-                try:
-                    child.unlink()
-                except PermissionError:
-                    continue
-            elif child.is_dir():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
+        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
 
