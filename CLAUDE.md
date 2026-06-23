@@ -159,6 +159,8 @@ companies/{公司名}_{代码}/Agent/.modelking/yaml1_clean_report.json
 
 `calc.py` 是纯算账核/回归工具，只接受 `--forecast-params` 参数（清洗后的逐年标准参数表，如 `Agent/.modelking/forecast_params.yaml`），永远看不到 yaml1，也不直接读取 `defaults.yaml`。`defaults.yaml` 进入 `calc.py` 的唯一合法路径是先经过 `yaml1_cleaner.py`（无 yaml1 时用 `--defaults-only` 做恒等清洗）。有 yaml1 的公司请走正式入口 `py -m src.forecast --ticker ...`。
 
+**capex 路由前提**：`balance_sheet.capex_pct` 必须是合并口径（`c_pay_acq_const_fiolta / revenue`，defaults_gen 默认产出）。`calc.py` 据此把 PP&E 份（`capex − Σ三项摊销`）灌进 `fix_assets`；若 yaml1 把 `capex_pct` 改成固定资产口径会双重扣减，且无自动守卫。
+
 ## 本地 Web 工作台（FastAPI + React）
 
 ModelKing 前端是本地文件工作台：把 `companies/{公司名}_{代码}/` 映射为一家公司的一页。第一版只读展示 + 一键重算，不直接改写核心假设或 yaml1。工作台不是新的建模入口，重算按钮必须调用 `src.forecast`，仍遵守 `defaults.yaml + yaml1*.yaml -> Agent/forecast/`。
