@@ -246,3 +246,59 @@ def test_light_mode_no_capex_pct_warning():
     flags = []
     build_balance_sheet(yaml2, _prev_bs(), _income_row(), idx=1, review_flags=flags)
     assert not any(f["code"] == "heavy_capex_pct_ignored" for f in flags)
+
+
+# ---------------------------------------------------------------------------
+# Step 6.1: 终值双边归一化门
+# ---------------------------------------------------------------------------
+def _da_row(period, fix, cip, dep):
+    return {"period": period, "fix_assets_net": fix, "cip_balance": cip,
+            "ppe_depreciation": dep, "ppe_capex": dep, "ppe_capex_split": {}}
+
+
+def test_normalization_gate_catches_ramp_up():
+    """末年 cip/fix_assets ≥ ε → flag(上行未归一,cip 仍趴着等转固)。"""
+    from src.da_roll import normalization_gate
+    series = [
+        _da_row("2025", 1000.0, 50.0, 100.0),
+        _da_row("2026", 1000.0, 200.0, 103.0),   # cip/fix=0.20 ≥ ε
+    ]
+    passed, reason = normalization_gate(series, net_growth_rate=0.03, perpetual_growth=0.0)
+    assert not passed
+    assert "cip/fix_assets" in reason
+
+
+def test_normalization_gate_catches_retirement_ramp_down():
+    """末年 da 骤降(旧 cohort 集中折尽)→ Δda/da 偏离稳态,即使 cip 已清空。"""
+    from src.da_roll import normalization_gate
+    series = [
+        _da_row("2025", 1000.0, 10.0, 100.0),
+        _da_row("2026", 1000.0, 5.0, 60.0),      # Δda/da=-0.40, cip 已清空
+    ]
+    passed, reason = normalization_gate(series, net_growth_rate=0.0, perpetual_growth=0.0)
+    assert not passed
+    assert "Δda/da" in reason
+
+
+def test_normalization_gate_relative_to_steady_growth():
+    """g=3% 时 Δda/da≈3% 不应误报(绝对判据会永远误报,用相对 (g+perpetual) 判据)。"""
+    from src.da_roll import normalization_gate
+    series = [
+        _da_row("2025", 1000.0, 10.0, 100.0),
+        _da_row("2026", 1030.0, 10.0, 103.0),    # Δda/da=0.03 = g+0, cip=0.0097<ε
+    ]
+    passed, reason = normalization_gate(series, net_growth_rate=0.03, perpetual_growth=0.0)
+    assert passed, reason
+
+
+# ---------------------------------------------------------------------------
+# Step 6.2: 轻资产 bit-exact(无 da_schedule → 输出与现有 calc 完全一致)
+# ---------------------------------------------------------------------------
+def test_light_mode_bit_exact_unchanged(tmp_path, monkeypatch):
+    """无 da_schedule.yaml → 重资产分支零激活,per_share_value 锁定基线。"""
+    company_dir = copy_fixture_company(tmp_path)
+    monkeypatch.setattr(yaml1_cleaner, "COMPANIES_DIR", tmp_path / "companies")
+    run = forecast_mod.run_company_forecast(ticker="002946.SZ")
+    # 锁定轻资产 DCF 基线(任何重资产分支泄漏到轻资产路径都会改变此值)
+    assert run.summary["per_share_value"] == pytest.approx(17.581593506785847, abs=1e-6)
+    assert "da_series" not in _read_params(company_dir)

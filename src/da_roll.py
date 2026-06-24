@@ -258,3 +258,45 @@ def roll_da_series(sched: dict, base_bs: dict, forecast_years: int,
             },
         })
     return series
+
+
+# ---------------------------------------------------------------------------
+# Task 6.1: 终值双边归一化门
+# ---------------------------------------------------------------------------
+def normalization_gate(
+    da_series: list[dict],
+    net_growth_rate: float,
+    perpetual_growth: float,
+    epsilon: float = 0.05,
+    delta: float = 0.05,
+) -> tuple[bool, str]:
+    """末年双边归一化门(spec §9.4):
+
+    (cip/fix_assets < ε) ∧ (|Δda/da − (g+perpetual_growth)| < δ)
+
+    - cip/fix_assets 高 → 上行未归一(cip 仍趴着等转固,扩张还在爬坡)。
+    - Δda/da 偏离稳态增速 → 下行退役(旧 cohort 集中折尽)或爬坡未完。
+    绝对判据在稳态增速 > δ 时会永远误报,故用相对 (g+perpetual_growth) 判据。
+    返回 (passed, reason);passed=False 时 reason 描述偏差方向,供分析师 flag。
+    """
+    if len(da_series) < 2:
+        return True, "insufficient history (single year, skip gate)"
+    last = da_series[-1]
+    prev = da_series[-2]
+    fix = last["fix_assets_net"]
+    cip = last["cip_balance"]
+    cip_ratio = abs(cip / fix) if fix else 0.0
+    da_last = last["ppe_depreciation"]
+    da_prev = prev["ppe_depreciation"]
+    expected = net_growth_rate + perpetual_growth
+    delta_da = (da_last - da_prev) / da_prev if da_prev else 0.0
+    deviations: list[str] = []
+    if cip_ratio >= epsilon:
+        deviations.append(
+            f"cip/fix_assets={cip_ratio:.3f}≥ε{epsilon}(上行未归一,cip 仍趴着等转固)")
+    if abs(delta_da - expected) >= delta:
+        deviations.append(
+            f"Δda/da={delta_da:.3f}偏离稳态增速{expected:.3f}(下行退役或爬坡未完)")
+    if deviations:
+        return False, "; ".join(deviations)
+    return True, "normalized"
