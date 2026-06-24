@@ -287,6 +287,68 @@ export type DcfDetailRow = {
   delta_nwc: number;
 };
 
+export type ReverseDcfYear = {
+  index: number;
+  period: string;
+  revenue: number;
+  fcff: number;
+  nopat: number;
+  da: number;
+  fcff_margin: number;
+  nopat_margin: number;
+  da_margin: number;
+  terminal_fcff_margin: number;
+  fcff_to_nopat: number;
+  da_to_nopat: number;
+  terminal_fcff_to_nopat: number;
+};
+
+export type ReverseDcfBase = {
+  schema_version: 1;
+  company: {
+    id: string;
+    name: string;
+    ticker?: string | null;
+    base_period: string;
+  };
+  market: {
+    trade_date?: string | null;
+    close?: number | null;
+    total_shares: number;
+    market_cap: number;
+    net_debt: number;
+    target_enterprise_value: number;
+  };
+  defaults: {
+    n1: number;
+    n2: number;
+    wacc: number;
+    terminal_growth: number;
+    reference_decay: number;
+    terminal_capex_da_ratio: number;
+  };
+  bounds: {
+    n1: [number, number];
+    n2: [number, number];
+    growth: [number, number];
+    wacc: [number, number];
+    terminal_growth: [number, number];
+    reference_decay: [number, number];
+  };
+  base_model: {
+    base_revenue: number;
+    base_nopat: number;
+    growth_metric?: "nopat" | string;
+    forecast_years: number;
+    current_equity_value?: number | null;
+    current_per_share_value?: number | null;
+    yaml1_revenue_yoy: number[];
+    current_model_profit_yoy: number[];
+  };
+  yearly: ReverseDcfYear[];
+  warnings: string[];
+};
+
 export type AssumptionPreview = {
   dcf_summary?: Record<string, unknown> | null;
   derived_metrics?: DerivedMetrics | null;
@@ -310,6 +372,7 @@ export type CompanyDetail = {
   editable_assumptions?: EditableAssumption[];
   dcf_summary?: Record<string, unknown> | null;
   derived_metrics?: DerivedMetrics | null;
+  rating_report?: RatingReportSettings;
   manifest?: Record<string, unknown> | null;
   tables: TableFile[];
   statement_sheets?: StatementSheet[];
@@ -318,9 +381,44 @@ export type CompanyDetail = {
   dcf_detail?: DcfDetailRow[];
   annual_revenue_breakdown?: AnnualRevenueBreakdownRow[];
   materials: FileItem[];
+  da_view?: DaView | null;
 };
 
-export type TabKey = "overview" | "yaml1" | "quarterly" | "statements" | "dcf";
+export interface DaCategory {
+  name: string;
+  life_years: number;
+  salvage_rate: number;
+  base_gross: number;
+  base_accum_dep: number;
+  base_net: number;
+  base_cip: number;
+  policy_dep: number;
+}
+export interface DaSeriesPoint {
+  period: string;
+  ppe_depreciation: number;
+  fix_assets_net: number;
+  cip_balance: number;
+  ppe_capex: number;
+  ppe_capex_split: { maintenance: number; expansion: number; organic: number };
+}
+export interface DaView {
+  enabled: boolean;
+  base_year: number;
+  align_warning: string | null;
+  stock_strategy: { mode?: string; net_growth_rate?: number };
+  categories: DaCategory[];
+  scale: number | null;
+  base_reported_dep: number | null;
+  base_cip_to_fixed: Record<string, Record<string, number>>;
+  expansion_plan: Record<string, { capex_by_cat: Record<string, number>; cip_to_fixed: Record<string, number> }>;
+  terminal: { capex_da_ratio: number; perpetual_growth: number };
+  da_series: DaSeriesPoint[] | null;
+  normalization: { passed: boolean | null; reason: string } | null;
+  facts: Record<string, unknown> | null;
+}
+
+export type TabKey = "overview" | "yaml1" | "quarterly" | "statements" | "dcf" | "reverse" | "da";
 
 export type SettingsField = {
   key: string;

@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import type {
   AnnualRevenueBreakdownRow,
   AssumptionPatch,
@@ -12,6 +13,8 @@ import type {
   EditableAssumptionCell,
   QuarterlyRow,
   QuarterlyView,
+  RatingReportSettings,
+  ReverseDcfBase,
   StashBlock,
   StatementRow,
   StatementSheet,
@@ -23,13 +26,27 @@ import type {
   Yaml1RevenueView,
 } from "./types";
 import { Tutorial } from "./Tutorial";
+import DaSchedule from "./DaSchedule";
+import {
+  clampValue,
+  defaultReverseDcfInputs,
+  evaluateReverseDcf,
+  generateIsoCurve,
+  nearestCurvePoint,
+  pointInDomain,
+  referenceIntersection,
+  modelSegmentCagr,
+} from "./reverseDcf";
+import type { ModelSegmentCagr, ReverseDcfInputs, ReverseDcfPoint } from "./reverseDcf";
 
 const tabs: Array<{ key: TabKey; label: string }> = [
   { key: "overview", label: "Overview" },
   { key: "yaml1", label: "核心假设展示" },
   { key: "statements", label: "完整三表" },
   { key: "dcf", label: "DCF" },
+  { key: "reverse", label: "逆向 DCF" },
   { key: "quarterly", label: "季度展示" },
+  { key: "da", label: "重资产排程" },
 ];
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -136,9 +153,24 @@ function formatYiFromMillion(value: unknown, digits = 1): string {
   return formatNumber(value / 100, digits);
 }
 
+function formatMultiple(value: unknown, digits = 1): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "-";
+  return `${formatNumber(value, digits)}x`;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && !Number.isNaN(value) ? value : null;
+}
+
 function calcCagr(start: number, end: number | undefined, periods: number): number | null {
   if (!end || start <= 0 || periods <= 0) return null;
   return (end / start) ** (1 / periods) - 1;
+}
+
+function average(values: Array<number | null>): number | null {
+  const finite = values.filter((value): value is number => typeof value === "number" && !Number.isNaN(value));
+  if (!finite.length) return null;
+  return finite.reduce((sum, value) => sum + value, 0) / finite.length;
 }
 
 function yearOverYear(series: Record<string, number> | undefined, year: string): number | null {
@@ -225,57 +257,237 @@ function MetricCard({ label, value, caption, tone = "default" }: { label: string
   );
 }
 
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="info-row">
-      <div className="info-label">{label}</div>
-      <div className="info-value">{value}</div>
-    </div>
-  );
+const DEFAULT_RATING_REPORT_CONFIG: RatingReportSettings = {
+  data_start_year: 2023,
+  data_end_year: 2025,
+  forecast_start_year: 2026,
+  forecast_end_year: 2028,
+};
+
+const overviewRows: Array<{
+  metric: string;
+  label: string;
+  format: "number" | "percent" | "signedPercent" | "multiple" | "decimal";
+  major?: boolean;
+}> = [
+  { metric: "revenue", label: "营业收入", format: "number", major: true },
+  { metric: "revenue_yoy", label: "同比", format: "signedPercent" },
+  { metric: "gross_margin", label: "毛利率", format: "percent" },
+  { metric: "n_income_attr_p", label: "归母净利润", format: "number", major: true },
+  { metric: "n_income_attr_p_yoy", label: "同比", format: "signedPercent" },
+  { metric: "eps", label: "EPS", format: "decimal" },
+  { metric: "roe", label: "ROE", format: "percent" },
+  { metric: "pe", label: "PE", format: "multiple" },
+  { metric: "pb", label: "PB", format: "multiple" },
+  { metric: "ev_ebitda", label: "EV/EBITDA", format: "multiple" },
+];
+
+function overviewRange(config?: RatingReportSettings) {
+  const active = config ?? DEFAULT_RATING_REPORT_CONFIG;
+  const years: Array<{ year: number; label: string; forecast: boolean }> = [];
+  for (let year = active.data_start_year; year <= active.data_end_year; year += 1) {
+    years.push({ year, label: String(year), forecast: false });
+  }
+  for (let year = active.forecast_start_year; year <= active.forecast_end_year; year += 1) {
+    if (!years.some((item) => item.year === year)) {
+      years.push({ year, label: `${year}E`, forecast: true });
+    }
+  }
+  return years;
 }
 
-function Overview({ detail, running, onRun }: { detail: CompanyDetail; running: boolean; onRun: () => void }) {
-  const { summary, dcf_summary: dcf, manifest } = detail;
+function forecastYearLabel(year: number | undefined): string {
+  return typeof year === "number" ? `${year}E` : "-";
+}
+
+function overviewMetric(detail: CompanyDetail, metric: string, year: number): number | null {
+  const yearKey = String(year);
+  const ratingRow = detail.derived_metrics?.rating_report_rows?.find((row) => row.metric === metric);
+  const ratingValue = ratingRow?.values?.[yearKey];
+  if (typeof ratingValue === "number" && !Number.isNaN(ratingValue)) return ratingValue;
+  const annualValue = detail.derived_metrics?.annual?.[yearKey]?.[metric];
+  return typeof annualValue === "number" && !Number.isNaN(annualValue) ? annualValue : null;
+}
+
+function formatOverviewMetric(value: number | null, format: (typeof overviewRows)[number]["format"]): string {
+  if (format === "percent") return formatPercent(value, 1);
+  if (format === "signedPercent") return formatSignedPercent(value, 1);
+  if (format === "multiple") return formatMultiple(value, 1);
+  if (format === "decimal") return formatNumber(value, 2);
+  return formatNumber(value);
+}
+
+function formatMarketDate(value: unknown): string {
+  const text = String(value ?? "");
+  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}/${text.slice(4, 6)}/${text.slice(6, 8)}`;
+  return text || "-";
+}
+
+function Overview({ detail }: { detail: CompanyDetail }) {
+  const { summary, dcf_summary: dcf } = detail;
+  const market = detail.derived_metrics?.market_snapshot ?? {};
+  const valuation = detail.derived_metrics?.valuation ?? {};
+  const ratingConfig = detail.rating_report ?? DEFAULT_RATING_REPORT_CONFIG;
+  const years = overviewRange(detail.rating_report);
+  const forecastYears = years.filter((year) => year.forecast);
+  const forecastFirstYear = forecastYears[0]?.year ?? ratingConfig.forecast_start_year;
+  const forecastSecondYear = forecastYears[1]?.year ?? forecastFirstYear + 1;
+  const forecastLastYear = forecastYears[forecastYears.length - 1]?.year ?? ratingConfig.forecast_end_year;
+  const forecastPeriodLabel = `${forecastYearLabel(forecastFirstYear)}-${forecastYearLabel(forecastLastYear)}`;
+  const currentPrice = asNumber(market.close);
+  const perShareValue = asNumber(valuation.per_share_value ?? dcf?.per_share_value ?? summary.per_share_value);
+  const impliedUpside = currentPrice && perShareValue ? perShareValue / currentPrice - 1 : null;
+  const marketCap = asNumber(market.total_mv ?? overviewMetric(detail, "market_cap", forecastFirstYear));
+  const firstForecastPe = overviewMetric(detail, "pe", forecastFirstYear) ?? asNumber(valuation.forward_pe);
+  const secondForecastPe = overviewMetric(detail, "pe", forecastSecondYear);
+  const dcfEquityValue = asNumber(dcf?.equity_value);
+  const dcfTargetPe = (year: number): number | null => {
+    const eps = overviewMetric(detail, "eps", year);
+    if (perShareValue != null && eps != null && eps !== 0) return perShareValue / eps;
+    const attrNetIncome = overviewMetric(detail, "n_income_attr_p", year);
+    if (dcfEquityValue != null && attrNetIncome != null && attrNetIncome !== 0) {
+      return dcfEquityValue / attrNetIncome;
+    }
+    return null;
+  };
+  const firstDcfTargetPe = dcfTargetPe(forecastFirstYear);
+  const secondDcfTargetPe = dcfTargetPe(forecastSecondYear);
+  const revenueCagr = forecastFirstYear && forecastLastYear
+    ? calcCagr(
+      overviewMetric(detail, "revenue", forecastFirstYear) ?? 0,
+      overviewMetric(detail, "revenue", forecastLastYear) ?? undefined,
+      forecastLastYear - forecastFirstYear,
+    )
+    : null;
+  const profitCagr = forecastFirstYear && forecastLastYear
+    ? calcCagr(
+      overviewMetric(detail, "n_income_attr_p", forecastFirstYear) ?? 0,
+      overviewMetric(detail, "n_income_attr_p", forecastLastYear) ?? undefined,
+      forecastLastYear - forecastFirstYear,
+    )
+    : null;
+  const grossMarginChange = forecastFirstYear && forecastLastYear
+    ? ((overviewMetric(detail, "gross_margin", forecastLastYear) ?? NaN) - (overviewMetric(detail, "gross_margin", forecastFirstYear) ?? NaN)) * 100
+    : null;
+  const roeMidpoint = average(forecastYears.map((year) => overviewMetric(detail, "roe", year.year)));
+
   return (
-    <div className="view-stack">
-      <section className="hero-block">
-        <div>
-          <div className="eyebrow">Company model</div>
+    <div className="view-stack overview-page">
+      <section className="overview-hero">
+        <div className="overview-hero-copy">
+          <div className="eyebrow">Investment snapshot</div>
           <h1>{summary.name}</h1>
-          <div className="hero-meta">
-            <span>{summary.ticker ?? summary.code}</span>
-            <span>{summary.path}</span>
-          </div>
+          <p>
+            {summary.ticker ?? summary.code} · 行情日 {formatMarketDate(market.trade_date)}
+          </p>
         </div>
-        <button className="primary-button" disabled={running} onClick={onRun} type="button">
-          {running ? "Running" : "Regenerate DCF"}
-        </button>
-      </section>
-
-      <section className="metric-grid">
-        <MetricCard label="Per-share value" value={formatNumber(dcf?.per_share_value ?? summary.per_share_value)} caption="DCF output" />
-        <MetricCard label="Base period" value={String(dcf?.base_period ?? summary.base_period ?? "-")} />
-        <MetricCard label="Forecast years" value={String(dcf?.forecast_years ?? summary.forecast_years ?? "-")} />
-        <MetricCard label="Warnings" value={String(manifest?.warnings_count ?? summary.warnings_count ?? 0)} />
-      </section>
-
-      <section className="card">
-        <div className="section-heading">
+        <div className="overview-price-panel">
           <div>
-            <div className="eyebrow">Run contract</div>
-            <h2>defaults.yaml + yaml1_*.yaml -&gt; forecast/</h2>
+            <span>现价</span>
+            <strong>{formatNumber(currentPrice, 2)}</strong>
           </div>
-          <div className="pill-row">
-            <StatusPill label={summary.has_defaults ? "YAML2 ready" : "Missing YAML2"} tone={summary.has_defaults ? "blue" : "red"} />
-            <StatusPill label={summary.has_yaml1 ? "YAML1 ready" : "Missing YAML1"} tone={summary.has_yaml1 ? "blue" : "red"} />
-            <StatusPill label={summary.backtest_status ?? "No backtest"} />
+          <div>
+            <span>DCF 价值</span>
+            <strong>{formatNumber(perShareValue, 2)}</strong>
+          </div>
+          <div className={impliedUpside != null && impliedUpside >= 0 ? "positive" : "negative"}>
+            <span>隐含空间</span>
+            <strong>{formatSignedPercent(impliedUpside, 1)}</strong>
           </div>
         </div>
-        <div className="manifest-grid">
-          <InfoRow label="Last run" value={formatDate(summary.updated_at)} />
-          <InfoRow label="YAML1" value={String(manifest?.yaml1_path ?? detail.yaml1_path ?? "-")} />
-          <InfoRow label="YAML2" value={String(manifest?.yaml2_defaults_path ?? "defaults.yaml")} />
-          <InfoRow label="Forecast" value={String(manifest?.output_dir ?? "forecast/")} />
+      </section>
+
+      <section className="overview-kpi-grid">
+        <div className="overview-kpi">
+          <span>市值</span>
+          <strong>{formatYiFromMillion(marketCap)}</strong>
+          <small>亿元</small>
+        </div>
+        <div className="overview-kpi">
+          <span>{forecastYearLabel(forecastFirstYear)} PE</span>
+          <strong>{formatMultiple(firstForecastPe, 1)}</strong>
+          <small>未来估值</small>
+        </div>
+        <div className="overview-kpi">
+          <span>{forecastYearLabel(forecastSecondYear)} PE</span>
+          <strong>{formatMultiple(secondForecastPe, 1)}</strong>
+          <small>未来估值</small>
+        </div>
+        <div className="overview-kpi">
+          <span>{forecastYearLabel(forecastFirstYear)} DCF目标价对应PE</span>
+          <strong>{formatMultiple(firstDcfTargetPe, 1)}</strong>
+          <small>DCF视角下的PE</small>
+        </div>
+        <div className="overview-kpi">
+          <span>{forecastYearLabel(forecastSecondYear)} DCF目标价对应PE</span>
+          <strong>{formatMultiple(secondDcfTargetPe, 1)}</strong>
+          <small>DCF视角下的PE</small>
+        </div>
+      </section>
+
+      <section className="overview-grid">
+        <aside className="overview-driver-card">
+          <div className="overview-card-head compact">
+            <div>
+              <div className="eyebrow">Profit drivers</div>
+              <h2>增长与盈利</h2>
+            </div>
+          </div>
+          <div className="overview-driver-list">
+            <div>
+              <span>{forecastPeriodLabel} 收入 CAGR</span>
+              <strong>{formatPercent(revenueCagr, 1)}</strong>
+            </div>
+            <div>
+              <span>{forecastPeriodLabel} 归母净利 CAGR</span>
+              <strong>{formatPercent(profitCagr, 1)}</strong>
+            </div>
+            <div>
+              <span>{forecastPeriodLabel} 毛利率变化</span>
+              <strong>{formatSignedPctPoint(Number.isNaN(grossMarginChange) ? null : grossMarginChange, 1)}</strong>
+            </div>
+            <div>
+              <span>{forecastPeriodLabel} ROE 中枢</span>
+              <strong>{formatPercent(roeMidpoint, 1)}</strong>
+            </div>
+          </div>
+        </aside>
+
+        <div className="overview-financial-card">
+          <div className="overview-card-head">
+            <div>
+              <div className="eyebrow">Financial snapshot</div>
+              <h2>财务总结</h2>
+            </div>
+            <span>单位：百万元；倍数除外</span>
+          </div>
+          <div className="table-scroll overview-table-wrap">
+            <table className="overview-financial-table">
+              <thead>
+                <tr>
+                  <th>指标</th>
+                  {years.map((year) => (
+                    <th className={year.forecast ? "forecast-year" : ""} key={year.label}>{year.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {overviewRows.map((row) => (
+                  <tr className={row.major ? "major" : ""} key={row.metric}>
+                    <td>{row.label}</td>
+                    {years.map((year) => {
+                      const value = overviewMetric(detail, row.metric, year.year);
+                      return (
+                        <td className={`${value != null && value < 0 ? "negative" : ""} ${year.forecast ? "forecast-year" : ""}`} key={year.label}>
+                          {formatOverviewMetric(value, row.format)}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
     </div>
@@ -1358,8 +1570,10 @@ function UnifiedYearTable({
                   <td colSpan={years.length + 1}>⚠ {g.caveat}</td>
                 </tr>
               ) : null}
-              {g.rows.map((r, ri) => (
-                <tr key={ri} className={`${r.bold ? "key-row" : ""} ${r.muted ? "muted-row" : ""} ${r.driver ? "driver-assumption-row" : ""}`}>
+              {g.rows.map((r, ri) => {
+                const rowHasEditable = editMode && years.some((y) => Boolean(editableCell(r, y)));
+                return (
+                <tr key={ri} className={`${r.bold ? "key-row" : ""} ${r.muted ? "muted-row" : ""} ${r.driver ? "driver-assumption-row" : ""} ${rowHasEditable ? "editable-assumption-row" : ""}`}>
                   <td className="statement-label" title={r.note ?? r.label}>
                     {r.override ? <span className="override-dot" title="主动覆盖 / 查证" /> : null}
                     {r.label}
@@ -1414,7 +1628,8 @@ function UnifiedYearTable({
                     );
                   })}
                 </tr>
-              ))}
+                );
+              })}
             </Fragment>
           ))}
         </tbody>
@@ -2468,8 +2683,9 @@ function YamlWorkbook({
       <section className="card yaml-region assumption-workbench-toolbar">
         <div className="yaml-region-heading">
           <div>
-            <div className="eyebrow">Model edit mode</div>
-            <h2>假设试算工作台</h2>
+            <div className="eyebrow">Core assumption edit mode</div>
+            <h2>核心假设工作台</h2>
+            <p>更改核心假设请先点击「进入编辑」；可编辑的假设 cell 会自动高亮出现。这里的结果只是前端试算，编辑完必须回到 Claude Code 执行 /frontend-edit 更新假设并重算，才会写回正式模型。</p>
           </div>
           <div className="assumption-toolbar-actions">
             <button className={editMode ? "primary-button" : "secondary-button"} onClick={() => setEditMode((value) => !value)} type="button">
@@ -2490,7 +2706,7 @@ function YamlWorkbook({
               重置
             </button>
             <button className="primary-button" disabled={!patches.length || briefLoading} onClick={generateBrief} type="button">
-              {briefLoading ? "生成中..." : "生成 /ka prompt"}
+              {briefLoading ? "生成中..." : "生成Claude Code指令"}
             </button>
           </div>
         </div>
@@ -2501,14 +2717,14 @@ function YamlWorkbook({
         </div>
         {patches.length ? (
           <div className="assumption-flow-alert">
-            已有草稿改动：生成 /ka prompt 后，回到流程执行 /ka 修改核心假设.md，再执行 /comp 重新编译 yaml1 和 forecast。
+            如果想保存本次假设编辑，请点击生成Claude Code指令按钮
           </div>
         ) : null}
         {previewError ? <div className="error-banner">{previewError}</div> : null}
         {briefError ? <div className="error-banner">{briefError}</div> : null}
         {briefPrompt ? (
           <div className="ka-prompt-box">
-            <div className="eyebrow">KA prompt</div>
+            <div className="eyebrow">frontend-edit 指令</div>
             <textarea readOnly value={briefPrompt} />
           </div>
         ) : null}
@@ -2910,8 +3126,8 @@ function DcfView({ detail }: { detail: CompanyDetail }) {
     <div className="view-stack">
       <div className="dcf-topline">
         <section className="metric-grid dcf-metric-grid">
-          <MetricCard label="Per-share value" value={formatNumber(dcf?.per_share_value)} caption="元/股" />
           <MetricCard label="Equity value" value={formatYiFromMillion(dcf?.equity_value)} caption="亿元" tone="highlight" />
+          <MetricCard label="Per-share value" value={formatNumber(dcf?.per_share_value)} caption="元/股" />
           <MetricCard label="Enterprise value" value={formatYiFromMillion(dcf?.enterprise_value)} caption="亿元" />
           <MetricCard label="Terminal PV" value={formatYiFromMillion(dcf?.terminal_pv)} caption="亿元" />
         </section>
@@ -2926,6 +3142,406 @@ function DcfView({ detail }: { detail: CompanyDetail }) {
       <ValuationBridge dcf={dcf} detail={detail.dcf_detail ?? []} />
     </div>
   );
+}
+
+const REVERSE_CHART = {
+  width: 760,
+  height: 480,
+  left: 68,
+  right: 26,
+  top: 26,
+  bottom: 58,
+};
+
+function formatRatio(value: number | null | undefined, digits = 2): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "-";
+  return value.toFixed(digits);
+}
+
+function reverseTicks(domain: [number, number]): number[] {
+  const step = 0.1;
+  const ticks: number[] = [];
+  const start = Math.ceil(domain[0] / step) * step;
+  for (let value = start; value <= domain[1] + 1e-9; value += step) {
+    ticks.push(Math.round(value * 1000) / 1000);
+  }
+  return ticks;
+}
+
+function lineSegmentForDecay(k: number, domain: [number, number]): Array<{ g1: number; g2: number }> {
+  const candidates = [
+    { g1: domain[0], g2: k * domain[0] },
+    { g1: domain[1], g2: k * domain[1] },
+  ];
+  if (Math.abs(k) > 1e-9) {
+    candidates.push({ g1: domain[0] / k, g2: domain[0] });
+    candidates.push({ g1: domain[1] / k, g2: domain[1] });
+  } else if (domain[0] <= 0 && domain[1] >= 0) {
+    candidates.push({ g1: domain[0], g2: 0 });
+    candidates.push({ g1: domain[1], g2: 0 });
+  }
+  const unique = candidates
+    .filter((point) => pointInDomain(point, domain))
+    .filter((point, index, list) => list.findIndex((item) => Math.abs(item.g1 - point.g1) < 1e-8 && Math.abs(item.g2 - point.g2) < 1e-8) === index)
+    .sort((a, b) => a.g1 - b.g1);
+  if (unique.length < 2) return [];
+  return [unique[0], unique[unique.length - 1]];
+}
+
+function ReverseSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  format,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  format: (value: number) => string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="reverse-slider">
+      <span className="reverse-slider-header">
+        <span>{label}</span>
+        <strong>{format(value)}</strong>
+      </span>
+      <input
+        max={max}
+        min={min}
+        onChange={(event) => onChange(Number(event.currentTarget.value))}
+        step={step}
+        type="range"
+        value={value}
+      />
+    </label>
+  );
+}
+
+function ReverseDcfChart({
+  base,
+  inputs,
+  curve,
+  selected,
+  referencePoint,
+  modelPoint,
+  onSelect,
+}: {
+  base: ReverseDcfBase;
+  inputs: ReverseDcfInputs;
+  curve: ReverseDcfPoint[];
+  selected: ReverseDcfPoint | null;
+  referencePoint: ReverseDcfPoint | null;
+  modelPoint: { g1: number; g2: number } | null;
+  onSelect: (point: ReverseDcfPoint) => void;
+}) {
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const domain = base.bounds.growth;
+  const plotW = REVERSE_CHART.width - REVERSE_CHART.left - REVERSE_CHART.right;
+  const plotH = REVERSE_CHART.height - REVERSE_CHART.top - REVERSE_CHART.bottom;
+  const ticks = reverseTicks(domain);
+  const toX = (g1: number) => REVERSE_CHART.left + ((g1 - domain[0]) / (domain[1] - domain[0])) * plotW;
+  const toY = (g2: number) => REVERSE_CHART.top + ((domain[1] - g2) / (domain[1] - domain[0])) * plotH;
+  const curvePath = curve.map((point, index) => `${index === 0 ? "M" : "L"} ${toX(point.g1).toFixed(2)} ${toY(point.g2).toFixed(2)}`).join(" ");
+  const decayLine = lineSegmentForDecay(inputs.referenceDecay, domain);
+
+  const clientToGrowth = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    const viewX = ((event.clientX - rect.left) / rect.width) * REVERSE_CHART.width;
+    const viewY = ((event.clientY - rect.top) / rect.height) * REVERSE_CHART.height;
+    const clampedX = clampValue(viewX, REVERSE_CHART.left, REVERSE_CHART.left + plotW);
+    const clampedY = clampValue(viewY, REVERSE_CHART.top, REVERSE_CHART.top + plotH);
+    return {
+      g1: domain[0] + ((clampedX - REVERSE_CHART.left) / plotW) * (domain[1] - domain[0]),
+      g2: domain[1] - ((clampedY - REVERSE_CHART.top) / plotH) * (domain[1] - domain[0]),
+    };
+  };
+
+  const selectNearest = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const growth = clientToGrowth(event);
+    if (!growth) return;
+    const nearest = nearestCurvePoint(curve, growth.g1, growth.g2);
+    if (nearest) onSelect(nearest);
+  };
+
+  return (
+    <section className="reverse-chart-panel">
+      <svg
+        aria-label="逆向 DCF 等市值曲线"
+        className="reverse-chart"
+        onPointerDown={(event) => {
+          setDragging(true);
+          try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          } catch {
+            // Synthetic pointer events used in automation may not have an active pointer.
+          }
+          selectNearest(event);
+        }}
+        onPointerMove={(event) => {
+          if (dragging) selectNearest(event);
+        }}
+        onPointerUp={(event) => {
+          setDragging(false);
+          if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }}
+        onPointerCancel={() => setDragging(false)}
+        ref={svgRef}
+        role="img"
+        viewBox={`0 0 ${REVERSE_CHART.width} ${REVERSE_CHART.height}`}
+      >
+        <rect className="reverse-plot-bg" height={plotH} width={plotW} x={REVERSE_CHART.left} y={REVERSE_CHART.top} />
+        {ticks.map((tick) => (
+          <Fragment key={`x-${tick}`}>
+            <line className="reverse-grid" x1={toX(tick)} x2={toX(tick)} y1={REVERSE_CHART.top} y2={REVERSE_CHART.top + plotH} />
+            <text className="reverse-axis-label" textAnchor="middle" x={toX(tick)} y={REVERSE_CHART.top + plotH + 28}>{formatPercent(tick, 0)}</text>
+          </Fragment>
+        ))}
+        {ticks.map((tick) => (
+          <Fragment key={`y-${tick}`}>
+            <line className="reverse-grid" x1={REVERSE_CHART.left} x2={REVERSE_CHART.left + plotW} y1={toY(tick)} y2={toY(tick)} />
+            <text className="reverse-axis-label" textAnchor="end" x={REVERSE_CHART.left - 12} y={toY(tick) + 4}>{formatPercent(tick, 0)}</text>
+          </Fragment>
+        ))}
+        <line className="reverse-axis" x1={REVERSE_CHART.left} x2={REVERSE_CHART.left + plotW} y1={toY(0)} y2={toY(0)} />
+        <line className="reverse-axis" x1={toX(0)} x2={toX(0)} y1={REVERSE_CHART.top} y2={REVERSE_CHART.top + plotH} />
+        {decayLine.length === 2 ? (
+          <line
+            className="reverse-decay-line"
+            x1={toX(decayLine[0].g1)}
+            x2={toX(decayLine[1].g1)}
+            y1={toY(decayLine[0].g2)}
+            y2={toY(decayLine[1].g2)}
+          />
+        ) : null}
+        {curvePath ? <path className="reverse-curve" d={curvePath} /> : null}
+        {modelPoint && pointInDomain(modelPoint, domain) ? (
+          <g className="reverse-model-point" transform={`translate(${toX(modelPoint.g1)} ${toY(modelPoint.g2)})`}>
+            <rect height="10" rx="2" width="10" x="-5" y="-5" />
+          </g>
+        ) : null}
+        {referencePoint ? (
+          <circle className="reverse-reference-point" cx={toX(referencePoint.g1)} cy={toY(referencePoint.g2)} r="5" />
+        ) : null}
+        {selected ? (
+          <g className="reverse-selected-point" transform={`translate(${toX(selected.g1)} ${toY(selected.g2)})`}>
+            <circle r="9" />
+            <circle r="15" />
+          </g>
+        ) : null}
+        <text className="reverse-axis-title" textAnchor="middle" x={REVERSE_CHART.left + plotW / 2} y={REVERSE_CHART.height - 12}>g1 显式期利润 CAGR（NOPAT）</text>
+        <text className="reverse-axis-title" textAnchor="middle" transform={`translate(18 ${REVERSE_CHART.top + plotH / 2}) rotate(-90)`}>g2 中期利润 CAGR（NOPAT）</text>
+      </svg>
+      {!curve.length ? <div className="reverse-chart-empty">当前参数范围内没有可见的等市值解。</div> : null}
+    </section>
+  );
+}
+
+function ReverseDcfReadout({
+  base,
+  point,
+  modelCagr,
+}: {
+  base: ReverseDcfBase;
+  point: ReverseDcfPoint | null;
+  modelCagr: ModelSegmentCagr;
+}) {
+  const modelVsMarketG1 = point && modelCagr.g1 != null ? modelCagr.g1 - point.g1 : null;
+  const modelVsMarketG2 = point && modelCagr.g2 != null ? modelCagr.g2 - point.g2 : null;
+  return (
+    <section className="reverse-readout">
+      <div className="reverse-gap-box">
+        <div className="reverse-gap-head">
+          <div>
+            <div className="eyebrow">核心读数</div>
+            <h2>市场隐含利润增速 vs 目前模型利润假设</h2>
+          </div>
+          <span>NOPAT CAGR</span>
+        </div>
+        <div className="reverse-gap-grid">
+          <div className="reverse-gap-column implied">
+            <span>市场隐含</span>
+            <strong>{formatPercent(point?.g1, 1)}</strong>
+            <small>g1 显式期利润</small>
+            <strong>{formatPercent(point?.g2, 1)}</strong>
+            <small>g2 中期利润</small>
+          </div>
+          <div className="reverse-gap-column model">
+            <span>目前模型</span>
+            <strong>{formatPercent(modelCagr.g1, 1)}</strong>
+            <small>g1 显式期利润</small>
+            <strong>{formatPercent(modelCagr.g2, 1)}</strong>
+            <small>g2 中期利润</small>
+          </div>
+          <div className="reverse-gap-column delta">
+            <span>模型相对市场</span>
+            <strong>{formatSignedPercent(modelVsMarketG1, 1)}</strong>
+            <small>g1：模型 - 市场</small>
+            <strong>{formatSignedPercent(modelVsMarketG2, 1)}</strong>
+            <small>g2：模型 - 市场</small>
+          </div>
+        </div>
+        <div className="reverse-gap-note">正值表示目前模型比市场隐含更激进；负值表示目前模型低于市场隐含。</div>
+      </div>
+      <div className="reverse-secondary-grid">
+        <div className="reverse-readout-row">
+          <span>隐含衰减 k（g2/g1）</span>
+          <strong>{formatRatio(point?.k, 2)}</strong>
+        </div>
+        <div className="reverse-readout-row">
+          <span>终值 PV / 当前市值</span>
+          <strong>{formatPercent(point?.terminalShareOfMarket, 1)}</strong>
+        </div>
+        <div className="reverse-readout-row">
+          <span>目标 EV</span>
+          <strong>{formatYiFromMillion(base.market.target_enterprise_value)} 亿元</strong>
+        </div>
+      </div>
+      {point && point.terminalShareOfMarket > 0.7 ? (
+        <div className="reverse-warning">终值 PV 占当前市值比例偏高；WACC 与远期增长率会显著扭曲这条曲线。</div>
+      ) : null}
+    </section>
+  );
+}
+
+function ReverseDcfTool({ base }: { base: ReverseDcfBase }) {
+  const [inputs, setInputs] = useState<ReverseDcfInputs>(() => defaultReverseDcfInputs(base));
+  const [manualPoint, setManualPoint] = useState<{ g1: number; g2: number } | null>(null);
+
+  useEffect(() => {
+    setInputs(defaultReverseDcfInputs(base));
+    setManualPoint(null);
+  }, [base]);
+
+  const updateInputs = (patch: Partial<ReverseDcfInputs>) => {
+    setInputs((current) => {
+      const next = { ...current, ...patch };
+      return {
+        n1: Math.round(clampValue(next.n1, base.bounds.n1[0], base.bounds.n1[1])),
+        n2: Math.round(clampValue(next.n2, base.bounds.n2[0], base.bounds.n2[1])),
+        wacc: clampValue(next.wacc, base.bounds.wacc[0], base.bounds.wacc[1]),
+        terminalGrowth: clampValue(next.terminalGrowth, base.bounds.terminal_growth[0], Math.min(base.bounds.terminal_growth[1], next.wacc - 0.001)),
+        referenceDecay: clampValue(next.referenceDecay, base.bounds.reference_decay[0], base.bounds.reference_decay[1]),
+      };
+    });
+  };
+
+  const curve = useMemo(() => generateIsoCurve(base, inputs), [base, inputs]);
+  const referencePoint = useMemo(() => referenceIntersection(base, inputs, curve), [base, inputs, curve]);
+  const selectedPoint = useMemo(() => {
+    if (!curve.length) return null;
+    if (manualPoint) return nearestCurvePoint(curve, manualPoint.g1, manualPoint.g2) ?? referencePoint;
+    return referencePoint ?? curve[Math.floor(curve.length / 2)] ?? null;
+  }, [curve, manualPoint, referencePoint]);
+  const modelCagr = useMemo(() => modelSegmentCagr(base, inputs.n1, inputs.n2), [base, inputs.n1, inputs.n2]);
+  const modelPoint = modelCagr.g1 != null && modelCagr.g2 != null ? { g1: modelCagr.g1, g2: modelCagr.g2 } : null;
+
+  return (
+    <div className="reverse-shell">
+      <section className="reverse-parameter-bar">
+        <div className="reverse-parameter-group">
+          <div className="eyebrow">分段结构</div>
+          <ReverseSlider label="N1 显式期年数" value={inputs.n1} min={base.bounds.n1[0]} max={base.bounds.n1[1]} step={1} format={(value) => `${Math.round(value)}年`} onChange={(n1) => updateInputs({ n1 })} />
+          <ReverseSlider label="N2 中期年数" value={inputs.n2} min={base.bounds.n2[0]} max={base.bounds.n2[1]} step={1} format={(value) => `${Math.round(value)}年`} onChange={(n2) => updateInputs({ n2 })} />
+        </div>
+        <div className="reverse-parameter-group">
+          <div className="eyebrow">钉死假设</div>
+          <ReverseSlider label="WACC" value={inputs.wacc} min={base.bounds.wacc[0]} max={base.bounds.wacc[1]} step={0.0025} format={(value) => formatPercent(value, 1)} onChange={(wacc) => updateInputs({ wacc })} />
+          <ReverseSlider label="远期增长 g∞" value={inputs.terminalGrowth} min={base.bounds.terminal_growth[0]} max={Math.min(base.bounds.terminal_growth[1], inputs.wacc - 0.001)} step={0.0025} format={(value) => formatPercent(value, 1)} onChange={(terminalGrowth) => updateInputs({ terminalGrowth })} />
+        </div>
+      </section>
+
+      <section className="reverse-context-strip">
+        <div><span>当前市值</span><strong>{formatYiFromMillion(base.market.market_cap)} 亿元</strong></div>
+        <div><span>目标 EV</span><strong>{formatYiFromMillion(base.market.target_enterprise_value)} 亿元</strong></div>
+        <div><span>当前股价</span><strong>{base.market.close != null ? formatNumber(base.market.close, 2) : "-"}</strong></div>
+        <div><span>目前模型利润假设</span><strong>{modelPoint ? `${formatPercent(modelPoint.g1, 1)} / ${formatPercent(modelPoint.g2, 1)}` : "-"}</strong></div>
+      </section>
+
+      {base.warnings.length ? <div className="reverse-warning">{base.warnings.join(" ")}</div> : null}
+
+      <div className="reverse-workbench">
+        <ReverseDcfReadout base={base} point={selectedPoint} modelCagr={modelCagr} />
+        <div className="reverse-chart-stack">
+          <div className="reverse-chart-toolbar">
+            <div>
+              <div className="eyebrow">等市值曲线</div>
+              <h2>当前市值约束</h2>
+            </div>
+            <div className="reverse-decay-control">
+              <div className="reverse-decay-slider-block">
+                <ReverseSlider label="参考衰减 k = g2/g1" value={inputs.referenceDecay} min={base.bounds.reference_decay[0]} max={base.bounds.reference_decay[1]} step={0.01} format={(value) => value.toFixed(2)} onChange={(referenceDecay) => updateInputs({ referenceDecay })} />
+                <p>中期利润增速 = k × 显式期利润增速；当前 {inputs.referenceDecay.toFixed(2)} 表示中期约为显式期的 {formatPercent(inputs.referenceDecay, 0)}。</p>
+              </div>
+              <button className="reverse-anchor-button" disabled={!manualPoint} onClick={() => setManualPoint(null)} type="button">回到参考交点</button>
+            </div>
+          </div>
+          <ReverseDcfChart
+            base={base}
+            curve={curve}
+            inputs={inputs}
+            onSelect={(point) => setManualPoint({ g1: point.g1, g2: point.g2 })}
+            referencePoint={referencePoint}
+            selected={selectedPoint}
+            modelPoint={modelPoint}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function reverseBaseIsProfitPack(base: ReverseDcfBase): boolean {
+  return (
+    base.base_model.growth_metric === "nopat"
+    && Number.isFinite(base.base_model.base_nopat)
+    && Array.isArray(base.base_model.current_model_profit_yoy)
+    && base.yearly.every((year) => Number.isFinite(year.fcff_to_nopat) && Number.isFinite(year.terminal_fcff_to_nopat))
+  );
+}
+
+function ReverseDcfView({ detail }: { detail: CompanyDetail }) {
+  const [base, setBase] = useState<ReverseDcfBase | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setBase(null);
+    apiGet<ReverseDcfBase>(`/api/companies/${encodeURIComponent(detail.summary.id)}/reverse-dcf-base`)
+      .then((result) => {
+        if (!cancelled) setBase(result);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail.summary.id]);
+
+  if (loading) return <div className="activity content-activity">正在加载逆向 DCF 参数包</div>;
+  if (error) return <div className="error-banner">{error}</div>;
+  if (!base) return <EmptyState title="逆向 DCF 暂不可用" body="请先运行正式 DCF，再重新打开这个页面。" />;
+  if (!reverseBaseIsProfitPack(base)) {
+    return <div className="error-banner">逆向 DCF 参数包仍是旧的收入版。请重启 workbench 后刷新页面，确保接口返回 NOPAT 利润增速字段。</div>;
+  }
+  return <ReverseDcfTool base={base} />;
 }
 
 function EmptyState({ title, body }: { title: string; body: string }) {
@@ -3308,15 +3924,11 @@ function QuarterlyTable({ companyId, initialView }: { companyId: string; initial
 function DetailView({
   detail,
   tab,
-  running,
-  onRun,
 }: {
   detail: CompanyDetail;
   tab: TabKey;
-  running: boolean;
-  onRun: () => void;
 }) {
-  if (tab === "overview") return <Overview detail={detail} running={running} onRun={onRun} />;
+  if (tab === "overview") return <Overview detail={detail} />;
   if (tab === "statements") return <StatementsView detail={detail} />;
   if (tab === "quarterly") return <QuarterlyTable companyId={detail.summary.id} initialView={detail.quarterly_view} />;
   if (tab === "yaml1") {
@@ -3337,7 +3949,9 @@ function DetailView({
     );
   }
   if (tab === "dcf") return <DcfView detail={detail} />;
-  return <Overview detail={detail} running={running} onRun={onRun} />;
+  if (tab === "reverse") return <ReverseDcfView detail={detail} />;
+  if (tab === "da" && detail.da_view) return <DaSchedule detail={detail} />;
+  return <Overview detail={detail} />;
 }
 
 export default function App() {
@@ -3406,7 +4020,6 @@ export default function App() {
   const headerStats = selectedCompany
     ? [
         ["VALUE", formatNumber(statValue(selectedCompany, "per_share_value"))],
-        ["BASE", selectedCompany.base_period ?? "-"],
         ["UPDATED", formatDate(selectedCompany.updated_at)],
       ]
     : [];
@@ -3434,7 +4047,7 @@ export default function App() {
         </header>
 
         <nav className="tabbar">
-          {tabs.map((item) => (
+          {tabs.filter((item) => item.key !== "da" || Boolean(detail?.da_view)).map((item) => (
             <button className={tab === item.key ? "active" : ""} key={item.key} onClick={() => setTab(item.key)} type="button">
               {item.label}
             </button>
@@ -3443,7 +4056,7 @@ export default function App() {
 
         {error ? <div className="error-banner">{error}</div> : null}
         {detailLoading ? <div className="activity content-activity">Loading company model</div> : null}
-        {!detailLoading && detail ? <DetailView detail={detail} onRun={regenerateForecast} running={running} tab={tab} /> : null}
+        {!detailLoading && detail ? <DetailView detail={detail} tab={tab} /> : null}
         {!detailLoading && !detail && !error ? <EmptyState title="No company selected" body="Select a company from the sidebar to inspect its model folder." /> : null}
       </main>
       {showTutorial ? <Tutorial onClose={() => setShowTutorial(false)} onSaved={loadCompanies} /> : null}
