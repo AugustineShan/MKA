@@ -201,7 +201,7 @@ def roll_da_series(sched: dict, base_bs: dict, forecast_years: int,
     cats = sched["ppe"]["categories"]
     g = sched["ppe"].get("存量策略", {}).get("net_growth_rate", 0.0)
     expansion = sched.get("expansion_plan", {})
-    # base_cip_to_fixed: 按 cat 名嵌套 {cat_name: {year: amt}}(与 expansion.cip_to_fixed 同构)
+    # base_cip_to_fixed schema(与 expansion_plan 同构):{year: {cat: amt}};按 cat 提取该类 {year: amt}
     base_cip_tf = sched.get("base_cip_to_fixed", {})
     scale = _calibrate_scale(cats, base_reported_dep)
 
@@ -213,7 +213,7 @@ def roll_da_series(sched: dict, base_bs: dict, forecast_years: int,
                            for y in expansion}
         exp_tf_by_yr = {y: expansion.get(y, {}).get("cip_to_fixed", {}).get(cname, 0.0)
                         for y in expansion}
-        c_base_tf = base_cip_tf.get(cname, {}) if isinstance(base_cip_tf, dict) else {}
+        c_base_tf = {y: base_cip_tf.get(y, {}).get(cname, 0.0) for y in base_cip_tf} if isinstance(base_cip_tf, dict) else {}
         cip_states.append(roll_cip(c.get("base_cip", 0.0), c_base_tf,
                                    exp_capex_by_yr, exp_tf_by_yr,
                                    c["life_years"], c["salvage_rate"], base_year + 1))
