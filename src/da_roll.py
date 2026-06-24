@@ -41,3 +41,15 @@ def load_da_schedule(path: Path, defaults_base_period: str) -> dict | None:
         raise DaAlignError(
             f"da_schedule.base_year={base_year} != defaults.base_period={defaults_base_period}")
     return sched
+
+
+# ---------------------------------------------------------------------------
+# Task 2.2: 存量永续更新折旧
+# ---------------------------------------------------------------------------
+def stock_depreciation(base_dep: float, g: float, t: int) -> float:
+    """存量永续更新:折旧维持 base 水平 × (1+g)^t,不折尽。
+
+    永续更新假设每年退役的资产被等额新购补上,故稳态折旧随存量规模 g 增长,
+    不会像直线法那样折到 0。
+    """
+    return base_dep * (1.0 + g) ** t
