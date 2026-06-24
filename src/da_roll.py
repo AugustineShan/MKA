@@ -53,3 +53,40 @@ def stock_depreciation(base_dep: float, g: float, t: int) -> float:
     不会像直线法那样折到 0。
     """
     return base_dep * (1.0 + g) ** t
+
+
+# ---------------------------------------------------------------------------
+# Task 2.3: 扩张 Cohort 直线折旧
+# ---------------------------------------------------------------------------
+@dataclass
+class Cohort:
+    """扩张转固形成的资产 cohort:直线折旧,折尽停计,净值不低于残值。
+
+    start_year = 转固年份(当年开始计提);life 年后折尽,残值 = gross*salvage_rate。
+    """
+    gross: float
+    salvage_rate: float
+    life: int
+    start_year: int
+
+    def annual_dep(self) -> float:
+        """年折旧额 =(原值 - 残值)/ 寿命,直线法。"""
+        return self.gross * (1.0 - self.salvage_rate) / self.life
+
+    def dep_in_year(self, year: int) -> float:
+        """某年折旧:转固前 0,life 年内 = annual_dep,折尽后 0。"""
+        if year < self.start_year:
+            return 0.0
+        elapsed = year - self.start_year
+        if elapsed >= self.life:
+            return 0.0
+        return self.annual_dep()
+
+    def net_in_year(self, year: int) -> float:
+        """某年净值:转固前 0,否则 max(原值 - 累计折旧, 残值)。"""
+        if year < self.start_year:
+            return 0.0
+        elapsed = min(year - self.start_year, self.life)
+        depreciated = self.annual_dep() * elapsed
+        salvage = self.gross * self.salvage_rate
+        return max(self.gross - depreciated, salvage)

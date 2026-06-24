@@ -32,3 +32,22 @@ def test_stock_depreciation_grows_with_g():
     from src.da_roll import stock_depreciation
     assert stock_depreciation(100.0, g=0.03, t=1) == 103.0
     assert stock_depreciation(100.0, g=0.03, t=2) == pytest.approx(106.09)
+
+
+# ---------------------------------------------------------------------------
+# Task 2.3: 扩张 Cohort 直线折旧
+# ---------------------------------------------------------------------------
+def test_expansion_cohort_depreciates_from_transfer_year():
+    from src.da_roll import Cohort
+    c = Cohort(gross=1000.0, salvage_rate=0.05, life=10, start_year=2025)
+    assert c.annual_dep() == pytest.approx(95.0)
+    assert c.dep_in_year(2025) == 95.0
+    assert c.dep_in_year(2024) == 0.0
+    assert c.dep_in_year(2035) == 0.0  # 折 10 年后折尽
+
+
+def test_cohort_residual_floor():
+    from src.da_roll import Cohort
+    c = Cohort(gross=1000.0, salvage_rate=0.05, life=10, start_year=2025)
+    total = sum(c.dep_in_year(y) for y in range(2025, 2040))
+    assert total <= 950.0 + 1e-6
