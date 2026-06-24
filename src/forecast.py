@@ -64,14 +64,15 @@ def gpm_to_ex_dep(gpm: float, base_total_dep: float, revenue: float) -> float:
     return gpm + (base_total_dep / revenue if revenue else 0.0)
 
 
-def _apply_gpm_ex_dep(forecast_params: dict[str, Any], base_total_dep: float) -> None:
-    """重资产模式:把 income.gpm 逐年覆盖为 ex-depreciation gpm。
+def _apply_gpm_ex_dep(forecast_params: dict[str, Any], base_ppe_dep: float) -> None:
+    """重资产模式:把 income.gpm 逐年覆盖为 ex-PP&E-depreciation gpm。
 
-    gpm_ex[t] = gpm_loaded[t] + base_total_dep / revenue[t],revenue[t] 由
-    base_revenue × ∏(1+revenue_yoy) 滚动得到。base 年因 da_roll 校准使
-    ppe_dep ≈ base_ppe_dep,故 EBIT_heavy(base) = EBIT_light(base)(会计中性)。
-    保留 /ka 常规 loaded-gpm 输入语义;折旧拆出为显式 IS 行在 calc 重资产分支
-    (Step 4)处理,此处只改 gpm 输入。
+    gpm_ex[t] = gpm_loaded[t] + base_ppe_dep / revenue[t],revenue[t] 由
+    base_revenue × ∏(1+revenue_yoy) 滚动得到。da_roll 只建模 PP&E 折旧,故只把
+    PP&E 折旧从 oper_cost 拆出(三类摊销仍嵌在 gpm 内,与轻资产一致);base 年因
+    da_roll 校准使 ppe_dep ≈ base_ppe_dep,故 EBIT_heavy(base) = EBIT_light(base)
+    (会计中性)。保留 /ka 常规 loaded-gpm 输入语义;PP&E 折旧拆出为显式 IS 行在
+    calc 重资产分支(Step 4)处理,此处只改 gpm 输入。
     """
     income = forecast_params.get("income")
     gpm_arr = get_path(forecast_params, "income.gpm")
@@ -85,7 +86,7 @@ def _apply_gpm_ex_dep(forecast_params: dict[str, Any], base_total_dep: float) ->
     for i, gpm_val in enumerate(gpm_arr):
         y = plain_value(yoy[i]) if i < len(yoy) else 0.0
         revenue *= 1.0 + as_float(y)
-        new_arr.append(as_float(gpm_val) + (base_total_dep / revenue if revenue else 0.0))
+        new_arr.append(as_float(gpm_val) + (base_ppe_dep / revenue if revenue else 0.0))
     income["gpm"] = new_arr
 
 
@@ -100,8 +101,8 @@ def _maybe_roll_da_series(
     DaAlignError(base 对齐失败)向上抛(硬错);其余异常记 warning 回退轻资产,
     绝不阻塞 forecast。
 
-    base_ppe_dep = 现金流量表 depr_fa_coga_dpba(给 roll_da_series 校准存量折旧);
-    base_total_dep = ppe + 三类摊销(给 gpm→ex-dep 加回,与 IS 显式折旧行对齐)。
+    base_ppe_dep = 现金流量表 depr_fa_coga_dpba(仅 PP&E 折旧):同时给 roll_da_series
+    校准存量折旧、给 gpm→ex-dep 加回。三类摊销不进 da_roll 也不进 gpm 加回。
     """
     from src.company_paths import da_schedule_path
     from src.da_roll import DaAlignError, load_da_schedule, roll_da_series
@@ -126,12 +127,6 @@ def _maybe_roll_da_series(
         return None
     base_row = clean_annual.get(base_year, {})
     base_ppe_dep = as_float(base_row.get("depr_fa_coga_dpba"))
-    base_total_dep = (
-        base_ppe_dep
-        + as_float(base_row.get("amort_intang_assets"))
-        + as_float(base_row.get("lt_amort_deferred_exp"))
-        + as_float(base_row.get("use_right_asset_dep"))
-    )
 
     try:
         da_series = roll_da_series(
@@ -143,7 +138,7 @@ def _maybe_roll_da_series(
         _log.warning("da_roll failed, falling back to light-asset: %s", exc)
         return None
 
-    _apply_gpm_ex_dep(forecast_params, base_total_dep)
+    _apply_gpm_ex_dep(forecast_params, base_ppe_dep)
     return da_series
 
 
@@ -230,7 +225,9 @@ def _write_full_tables(
 
     is_cols = list(income_statement.columns)
     is_hist_cols = ["income.credit_impa_loss" if c == "credit_impa_loss" else c for c in is_cols]
-    is_hist = hist_df[is_hist_cols].rename(columns={"income.credit_impa_loss": "credit_impa_loss"})
+    # reindex (fill 0) 容忍 forecast-only 列(重资产 IS 的显式 depreciation 行历史无)
+    is_hist = hist_df.reindex(columns=is_hist_cols, fill_value=0.0).rename(
+        columns={"income.credit_impa_loss": "credit_impa_loss"})
     if "total_opcost" in is_hist.columns and "total_cogs" in is_hist.columns:
         is_hist = is_hist.copy()
         is_hist["total_opcost"] = is_hist["total_cogs"]
@@ -238,11 +235,11 @@ def _write_full_tables(
     full_is = pd.concat([is_hist, income_statement], ignore_index=True).sort_values("period")
 
     bs_cols = list(balance_sheet.columns)
-    bs_hist = hist_df[bs_cols]
+    bs_hist = hist_df.reindex(columns=bs_cols, fill_value=0.0)
     full_bs = pd.concat([bs_hist, balance_sheet], ignore_index=True).sort_values("period")
 
     cf_cols = list(cash_flow.columns)
-    cf_hist = hist_df[cf_cols]
+    cf_hist = hist_df.reindex(columns=cf_cols, fill_value=0.0)
     full_cf = pd.concat([cf_hist, cash_flow], ignore_index=True).sort_values("period")
 
     full_is.to_csv(output_dir / "full_is.csv", index=False, encoding="utf-8-sig")
