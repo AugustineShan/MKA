@@ -39,3 +39,19 @@ def test_extract_ppe_detail_rejects_invented_field(monkeypatch):
     # schema 内字段保留
     assert result["categories"][0]["gross"] == 1.0
     assert result["categories"][0]["name"] == "房屋及建筑物"
+
+def test_rollforward_closed():
+    # 期初+增加-折旧-减少-减值 = 期末 → closed
+    from src.da_facts import check_rollforward
+    cat = {"opening_net": 100.0, "period_increase": 20.0, "period_dep": 15.0,
+           "period_decrease": 5.0, "impairment": 0.0, "closing_net": 100.0}
+    assert check_rollforward(2024, "房屋及建筑物", cat)["closed"] is True
+
+def test_rollforward_broken_flags():
+    # 期末对不上 → closed=False,残差>容差
+    from src.da_facts import check_rollforward
+    cat = {"opening_net": 100.0, "period_increase": 20.0, "period_dep": 15.0,
+           "period_decrease": 5.0, "impairment": 0.0, "closing_net": 90.0}
+    r = check_rollforward(2024, "房屋及建筑物", cat)
+    assert r["closed"] is False
+    assert abs(r["residual"]) > 1.0

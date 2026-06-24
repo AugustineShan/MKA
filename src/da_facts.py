@@ -7,6 +7,9 @@ from src.annual_report_utils import find_line, compact_window, find_all_lines, c
 PPE_DETAIL_FIELDS = ("gross", "accum_dep", "impairment", "net",
                      "period_increase", "period_decrease", "period_dep")
 
+# roll-forward 闭合容差(百万元),与 clean.py 硬校验容差对齐
+TOLERANCE_MILLION = 1.0
+
 # 附注/政策章节标题行:"N、固定资产" / "N、在建工程" / "N、无形资产"。
 # N 是附注或政策编号,跨公司会变,故用 \d+ 不写死。标题行通常是裸行(仅"17、固定资产"+尾随空格),
 # 用 ^...$ 锁死整行,排除正文里"与固定资产相关"这类散文提及。
@@ -72,6 +75,25 @@ def extract_note(note_type: str, window_text: str, year: int,
             if k != "name" and k not in allowed_fields:
                 del cat[k]
     return raw
+
+def check_rollforward(year: int, category: str, vals: dict[str, Any]) -> dict[str, Any]:
+    """校验单个类别 roll-forward 闭合:期初+增加-折旧-减少-减值 = 期末。
+
+    vals 键:opening_net / period_increase / period_dep / period_decrease /
+            impairment / closing_net(缺省视为 0)。
+    返回 {year, category, closed: bool, residual: float}。
+    residual = calc - closing,closed 当 |residual| < TOLERANCE_MILLION。
+    """
+    opening = vals.get("opening_net", 0.0) or 0.0
+    increase = vals.get("period_increase", 0.0) or 0.0
+    dep = vals.get("period_dep", 0.0) or 0.0
+    decrease = vals.get("period_decrease", 0.0) or 0.0
+    impair = vals.get("impairment", 0.0) or 0.0
+    closing = vals.get("closing_net", 0.0) or 0.0
+    calc = opening + increase - dep - decrease - impair
+    residual = calc - closing
+    return {"year": year, "category": category,
+            "closed": abs(residual) < TOLERANCE_MILLION, "residual": residual}
 
 def validate_da_facts(facts: dict[str, Any]) -> list[str]:
     errors: list[str] = []
