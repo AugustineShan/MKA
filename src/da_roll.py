@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -156,3 +155,106 @@ def organic_capex(stock_net: float, g: float) -> float:
     g=0 时返回 0(无扩张);g<0 视为 0(收缩不产生 capex,降值走减值/报废)。
     """
     return g * stock_net if g > 0 else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task 2.6: ppe_capex 现金口径 + roll_da_series 装配
+# ---------------------------------------------------------------------------
+def compute_ppe_capex(maintenance_dep: float, expansion_capex_by_cat: dict,
+                      organic: dict, year: int) -> float:
+    """现金支出口径(给 FCFF/CFI):= 维持 + 扩张 capex_by_cat + 有机。
+
+    ≠ 任何 cip_to_fixed 转固额(转固是 cip→fix 重分类,非现金)。
+    缺 year 的 expansion/organic 项按 0 处理。
+    """
+    return (maintenance_dep
+            + expansion_capex_by_cat.get(year, 0.0)
+            + organic.get(year, 0.0))
+
+
+def _calibrate_scale(cats: list[dict], base_reported_dep: float) -> float:
+    """存量稳态折旧缩放,匹配 base 年披露 depr_fa_coga_dpba。
+
+    policy_dep = Σ cat(base_gross*(1-salvage)/life);scale = reported/policy_dep。
+    policy_dep<=0(空 cats)→ 1.0;残差过大(>20%)留 warning(实现留 TODO,本函数不报错)。
+    """
+    policy_dep = sum(c["base_gross"] * (1 - c["salvage_rate"]) / c["life_years"]
+                     for c in cats)
+    if policy_dep <= 0:
+        return 1.0
+    return base_reported_dep / policy_dep
+
+
+def roll_da_series(sched: dict, base_bs: dict, forecast_years: int,
+                   base_year: int, base_reported_dep: float) -> list[dict]:
+    """主滚动:逐年产出 da_series。
+
+    每元素含:
+      period / ppe_depreciation / fix_assets_net / cip_balance / ppe_capex / ppe_capex_split
+
+    口径(spec §6.6):
+      ppe_depreciation = 存量稳态折旧(scale 校准) + 扩张 cohort 折旧(不含三类摊销)
+      fix_assets_net   = 存量净值(base_net×(1+g)^t) + 扩张 cohort 累计净值
+      cip_balance      = Σ各类 cip 余额(base cip 抽干 + 扩张 capex 堆积)
+      ppe_capex        = 维持(=存量折旧) + 扩张 capex_by_cat + 有机;≠ 任何转固额
+    """
+    cats = sched["ppe"]["categories"]
+    g = sched["ppe"].get("存量策略", {}).get("net_growth_rate", 0.0)
+    expansion = sched.get("expansion_plan", {})
+    # base_cip_to_fixed: 按 cat 名嵌套 {cat_name: {year: amt}}(与 expansion.cip_to_fixed 同构)
+    base_cip_tf = sched.get("base_cip_to_fixed", {})
+    scale = _calibrate_scale(cats, base_reported_dep)
+
+    # 预建每类 cip 状态(转固队列)
+    cip_states: list[CipState] = []
+    for c in cats:
+        cname = c["name"]
+        exp_capex_by_yr = {y: expansion.get(y, {}).get("capex_by_cat", {}).get(cname, 0.0)
+                           for y in expansion}
+        exp_tf_by_yr = {y: expansion.get(y, {}).get("cip_to_fixed", {}).get(cname, 0.0)
+                        for y in expansion}
+        c_base_tf = base_cip_tf.get(cname, {}) if isinstance(base_cip_tf, dict) else {}
+        cip_states.append(roll_cip(c.get("base_cip", 0.0), c_base_tf,
+                                   exp_capex_by_yr, exp_tf_by_yr,
+                                   c["life_years"], c["salvage_rate"], base_year + 1))
+
+    series: list[dict] = []
+    for t in range(1, forecast_years + 1):
+        year = base_year + t
+        # 存量稳态折旧(经 scale 校准):每类 base 政策折旧 × scale,再 (1+g)^t
+        stock_dep = sum(
+            stock_depreciation(
+                c["base_gross"] * (1 - c["salvage_rate"]) / c["life_years"] * scale, g, t)
+            for c in cats)
+        # 存量净值:每类 base_net × (1+g)^t(base_net = base_gross - base_accum_dep)
+        stock_net = sum(
+            (c["base_gross"] - c.get("base_accum_dep", 0.0)) * (1 + g) ** t
+            for c in cats)
+        # 扩张 cohort 折旧 + 净值(各类转固 cohort)
+        exp_dep = 0.0
+        exp_cohort_net = 0.0
+        cip_bal = 0.0
+        for c, state in zip(cats, cip_states):
+            for cohort in state.transferred_cohorts(year):
+                exp_dep += cohort.dep_in_year(year)
+                exp_cohort_net += cohort.net_in_year(year)
+            cip_bal += state.cip_balance(year)
+        total_net = stock_net + exp_cohort_net  # fix_assets_net
+        maint = stock_dep  # 维持 capex = 存量稳态折旧
+        org = organic_capex(stock_net, g)
+        # 扩张 capex_by_cat 当年合计(给 ppe_capex)
+        exp_capex_year = sum(expansion.get(year, {}).get("capex_by_cat", {}).values())
+        ppe_capex = compute_ppe_capex(maint, {year: exp_capex_year}, {year: org}, year)
+        series.append({
+            "period": str(year),
+            "ppe_depreciation": stock_dep + exp_dep,
+            "fix_assets_net": total_net,
+            "cip_balance": cip_bal,
+            "ppe_capex": ppe_capex,
+            "ppe_capex_split": {
+                "maintenance": maint,
+                "expansion": exp_capex_year,
+                "organic": org,
+            },
+        })
+    return series

@@ -101,3 +101,68 @@ def test_organic_capex_zero_when_g0():
 def test_organic_capex_funds_stock_growth():
     from src.da_roll import organic_capex
     assert organic_capex(stock_net=1000.0, g=0.03) == pytest.approx(30.0)
+
+
+# ---------------------------------------------------------------------------
+# Task 2.6: ppe_capex 现金口径 + roll_da_series 装配
+# ---------------------------------------------------------------------------
+def test_ppe_capex_excludes_transfers():
+    """现金支出口径:维持 + 扩张 capex_by_cat + 有机;不含任何 cip_to_fixed 转固额。"""
+    from src.da_roll import compute_ppe_capex
+    capex = compute_ppe_capex(
+        maintenance_dep=100.0,
+        expansion_capex_by_cat={2025: 50.0},
+        organic={2025: 30.0},
+        year=2025)
+    assert capex == 180.0  # 100 + 50 + 30, 不含转固
+
+
+def test_ppe_capex_missing_year_defaults_zero():
+    """expansion/organic 当年缺 key → 0(不报错)。"""
+    from src.da_roll import compute_ppe_capex
+    capex = compute_ppe_capex(
+        maintenance_dep=100.0,
+        expansion_capex_by_cat={2025: 50.0},
+        organic={2025: 30.0},
+        year=2026)  # expansion/organic 都无 2026
+    assert capex == 100.0  # 仅维持
+
+
+def test_roll_da_series_smoke_structure():
+    """roll_da_series 端到端冒烟:验证产出结构 + 核心口径不为空、不含转固。
+
+    非行为精确断言(留整合测试),只验装配正确:每元素 6 字段齐、period 逐年、
+    ppe_capex == maintenance+expansion+organic(口径一致性)。
+    """
+    from src.da_roll import roll_da_series
+    sched = {
+        "enabled": True, "base_year": 2024,
+        "ppe": {
+            "categories": [
+                {"name": "房屋", "base_gross": 1000.0, "base_accum_dep": 200.0,
+                 "life_years": 20, "salvage_rate": 0.05, "base_cip": 50.0},
+            ],
+            "存量策略": {"net_growth_rate": 0.03},
+        },
+        "expansion_plan": {
+            2025: {"capex_by_cat": {"房屋": 40.0}, "cip_to_fixed": {"房屋": 20.0}},
+        },
+        "base_cip_to_fixed": {"房屋": {2025: 30.0}},
+    }
+    series = roll_da_series(sched, base_bs={}, forecast_years=3,
+                            base_year=2024, base_reported_dep=60.0)
+    assert len(series) == 3
+    assert series[0]["period"] == "2025"
+    assert series[2]["period"] == "2027"
+    for row in series:
+        # 6 字段齐
+        assert {"period", "ppe_depreciation", "fix_assets_net", "cip_balance",
+                "ppe_capex", "ppe_capex_split"} <= set(row.keys())
+        # 口径一致性:ppe_capex = maintenance + expansion + organic
+        s = row["ppe_capex_split"]
+        assert row["ppe_capex"] == pytest.approx(
+            s["maintenance"] + s["expansion"] + s["organic"])
+        # 存量净值 > 0(有 base_gross)
+        assert row["fix_assets_net"] > 0
+        # ppe_depreciation 含存量折旧(scale 校准后 > 0)
+        assert row["ppe_depreciation"] > 0
