@@ -149,6 +149,8 @@ FCFF 维持部分净效果 = +存量稳态折旧(da 加回) − 维持性 capex(
 
 这建模存量有机增长(产能随时间缓慢扩张,非项目制)。**不允许只涨基数不涨折旧**(基数与折旧脱钩 = 又一个静默不一致)。
 
+**🔴 g>0 必须配有机增长 capex,否则 BS/CF 静默失衡**:存量净值按 (1+g)^t 涨,增量 `g × 存量_net_{t-1}` 需要供资——但维持 capex 只等于折旧、扩张 capex 走 cip,这笔有机增长没有 capex 项,会被现金 plug 静默吸收,BS/CF 失衡。修法:`g>0` 时 `ppe_capex += g × 存量_net_{t-1}`(有机增长 capex,进 PP&E 基数按该类年限折旧)。g=0 时此顶为 0,模型现金自洽(维持 capex=存量折旧、存量净值走平)。
+
 ### 6.5 总折旧装配
 ```
 总 PP&E 折旧 = 存量稳态折旧(base 水平 × (1+g)^t) + 扩张新增折旧(逐年扩张 cohort 之和)
@@ -191,6 +193,22 @@ calc 检测 forecast_params 里有无 da_series:
 
 calc 其他(营运资本/现金 plug/留存/三类摊销绝对值)两个模式都照旧。**calc 仍是纯算账核,不感知 `da_schedule.yaml`,只消费 forecast_params 里的 da 注入**。
 
+### 7.3 gpm→ex-depreciation 转换(forecast.py 内部,保留 /ka 输入语义)
+重资产模式下 da_roll 的 `ppe_depreciation` **显式进 IS**(作为 IS 折旧行扣 ebit)。但 /ka 产出的 gpm 是常规 loaded margin(含历史折旧)——若直接用,会与 ppe_depreciation 双重扣减折旧。
+
+**转换在 forecast.py 做,不改 /ka 输入语义**:
+1. base 年总折旧从**现金流量表**取(`depr_fa_coga_dpba` + 三类,可靠;不经 IS 推断)。
+2. 把这份 base 年总折旧从 gpm 隐含的经营结构里**加回**,得到 `gpm_ex_dep`(毛利不含折旧):
+   ```
+   gpm_ex_dep = gpm + base_total_dep / revenue
+   ```
+3. IS 用 `gpm_ex_dep` 算 oper_cost(折旧前毛利),再以 da_roll 的 `ppe_depreciation` + 三类摊销作**单一显式折旧行**扣 ebit。
+4. 折旧在 COGS vs 管理费用的 split——年报不总披露。**FCFF 正确性只需要"EBIT 里扣的总折旧 = da_roll 总折旧"**,不需完美 split。故在 EBIT 层锚定:总历史折旧整体加回、da_roll 折旧整体扣回,split 只影响行项展示、不影响 FCFF。
+
+**/ka 输入语义不变**:分析师仍写常规 gpm(loaded),forecast.py 内部转 gpm_ex_dep。这条边界若不焊死,/ka↔yaml1 之间就是静默陷阱(分析师不知道 gpm 被改了语义)。
+
+**calc 仍纯算账**:只是多消费一个显式折旧行(从 forecast_params 的 da_series 取),不感知转换逻辑。转换是 forecast.py 的编排职责。
+
 ## 8. 轻重模式 capex/DA 装配对照表
 
 > 最容易出静默 bug 的地方。BS 和 CF 的 capex 必须同源,否则静默出错。
@@ -228,7 +246,7 @@ ratio=1 时 `terminal_fcff = nopat`,da 表面消失。但若 da 显式进 IS(作
 
 > **gpm loaded 是另一回事**:defaults_gen 的 gpm = 1 − oper_cost/revenue,oper_cost 含历史折旧,故 gpm 确实 loaded(含历史折旧)。但 gpm 里隐含的是**固定的历史折旧**,不随 da_roll 的 cohort 瞬态变化——它压 nopat 但不传递 da_roll 末年 da 的瞬态。"da via nopat 流进终值"特指 **da_roll 的 ppe_depreciation 作为独立 IS 行**,这才是会随 cohort 瞬态变、从而扭曲终值的通道。
 
-**🔴 重资产模式 open question(留 planning,需用户定)**:da_roll 产出的 `ppe_depreciation`(分类别真实滚动)是否显式进 IS?若**进 IS**(IS 新增折旧行扣 ebit),则 gpm 须相应改成 ex-depreciation(毛利不含折旧,否则 gpm 含的历史折旧与 ppe_depreciation 双重扣减),§9.3 的"da via nopat"机制成立。若**不进 IS**(保持当前 calc.py 语义,da 只在 CF/FCFF 加回),则 §9.3 机制退化为仅 ratio<1 情形,但 da_roll 的 ppe_depreciation 与 gpm 里隐含的历史折旧存在脱钩(gpm 折旧固定、da_roll 随 cohort 变)。两种选择的取舍 + gpm 语义联动,留 planning 由用户定。这决定 §9.3 机制是否成立、归一化门(§9.4)的保护范围。
+**✅ 已定(进 IS)**:da_roll 的 `ppe_depreciation` **显式进 IS**(IS 新增折旧行扣 ebit)。gpm→ex-depreciation 转换在 **forecast.py 内部**做(保留 /ka 常规 gpm 输入语义,base 年总折旧从现金流量表取、在 EBIT 层锚定,split 只影响展示不影响 FCFF),见 §7.3。由此 §9.3 的"da via nopat"机制成立、归一化门(§9.4)保护终值不被瞬态 da 扭曲。calc 仍纯算账,只是多消费一个显式折旧行。
 
 ### 9.3 末年 da 必须是稳态 da(真正脆弱点)
 ① 修的是"末年 da 不萎缩"(存量永续更新保证)。但终值真正脆弱点是**末年 da 是不是稳态 da**——显式期在扩张半途结束时,末年 da 是爬坡瞬态值,会扭曲终值。扭曲的具体机制和方向取决于 **da_roll 的 ppe_depreciation 是否显式进 IS**(见 §9.2):
@@ -237,11 +255,18 @@ ratio=1 时 `terminal_fcff = nopat`,da 表面消失。但若 da 显式进 IS(作
 
 两种语义下末年 da 非稳态都会扭曲终值(方向不同),归一化门(§9.4)在两种语义下都有价值——保证末年 da 是稳态 da,消除瞬态扭曲。
 
-### 9.4 归一化收口检查
-解法不是改终值公式,是**保证末年 da 是稳态 da**:
-- 显式期跑到 **cip 清空 + 最近一批扩张 cohort 过爬坡**(转固后折旧进入稳态段)再接终值。
-- 收口报告显式断言"**末年扩张已归一化**"。
-- 不满足 → flag(不静默放行)。
+### 9.4 归一化收口检查(双边量化)
+解法不是改终值公式,是**保证末年 da 是稳态 da**。稳态要求**双边**:既无新 cohort 爬坡上行,也无旧 cohort 集中退役下行(§11.2 不对称会在显式期末制造下行缺口,尤其 5-8 年生物资产 + 长显式期)。判据可机械验:
+
+```
+归一化 ⇔ (cip_balance / fix_assets_net < ε) ∧ (|Δda / da| < δ)
+```
+
+- `cip/fix_assets < ε`:cip 基本清空(无新 capex 趴着等转固 → 无上行爬坡)。
+- `|Δda/da| < δ`:末年 da 变化率小——**同时抓上行**(新 cohort 爬坡)和**下行**(旧 cohort 集中退役)。只测 cip 漏了下行一半。
+- ε、δ 可配置阈值(默认 ε=0.05, δ=0.05)。
+- 收口报告显式断言"**末年扩张已归一化**",附 cip/fix_assets 与 Δda/da 实测值。
+- 不满足 → flag(不静默放行),标注偏差方向(上行爬坡→da 高→压 nopat→终值低估;下行退役→da 低→抬 nopat→终值高估)。
 
 ### 9.5 残留风险
 若显式期怎么都不够长(扩张周期超长,cip 永远转不完)→ 终值 da 是瞬态,flag 给分析师决定:拉长显式期,或接受瞬态偏差并在收口报告标注方向(高估/低估)。
@@ -306,7 +331,12 @@ ppe:
     - {name: 房屋及建筑物, life_years: 20, salvage_rate: 0.05, base_gross: .., base_accum_dep: ..}
     - {name: 机器设备, life_years: 10, salvage_rate: 0.05, base_gross: .., base_accum_dep: ..}
 
-expansion_plan:                   # 分析师商议的扩张 capex 排程
+base_cip_to_fixed:                # base 年既有在建工程的转固排程(da_facts.cip_detail 的存量 cip,已存在承诺)
+  2025: {机器设备: 80000, 房屋及建筑物: 120000}   # 这批存量 cip 转固起折旧
+  2026: {房屋及建筑物: 60000}
+  # 不变量:累计 base_cip_to_fixed ≤ base 年 cip 余额(da_facts)
+
+expansion_plan:                   # 分析师商议的新增扩张 capex 排程
   2025:
     capex_by_cat: {机器设备: 50000, 房屋及建筑物: 200000}
     cip_to_fixed: {机器设备: 30000}      # 当年转固
@@ -314,6 +344,7 @@ expansion_plan:                   # 分析师商议的扩张 capex 排程
     capex_by_cat: {房屋及建筑物: 300000}
     cip_to_fixed: {房屋及建筑物: 200000, 机器设备: 20000}
   # 不变量:任一年任一类 累计 cip_to_fixed ≤ 累计 capex_by_cat(cip 余额非负,da_roll 强制校验)
+# 注:base_cip_to_fixed 与 expansion_plan.cip_to_fixed 都进 da_roll 转固队列,按各自类别年限起折旧
 
 terminal:
   capex_da_ratio: 1.0             # 稳态 capex/D&A
@@ -341,7 +372,7 @@ terminal:
    - roll-forward 闭合:期初+增加−折旧−减少−减值=期末
 2. **calc 重资产分支**:fix_assets/depreciation/capex 同源 da_roll,BS 配平,CF 桥接平
 3. **回退保证**:无 da_schedule 时 calc 输出 = 现有路径输出(bit-exact)
-4. **终值归一化**:末年 cip 未清空 → flag
+4. **终值归一化(双边)**:末年 `cip/fix_assets ≥ ε`(上行未归一)→ flag;末年 `|Δda/da| ≥ δ`(含下行退役,§11.2 不对称在显式期末制造缺口)→ flag。两条都测,只测 cip 漏了下行一半。
 5. **base 对齐**:base_year ≠ base_period → 报错
 6. **yaml1 capex_pct 禁用**:重资产模式下 yaml1 给 capex_pct → 告警
 7. **乳业主用例**:奶牛(短年限)不熔化,产能资产不消失
