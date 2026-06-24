@@ -114,6 +114,14 @@ def recon_dir(company_dir: Path) -> Path:
     return agent_dir(company_dir) / "recon"
 
 
+def da_schedule_path(company_dir: Path) -> Path:
+    return agent_dir(company_dir) / "da_schedule.yaml"
+
+
+def da_history_dir(company_dir: Path) -> Path:
+    return agent_dir(company_dir) / "DAhistory"
+
+
 def announcements_dir(company_dir: Path) -> Path:
     return company_dir / ANNOUNCEMENTS_DIR
 
