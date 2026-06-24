@@ -17,6 +17,8 @@ TuShare Pro API
    SQLite (raw_tushare + clean tables)
       ↓  阶段②：透视 + 校验 + 输出
    SQLite clean_annual / clean_quarterly
+      ↓  clean 后事实速览
+   Agent/core_metrics_overview.md/json/csv
       ↓  YAML2 defaults_gen.py
    defaults.yaml（YAML2：机器平推底座）
       +  yaml1*.yaml（compiler 输出：人的判断覆盖层）
@@ -124,7 +126,7 @@ TuShare Pro API
 ### 3.0 init.py（一键编排入口）
 
 `init.py` 是给 Agent / 人的单一入口，把 data_fetcher → report_downloader → clean →
-financial_expense_analyzer 四个独立 CLI 按正确顺序编排成全流程，并保证幂等与如实上报。配套
+core_metrics_overview → financial_expense_analyzer 五个独立阶段按正确顺序编排成全流程，并保证幂等与如实上报。配套
 `.claude/skills/init/SKILL.md` 让 Agent 用 `init <公司>` 触发。
 
 | 组件 | 职责 |
@@ -132,17 +134,18 @@ financial_expense_analyzer 四个独立 CLI 按正确顺序编排成全流程，
 | `resolve_ticker()` | 公司名 / 裸代码 / 完整 ticker → 规范 ticker；中文名经 TuShare `stock_basic` 解析，歧义/无匹配抛 `TickerResolutionError`（退出码 2，交 Agent 用 websearch 兜底） |
 | `stage_fetch()` | 阶段①拉取；幂等：当日 `meta.last_updated` 已是今天则跳过（除非 `--force`），否则 UPSERT 增量 |
 | `stage_reports()` | 年报 PDF/Markdown 下载（**必须在 clean 之前**，否则失败时 reconciler 无年报可切片）；report_downloader 自身幂等，下载失败不致命 |
-| `stage_clean()` | 阶段②清洗校验，含"年度失败→生成 override→重跑应用"两段式；用 `approved_override_count()` 比对前后判断是否新增补数 |
-| `stage_financial_expense()` | 阶段③：从年报附注切片「财务费用」明细，LLM 拆出利息支出/资本化利息/财政贴息/利息收入/其他，按年份归档到 `financial_expense.yaml`；失败只 warning，不阻塞管线 |
-| `build_report()` | 输出数据拉取报告：四阶段状态 + 年度/季度期数 + `clean_adjustments`（年报确认补全科目）+ `clean_warnings` 汇总 |
+| `stage_clean()` | 阶段③清洗校验，含"年度失败→生成 override→重跑应用"两段式；用 `approved_override_count()` 比对前后判断是否新增补数 |
+| `stage_core_metrics_overview()` | 阶段④：从 `clean_annual` 覆盖生成 `Agent/core_metrics_overview.md/json/csv` 年度事实速览；只读 clean 历史，不读 forecast/yaml，不阻塞管线 |
+| `stage_financial_expense()` | 阶段⑤：从年报附注切片「财务费用」明细，LLM 拆出利息支出/资本化利息/财政贴息/利息收入/其他，按年份归档到 `financial_expense.yaml`；失败只 warning，不阻塞管线 |
+| `build_report()` | 输出数据拉取报告：五阶段状态 + 年度/季度期数 + `clean_adjustments`（年报确认补全科目）+ `clean_warnings` 汇总 |
 
 **编排链路**：
 ```
 输入 → resolve_ticker → stage_fetch → stage_reports → stage_clean
-                                                          ├─ 首跑过 → stage_financial_expense → 退出码 0
+                                                          ├─ 首跑过 → stage_core_metrics_overview → stage_financial_expense → 退出码 0
                                                           └─ 年度失败 → reconciler 生成 override
                                                                → 重跑 clean 应用补数
-                                                                    ├─ 过 → stage_financial_expense → 退出码 0
+                                                                    ├─ 过 → stage_core_metrics_overview → stage_financial_expense → 退出码 0
                                                                     └─ 仍失败 → 退出码 3（真问题，如实上报）
 ```
 
@@ -168,9 +171,11 @@ python -m src.init 000333.SZ 600519.SH   # 批量
 python -m src.init 美的集团 --force  # 全量重拉并重跑财务费用分析
 ```
 
-### 3.0a webka.py（网页端核心假设打包器）
+### 3.0a webka.py（旧版网页端核心假设打包器）
 
-`webka.py` 是 `/ka` 的网页端前置打包器，用于把生成 `核心假设.md` 所需的源文件一键汇总到 `companies/{公司}/WEBCLAUDE/核心假设部分/`，方便用户在 Claude.ai 网页端拖拽上传。
+`webka.py` 是旧版 `/ka` 网页端前置打包器，用于把生成 `核心假设.md` 所需的源文件一键汇总到 `companies/{公司}/WEBCLAUDE/核心假设部分/`，方便用户在 Claude.ai 网页端拖拽上传。
+
+当前推荐的网页端重活入口是 `webload.py`：旧 Excel 模型 vintage 保存需要先锁时间沙箱，再在网页端完成模型理解 overview 和分段确认。`webka.py` 仅保留为普通 `/ka` 网页打包兼容入口。
 
 与 `/ka` 的区别：
 - `/ka` 在 Claude Code 本地执行，直接读取文件系统并调用核心假设生成修改器 skill。
@@ -211,7 +216,48 @@ python -m src.webka 002946.SZ
 - `D:\MKA\.claude\skills\webka\SKILL.md`
 - `C:\Users\Sheld\.claude\skills\webka\SKILL.md`
 
-### 3.0b `/comp` skill（yaml1 compiler 启动器）
+### 3.0b webload.py（网页端 load vintage 打包器）
+
+`webload.py` 是 `/load` 的网页端打包器。它先调用 `src.model_load.prepare` 创建 `Agent/Load/{load_id}/`，锁定外部 Excel 模型的历史末年、预测起点和显式预测期；然后把网页端执行 `/load` 需要的安全材料复制到 `companies/{公司}/WEBCLAUDE/模型装载部分/`。
+
+与 `/load` 的区别：
+- `/load` 是真正的模型装载流程，按 `/ka` 的会议纪律先 overview、再分段确认、最后写 `核心假设_load.md`。
+- `/webload` 只负责 prepare + 打包，不替用户理解模型、不生成核心假设、不编译 yaml1、不跑 DCF。
+
+**复制清单**：
+
+| 文件/目录 | 来源 | 用途 |
+|---|---|---|
+| `00_webload_网页端执行说明.md` | `src.webload` 生成 | 网页端第一阅读入口 |
+| `01_load启动器_SKILL.md` | `.claude/skills/load/SKILL.md` | `/load` 启动器纪律 |
+| `02_model_boundary.md` | `Agent/Load/{load_id}/model_boundary.md` | 人读时间边界 |
+| `03_model_boundary.json` | `Agent/Load/{load_id}/model_boundary.json` | 机器可读时间边界 |
+| `04_forbidden_materials.md` | `Agent/Load/{load_id}/forbidden_materials.md` | 禁读清单，只可看清单 |
+| `05_核心假设_load_脚手架.md` | `Agent/Load/{load_id}/核心假设_load.md` | 网页端补写目标 |
+| `06_核心假设生成修改器_skill_vN.md` | `D:\MKA\skills\` 最新版 | 继承 `/ka` 会议流程 |
+| `07_模型装载器_skill_vN.md` | `D:\MKA\skills\` 最新版 | load 时间沙箱覆盖层 |
+| `08_load_manifest.json` | `Agent/Load/{load_id}/load_manifest.json` | 沙箱路径和材料清单 |
+| `09_defaults.yaml` | `Agent/Load/{load_id}/defaults.yaml` | 沙箱 base_period 和平推底座，可缺省 |
+| `allowed_materials/` | `Agent/Load/{load_id}/allowed_materials/` | 网页端唯一可读正文材料 |
+
+**关键纪律**：
+- `model_load.prepare` 报时间轴冲突则停止，不打包。
+- 网页端不得读取 `forbidden_materials.md` 中列出的正文材料。
+- 网页端用户确认 overview 前，不补完 `核心假设_load.md`。
+- 网页端产出的 `核心假设_load.md` 放回 `Agent/Load/{load_id}/` 后，本地继续编译 `yaml1_load_*.yaml` 并运行 `py -m src.model_load dcf`。
+
+**CLI**：
+```bash
+python -m src.webload 影石创新 --overwrite
+python -m src.webload 688775 --overwrite
+python -m src.webload 688775.SH --overwrite
+```
+
+配套 skill 文件：
+- `D:\MKA\.claude\skills\webload\SKILL.md`
+- `D:\MKA\.claude\skills\load\SKILL.md`
+
+### 3.0c `/comp` skill（yaml1 compiler 启动器）
 
 `/comp` 是 `/ka` 的 compiler 兄弟。它不负责生成 `核心假设.md`，而是把已有的 `核心假设.md` 编译成机器可读的 `yaml1_公司名_YYYYMMDD.yaml`，供 `forecast.py` 使用。
 
@@ -421,6 +467,7 @@ companies/{公司名}_{代码}/
 │   └── 其他材料/
 └── Agent/
     ├── data.db
+    ├── core_metrics_overview.md/json/csv
     ├── defaults.yaml
     ├── financial_expense.yaml
     ├── yaml1*.yaml
@@ -476,6 +523,8 @@ companies/{公司名}_{代码}/
 正式落盘仍通过语义源头闭环：前端调用 `POST /api/companies/{id}/assumption-brief` 生成 `/ka` prompt，提示核心假设生成修改器更新 `核心假设.md`；随后 `/comp` 重新编译 yaml1，最后 `forecast.py` 正式重算。禁止前端直接把 patch 写回 yaml1，因为 yaml1 是 compiler 产物，不是人工编辑源。
 
 DCF tab 额外提供三个实时 sensitivity 滑块（WACC、terminal growth、terminal CAPEX / D&A ratio），调用 `POST /api/companies/{id}/dcf-sensitivity` 即时刷新每股价值，无需重跑三表。视觉遵循 Apple HIG / SF Pro：白/灰系统底色、单一 #0071E3 交互蓝、轻边框和轻阴影；金融表格数字右对齐、SF Mono、负数红色、轻 zebra；YAML 面板是唯一允许多语法色的区域。
+
+第 7 个顶级 tab「重资产排程」为**条件 tab**：仅当 `GET /api/companies/{id}` 返回 `da_view` 非 null（`Agent/da_schedule.yaml` 存在且 `enabled:true`）才渲染。`da_view` 由 `workbench._da_view()` 只读装配 `da_schedule.yaml` + `recon/da_facts_latest.json` + `.modelking/forecast_params.yaml["da_series"]` 三个磁盘文件，重算每类 `policy_dep` 与 `scale` 并调用 `da_roll.normalization_gate`。四段只读展示（存量快照 / 扩张排程+转固 / da_series 结果 / 历史证据折叠），类别名全部来自 `da_schedule.ppe.categories[].name`，N 类 N 行零公司特判；改假设走 `/da`，前端不写回。轻资产公司 `da_view=null`，tab 不可见。
 
 运行：
 ```bash
@@ -869,7 +918,28 @@ python -m src.clean --ticker 000333.SZ --mode annual --no-auto-reconcile
 
 LLM 输出字段包括 `suspected_tushare_issue`、`confidence`、`missing_or_suspicious_items`、`candidate_tushare_field`、`value_million_cny`、`evidence_lines`、`recommended_action` 等。`--write-overrides --approve-high-confidence` 只会把 LLM 判断为 high confidence、且残差精确匹配的结果写成 approved override。美的集团 2016–2025 年 `BS 2.1` 可生成 10 条 `lending_funds` approved override；`python -m src.clean --ticker 000333.SZ --mode annual` 后年度 10 期全部硬校验通过，`clean_adjustments=10`，`clean_warnings=30`。
 
-### 6.5 财务费用细则分析（外置 evidence 生成器）
+### 6.5 clean 后年度核心指标速览
+
+`core_metrics_overview.py` 是 `/init` 在 `stage_clean()` 成功后触发的年度事实面板生成器。它只读取 `data.db/clean_annual` 和 `meta` 中稳定的 ticker/name，不读取 `defaults.yaml`、`yaml1*.yaml`、`Agent/forecast/`，也不调用 LLM。职责是把后续 Agent 最常看的利润表主链路转成 LLM 易读的横向历史表：收入同比、毛利率、费用率、营业利润率、利润总额率、所得税率、净利率、净利润同比，以及资产减值、信用减值、其他收益、投资收益、公允价值变动、资产处置收益、营业外收支等波动项。
+
+输出固定覆盖写入：
+
+```text
+companies/{公司}/Agent/core_metrics_overview.md
+companies/{公司}/Agent/core_metrics_overview.json
+companies/{公司}/Agent/core_metrics_overview.csv
+```
+
+幂等约束：输出不包含生成时间或 market quote 这类易变元数据；同一份 `clean_annual` 重跑应保持字节稳定。`.md` 供人和 LLM 直接阅读，`.json` 供后续脚本稳定消费，`.csv` 供表格横向对比。生成失败只作为 `/init` warning 上报，不把已经通过的 clean 改判失败；`--mode quarterly` 不更新年度速览。
+
+CLI：
+
+```bash
+python -m src.core_metrics_overview --ticker 002946.SZ
+python -m src.core_metrics_overview --db companies/新乳业_002946/Agent/data.db
+```
+
+### 6.6 财务费用细则分析（外置 evidence 生成器）
 
 `financial_expense_analyzer.py` 是 `defaults_gen.py` 的外置辅助，**不属于 clean 主路径**，也不修改 `data.db` 或 `defaults.yaml`。它的职责是在 clean 数据已落定、且本地有对应年度报告 Markdown 时，遍历 `clean_annual` 的每一年，从「财务费用」附注中拆出利息支出的真实构成，生成按年份归档的审计级档案 `financial_expense.yaml`，供 `defaults_gen.py` 选择是否覆盖机械拆分出的 `income.financial_expense` 参数。
 
@@ -891,7 +961,7 @@ LLM 输出字段包括 `suspected_tushare_issue`、`confidence`、`missing_or_su
    - **边界勾稽**：从 LLM 分项重建四种口径（gross / net_of_capitalized / net_of_subsidy / net_of_capitalized_and_subsidy），动态 detect `clean.fin_exp_int_exp` 的实际口径
 6. 写入 `companies/{公司}/Agent/financial_expense.yaml`（多年档案）；同时保留 `Agent/recon/financial_expense_detail_latest.json` 作为最近一次单期运行的调试/审计副本。
 
-`defaults_gen.py` 读取 `financial_expense.yaml`，仅在记录 `status=approved`、`confidence=high`、勾稽全过且 `base_period` 与 YAML2 `base_period` 匹配时，才用该年 derived 值覆盖 `interest_expense_rate`、`cash_interest_rate`、`other_fin_exp_abs`、`base_interest_expense`、`base_interest_income`，并将 `source` 改为 `annual_report.fin_exp_note`；否则保持机械值。`init.py` 在 `stage_clean()` 之后调用 `stage_financial_expense()` 生成全量档案，失败只 warning，不阻塞后续流程。
+`defaults_gen.py` 读取 `financial_expense.yaml`，仅在记录 `status=approved`、`confidence=high`、勾稽全过且 `base_period` 与 YAML2 `base_period` 匹配时，才用该年 derived 值覆盖 `interest_expense_rate`、`cash_interest_rate`、`other_fin_exp_abs`、`base_interest_expense`、`base_interest_income`，并将 `source` 改为 `annual_report.fin_exp_note`；否则保持机械值。`init.py` 在 `stage_core_metrics_overview()` 之后调用 `stage_financial_expense()` 生成全量档案，失败只 warning，不阻塞后续流程。
 
 CLI：
 
@@ -903,7 +973,7 @@ python -m src.financial_expense_analyzer --ticker 002946.SZ --latest-only  # 只
 
 新乳业（002946.SZ）实测：10 个 clean_annual 年份中 8 个生成 approved high 记录（2015/2016 因缺年报 Markdown 报错），2024 基期 `interest_expense_gross=124.15M`、`capitalized=14.06M`、`subsidy=3.82M`；detected basis 为 `net_of_capitalized_and_subsidy`，即 TuShare `fin_exp_int_exp` 已同时净掉资本化利息与财政贴息；derive 后 `interest_expense=110.09M`、`other_fin_exp_abs=-1.47M`。
 
-### 6.6 季度 QA plug 收纳科目
+### 6.7 季度 QA plug 收纳科目
 
 季度报告通常只披露合计数，明细科目覆盖弱于年报。`clean.py` 因此只在 quarterly 模式下，为 BS bucket 小计提供显式 QA plug 字段：
 
@@ -949,6 +1019,7 @@ python -m src.financial_expense_analyzer --ticker 002946.SZ --latest-only  # 只
 | yaml1 清洗报告 | `src/yaml1_cleaner.py` | 工作台 / 人 | 稳定 | `companies/{公司}/Agent/.modelking/yaml1_clean_report.json` |
 | DCF build 快照 | `src/forecast.py` | `src/workbench.py`（sensitivity） | 稳定 | `companies/{公司}/Agent/.modelking/forecast_build.json` |
 | DCF 运行清单 | `src/forecast.py` | 工作台 / 人 | 稳定 | `companies/{公司}/Agent/forecast/run_manifest.json` |
+| 年度核心指标速览 | `src/core_metrics_overview.py` | Agent / 人 / 后续脚本 | 稳定 | `companies/{公司}/Agent/core_metrics_overview.md/json/csv` |
 | 财务费用档案 | `src/financial_expense_analyzer.py` | `src/defaults_gen.py` | 稳定 | `companies/{公司}/Agent/financial_expense.yaml` |
 | 年报补数 override | `src/annual_report_reconciler.py` | `src/clean.py` | 稳定 | `companies/{公司}/Agent/recon/annual_report_overrides.json` |
 | 年报核对 evidence | `src/annual_report_reconciler.py` | 人 / 审计 | 稳定 | `companies/{公司}/Agent/recon/*_reconciliation.json` |
@@ -1013,9 +1084,11 @@ MKA/
 ├── src/                           # 核心 Python 源码
 │   ├── __init__.py                # 使 src 成为 package
 │   ├── init.py                    # 一键编排入口
-│   ├── webka.py                   # 网页端核心假设打包器：汇总源文件到 WEBCLAUDE/核心假设部分/
+│   ├── webka.py                   # 旧版网页端核心假设打包器：汇总源文件到 WEBCLAUDE/核心假设部分/
+│   ├── webload.py                 # 网页端 load 打包器：prepare 时间沙箱并汇总到 WEBCLAUDE/模型装载部分/
 │   ├── data_fetcher.py            # 阶段①：TuShare 拉取 + 标准化 + 入库
 │   ├── clean.py                   # 阶段②：EAV→宽表 + 配平校验 + clean 表写入（字段分类/resolve 从 field_registry import）
+│   ├── core_metrics_overview.py   # clean_annual → Agent/core_metrics_overview.* 年度事实速览
 │   ├── field_registry.py          # field_registry.yaml loader:三表字段元数据唯一真源(clean + workbench 同源)
 │   ├── field_registry.yaml        # 全程序会计科目唯一真源(分类/会计序/标签/resolve/sign/role)
 │   ├── report_downloader.py       # 巨潮资讯网年报 PDF + Markdown 批量下载
@@ -1063,6 +1136,7 @@ MKA/
 │       │   └── 其他材料/
 │       └── Agent/                 # 建模 Agent 的运行时与机器产物
 │           ├── data.db            # SQLite（raw_tushare/meta/clean_annual/clean_quarterly）
+│           ├── core_metrics_overview.md/json/csv
 │           ├── defaults.yaml      # YAML2 默认参数集（生成产物）
 │           ├── yaml1*.yaml        # compiler 输出的判断覆盖层
 │           ├── financial_expense.yaml
