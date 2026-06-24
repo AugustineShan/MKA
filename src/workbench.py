@@ -32,6 +32,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 import pandas as pd
+from src import app_config
 from src import field_registry as _registry
 from src.annual_report_utils import load_env, llm_api_key, llm_base_url, llm_model, llm_timeout_seconds
 from src.calc import (
@@ -41,11 +42,13 @@ from src.calc import (
     build_forecast_statements,
     value_from_statements,
 )
+from src.assumption_staleness import StaleAssumptionError, ensure_assumptions_fresh
 from src.company_paths import (
     COMPANIES_DIR as DEFAULT_COMPANIES_DIR,
     active_vore_dir,
     annual_reports_dir,
     collection_dir,
+    da_schedule_path,
     db_path as company_db_path,
     defaults_path as company_defaults_path,
     forecast_dir as company_forecast_dir,
@@ -55,9 +58,11 @@ from src.company_paths import (
     modelking_dir,
     official_breakdowns_dir,
     quarterly_reports_dir,
+    recon_dir,
     research_reports_dir,
 )
 from src.forecast import run_company_forecast
+from src.derived_metrics import DERIVED_METRICS_FILENAME, build_derived_metrics_from_frames
 from src.quarterly_tracker import (
     clear_override,
     compute_quarterly_view,
@@ -134,24 +139,135 @@ def _read_meta(company_dir: Path) -> dict[str, str]:
     return {str(key): str(value) for key, value in rows if value is not None}
 
 
+def _da_base_reported_dep(company_dir: Path, base_year: str) -> float | None:
+    """base 年现金流量表 PP&E 折旧(depr_fa_coga_dpba),与 forecast._maybe_roll_da_series 同源。"""
+    db_path = company_db_path(company_dir)
+    if not db_path.exists():
+        return None
+    try:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "select depr_fa_coga_dpba from clean_annual where period = ?", (str(base_year),)
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def _da_normalization(da_series: list | None, sched: dict) -> dict | None:
+    """重算终值归一化门(da_roll.normalization_gate);da_series 缺失→None。展示层不阻塞。"""
+    if not da_series:
+        return None
+    try:
+        from src.da_roll import normalization_gate
+        g = float(sched.get("ppe", {}).get("存量策略", {}).get("net_growth_rate", 0.0) or 0.0)
+        pg = float(sched.get("terminal", {}).get("perpetual_growth", 0.0) or 0.0)
+        passed, reason = normalization_gate(da_series, g, pg)
+        return {"passed": passed, "reason": reason}
+    except Exception as exc:  # 展示层不阻塞,诚实记错
+        return {"passed": None, "reason": f"normalization_gate error: {exc}"}
+
+
+def _da_view(company_dir: Path, base_period: str) -> dict[str, Any] | None:
+    """只读装配重资产排程展示数据。enabled/false/缺失 → None(前端不渲染 tab)。
+
+    用 yaml.safe_load 直读 da_schedule.yaml,不走 src.da_roll.load_da_schedule 的对齐校验
+    (那是 forecast 运行时硬校验;展示层在 base_year 错位时塞 align_warning 红字标注,不阻塞)。
+    """
+    sched_path = da_schedule_path(company_dir)
+    if not sched_path.exists():
+        return None
+    sched = _read_yaml(sched_path)
+    if not sched.get("enabled", False):
+        return None
+    base_year = sched.get("base_year")
+    base_year_str = str(base_year) if base_year is not None else base_period
+    align_warning = None
+    if base_year_str != str(base_period)[:4]:
+        align_warning = f"da_schedule.base_year={base_year} ≠ defaults.base_period={base_period}"
+
+    cats_in = sched.get("ppe", {}).get("categories", []) or []
+    cats: list[dict[str, Any]] = []
+    for c in cats_in:
+        gross = float(c.get("base_gross") or 0.0)
+        salv = float(c.get("salvage_rate") or 0.0)
+        life = float(c.get("life_years") or 0.0)
+        accum = float(c.get("base_accum_dep") or 0.0)
+        policy_dep = gross * (1 - salv) / life if life else 0.0
+        cats.append({
+            "name": c.get("name"),
+            "life_years": c.get("life_years"),
+            "salvage_rate": salv,
+            "base_gross": gross,
+            "base_accum_dep": accum,
+            "base_net": gross - accum,
+            "base_cip": float(c.get("base_cip") or 0.0),
+            "policy_dep": policy_dep,
+        })
+    policy_dep_total = sum(c["policy_dep"] for c in cats)
+    reported = _da_base_reported_dep(company_dir, base_year_str)
+    scale = (reported / policy_dep_total) if (reported is not None and policy_dep_total > 0) else None
+
+    # da_series:从 .modelking/forecast_params.yaml["da_series"] 透传
+    fp_path = modelking_dir(company_dir) / "forecast_params.yaml"
+    da_series: list | None = None
+    if fp_path.exists():
+        fp = _read_yaml(fp_path)
+        ds = fp.get("da_series")
+        if isinstance(ds, list):
+            da_series = ds
+
+    # facts:da_facts_latest.json 透传(原始单位元,展示层按需 ÷1e6)
+    facts_path = recon_dir(company_dir) / "da_facts_latest.json"
+    facts = _read_json(facts_path) if facts_path.exists() else None
+
+    return {
+        "enabled": True,
+        "base_year": base_year,
+        "align_warning": align_warning,
+        "stock_strategy": sched.get("ppe", {}).get("存量策略", {}) or {},
+        "categories": cats,
+        "scale": scale,
+        "base_reported_dep": reported,
+        "base_cip_to_fixed": sched.get("base_cip_to_fixed", {}) or {},
+        "expansion_plan": sched.get("expansion_plan", {}) or {},
+        "terminal": sched.get("terminal", {}) or {},
+        "da_series": da_series,
+        "normalization": _da_normalization(da_series, sched),
+        "facts": facts,
+    }
+
+
+def _base_period_for_company(company_dir: Path) -> str:
+    """读 defaults.yaml base_period;缺则返回空串(_da_view 仍装配,align_warning 会触发)。"""
+    defaults = _read_yaml(company_defaults_path(company_dir))
+    bp = defaults.get("base_period")
+    return str(bp) if bp else ""
+
+
 def _plain(value: Any) -> Any:
     if isinstance(value, dict) and "value" in value:
         return value["value"]
     return value
 
 
+def _companies_root() -> Path:
+    return app_config.get_companies_dir()
+
+
 def _company_dirs() -> list[Path]:
-    if not COMPANIES_DIR.exists():
+    companies_dir = _companies_root()
+    if not companies_dir.exists():
         return []
     return sorted(
-        [path for path in COMPANIES_DIR.iterdir() if path.is_dir() and COMPANY_DIR_RE.match(path.name)],
+        [path for path in companies_dir.iterdir() if path.is_dir() and COMPANY_DIR_RE.match(path.name)],
         key=lambda item: item.name,
     )
 
 
 def _company_dir(company_id: str) -> Path:
-    target = (COMPANIES_DIR / company_id).resolve()
-    companies_root = COMPANIES_DIR.resolve()
+    companies_root = _companies_root().resolve()
+    target = (companies_root / company_id).resolve()
     if not target.is_dir() or companies_root not in target.parents or not COMPANY_DIR_RE.match(target.name):
         raise HTTPException(status_code=404, detail=f"Company not found: {company_id}")
     return target
@@ -419,6 +535,17 @@ def _dcf_detail(company_dir: Path) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _derived_metrics(company_dir: Path) -> dict[str, Any] | None:
+    path = company_forecast_dir(company_dir) / DERIVED_METRICS_FILENAME
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(_read_text(path))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _cell(value: Any) -> str:
@@ -1398,7 +1525,7 @@ def _format_patch_value(value: Any) -> str:
         return str(value)
 
 
-def _format_ka_change_prompt(
+def _format_frontend_edit_prompt(
     *,
     company_name: str,
     core_path: str | None,
@@ -1409,13 +1536,13 @@ def _format_ka_change_prompt(
 ) -> str:
     editable = _editable_cells_by_pointer(yaml1_data)
     lines = [
-        f"请执行 `/ka`，基于当前核心假设.md 更新 {company_name} 的假设。",
+        f"/frontend-edit 进入前端编辑模式，基于当前核心假设.md 更新 {company_name} 的假设并更新DCF",
         "",
         "关键纪律：",
-        "- 修改人话权威层 `核心假设.md`，不要直接修改 yaml1。",
+        "- 修改人话权威层 `核心假设.md`（正文预测描述 + 末尾 knobs 块）。",
         "- 保持原有结构、历史事实、来源说明、业务线命名和口径说明。",
-        "- 同步更新正文里的预测描述，以及末尾机器自报 `knobs` 块。",
-        "- 修改完成后运行 `/comp` 重新编译 yaml1，并用正式 forecast 覆盖 Agent/forecast/。",
+        "- 同步定点更新 yaml1 对应旋钮值（小改不跑 compiler）。",
+        "- 跑 forecast 覆盖 Agent/forecast/。",
         "",
         f"核心假设路径：{core_path or '未找到'}",
         f"当前 yaml1 路径：{yaml1_path or '未找到'}",
@@ -1432,22 +1559,6 @@ def _format_ka_change_prompt(
         old_value = _format_patch_value(patch.get("old_value"))
         new_value = _format_patch_value(patch.get("new_value"))
         lines.append(f"- {label} ({path}) {year}: {old_value} -> {new_value}")
-    if preview_summary:
-        lines.extend(
-            [
-                "",
-                "试算结果摘要：",
-            ]
-        )
-        for key in ("per_share_value", "enterprise_value", "equity_value", "terminal_pv"):
-            if key in preview_summary:
-                lines.append(f"- {key}: {_format_patch_value(preview_summary.get(key))}")
-    lines.extend(
-        [
-            "",
-            "请把以上试算变化翻译成分析师语言，必要时补一句为什么这样调；不要把它写成机械 diff。",
-        ]
-    )
     return "\n".join(lines)
 
 
@@ -1546,8 +1657,18 @@ def _preview_response(
         if sheet
     ]
     is_sheet = next((sheet for sheet in statement_sheets if sheet.get("key") == "is"), None)
+    derived_metrics = build_derived_metrics_from_frames(
+        income_statement=result["income_statement"],
+        balance_sheet=result["balance_sheet"],
+        cash_flow=result["cash_flow"],
+        dcf_summary=result["summary"],
+        dcf_detail=result["dcf"],
+        source_files={"preview": "assumption-preview"},
+        warnings=[],
+    )
     return {
         "dcf_summary": result["summary"],
+        "derived_metrics": derived_metrics,
         "dcf_detail": _dcf_detail_from_dataframe(result["dcf"]),
         "statement_sheets": statement_sheets,
         "result_rows": _result_rows_from_statement_sheet(is_sheet),
@@ -1814,7 +1935,10 @@ def _material_files(company_dir: Path) -> list[dict[str, Any]]:
 
 
 def _annual_revenue_breakdown(company_dir: Path) -> list[dict[str, Any]]:
-    path = official_breakdowns_dir(company_dir) / "business_revenue_breakdown.csv"
+    breakdown_dir = official_breakdowns_dir(company_dir)
+    path = breakdown_dir / "business_revenue_breakdown_all.csv"
+    if not path.exists():
+        path = breakdown_dir / "business_revenue_breakdown.csv"
     if not path.exists():
         return []
 
@@ -1823,6 +1947,9 @@ def _annual_revenue_breakdown(company_dir: Path) -> list[dict[str, Any]]:
         rows.append(
             {
                 "year": int(_as_float(row.get("year"))),
+                "period": row.get("period") or f"{int(_as_float(row.get('year')))}A",
+                "period_type": row.get("period_type") or "annual",
+                "period_label": row.get("period_label") or "年度",
                 "dimension": row.get("dimension") or "",
                 "dimension_label": row.get("dimension_label") or "",
                 "item_name": row.get("item_name") or "",
@@ -1844,6 +1971,7 @@ def _annual_revenue_breakdown(company_dir: Path) -> list[dict[str, Any]]:
     rows.sort(
         key=lambda item: (
             -int(item["year"]),
+            0 if str(item.get("period_type")) == "annual" else 1,
             dimension_rank.get(str(item["dimension"]), 99),
             str(item["source_table"]),
             -(float(item["revenue_yuan"]) if item.get("revenue_yuan") is not None else 0.0),
@@ -1899,6 +2027,35 @@ def _company_summary(company_dir: Path) -> dict[str, Any]:
     }
 
 
+class SettingsPayload(BaseModel):
+    companies_dir: str | None = None
+    env: dict[str, str] | None = None
+    create_companies_dir: bool = False
+
+
+@app.get("/api/settings")
+def read_settings() -> dict[str, Any]:
+    return app_config.settings_payload()
+
+
+@app.put("/api/settings")
+def update_settings(payload: SettingsPayload) -> dict[str, Any]:
+    try:
+        return app_config.save_settings(
+            companies_dir=payload.companies_dir,
+            env=payload.env,
+            create_companies_dir=payload.create_companies_dir,
+        )
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/settings/validate")
+def validate_settings(payload: SettingsPayload) -> dict[str, Any]:
+    path = Path(payload.companies_dir).expanduser().resolve() if payload.companies_dir else app_config.get_companies_dir()
+    return app_config.validate_companies_dir(path)
+
+
 @app.get("/api/companies")
 def list_companies() -> list[dict[str, Any]]:
     return [_company_summary(path) for path in _company_dirs()]
@@ -1930,6 +2087,8 @@ def read_company(company_id: str) -> dict[str, Any]:
         "editable_assumptions": _editable_assumptions(yaml1_data) if yaml1_data else [],
         "yaml1_presentation": _yaml1_presentation_cache(company_dir),
         "dcf_summary": _forecast_summary(company_dir) or None,
+        "derived_metrics": _derived_metrics(company_dir),
+        "rating_report": app_config.rating_report_year_config(),
         "manifest": _manifest(company_dir) or None,
         "tables": tables,
         "statement_sheets": _statement_sheets(company_dir),
@@ -1938,6 +2097,7 @@ def read_company(company_id: str) -> dict[str, Any]:
         "quarterly_view": _optional_quarterly_for_company(company_dir, summary=summary),
         "annual_revenue_breakdown": _annual_revenue_breakdown(company_dir),
         "materials": _material_files(company_dir),
+        "da_view": _da_view(company_dir, base_period=_base_period_for_company(company_dir)),
     }
 
 
@@ -1948,12 +2108,271 @@ def regenerate_forecast(company_id: str) -> dict[str, Any]:
     ticker = summary.get("ticker")
     if not ticker:
         raise HTTPException(status_code=400, detail="defaults.yaml does not provide ticker")
-    run = run_company_forecast(ticker=str(ticker))
+    yaml1_path = _latest_yaml1(company_dir)
+    if not yaml1_path:
+        raise HTTPException(status_code=404, detail="yaml1_*.yaml was not found")
+    try:
+        run = run_company_forecast(
+            yaml1_path=yaml1_path,
+            defaults_path=company_defaults_path(company_dir),
+            clean_annual_path=company_db_path(company_dir),
+            output_dir=company_forecast_dir(company_dir),
+        )
+    except StaleAssumptionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "stale_assumption_requires_annual_update",
+                "message": str(exc),
+                "status": exc.status.as_dict(),
+            },
+        ) from exc
     return {
         "ok": True,
         "stdout": f"Written forecast: {run.output_dir}\nPer-share value: {run.summary['per_share_value']}",
         "stderr": "",
     }
+
+
+def _required_float(value: Any, label: str) -> float:
+    parsed = _number_or_none(_plain(value))
+    if parsed is None:
+        raise HTTPException(status_code=400, detail=f"{label} is missing")
+    return parsed
+
+
+def _optional_float(value: Any) -> float | None:
+    return _number_or_none(_plain(value))
+
+
+def _forecast_revenue_by_period(company_dir: Path) -> dict[int, float]:
+    rows = _read_csv_rows(company_forecast_dir(company_dir) / "forecast_is.csv")
+    out: dict[int, float] = {}
+    for row in rows:
+        period = row.get("period")
+        revenue = _number_or_none(row.get("revenue"))
+        if not period or revenue is None:
+            continue
+        try:
+            out[int(float(period))] = revenue
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _reverse_dcf_yaml1_yoy(params: dict[str, Any]) -> list[float]:
+    raw = get_path(params, "model.revenue_yoy")
+    if isinstance(raw, dict):
+        raw = raw.get("value")
+    if not isinstance(raw, list):
+        return []
+    values: list[float] = []
+    for item in raw:
+        value = _number_or_none(item)
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _reverse_dcf_base_nopat(company_dir: Path, base_period: str) -> float | None:
+    derived = _derived_metrics(company_dir)
+    annual = derived.get("annual", {}) if isinstance(derived, dict) else {}
+    base_row = annual.get(str(base_period)) if isinstance(annual, dict) else None
+    if isinstance(base_row, dict):
+        ebit = _optional_float(base_row.get("ebit"))
+        tax_rate = _optional_float(base_row.get("effective_tax_rate"))
+        if ebit is not None and tax_rate is not None:
+            return ebit * (1.0 - tax_rate)
+
+    rows = _read_csv_rows(company_forecast_dir(company_dir) / "full_is.csv")
+    for row in rows:
+        if str(row.get("period")) != str(base_period):
+            continue
+        operate_profit = _optional_float(row.get("operate_profit")) or 0.0
+        fin_exp = _optional_float(row.get("fin_exp")) or 0.0
+        total_profit = _optional_float(row.get("total_profit"))
+        income_tax = _optional_float(row.get("income_tax"))
+        if total_profit is not None and total_profit > 0 and income_tax is not None:
+            tax_rate = income_tax / total_profit
+        else:
+            tax_rate = 0.0
+        return (operate_profit + fin_exp) * (1.0 - tax_rate)
+    return None
+
+
+def _reverse_dcf_market_pack(
+    *,
+    derived: dict[str, Any] | None,
+    dcf_summary: dict[str, Any],
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    snapshot = derived.get("market_snapshot", {}) if isinstance(derived, dict) else {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    param_market = params.get("market", {}) if isinstance(params.get("market"), dict) else {}
+
+    total_shares = (
+        _optional_float(snapshot.get("total_shares"))
+        or _optional_float(dcf_summary.get("total_shares"))
+        or _optional_float(param_market.get("total_shares"))
+    )
+    close = _optional_float(snapshot.get("close")) or _optional_float(param_market.get("close"))
+    market_cap = _optional_float(snapshot.get("total_mv")) or _optional_float(param_market.get("total_mv"))
+    if market_cap is None and close is not None and total_shares is not None:
+        market_cap = close * total_shares
+    if market_cap is None or market_cap <= 0:
+        raise HTTPException(status_code=400, detail="Market cap is missing; refresh market data first")
+    if total_shares is None or total_shares <= 0:
+        raise HTTPException(status_code=400, detail="Total shares are missing")
+
+    net_debt = _optional_float(dcf_summary.get("net_debt"))
+    if net_debt is None:
+        net_debt = _required_float(param_market.get("net_debt"), "Net debt")
+
+    return {
+        "trade_date": snapshot.get("trade_date"),
+        "close": close,
+        "total_shares": total_shares,
+        "market_cap": market_cap,
+        "net_debt": net_debt,
+        "target_enterprise_value": market_cap + net_debt,
+    }
+
+
+def _reverse_dcf_profit_yoy(base_nopat: float, yearly: list[dict[str, Any]]) -> list[float]:
+    values: list[float] = []
+    previous = base_nopat
+    for row in yearly:
+        current = _optional_float(row.get("nopat"))
+        if current is None or abs(previous) < 1e-9:
+            break
+        values.append(current / previous - 1.0)
+        previous = current
+    return values
+
+
+def _reverse_dcf_base_pack(company_dir: Path) -> dict[str, Any]:
+    forecast_dir = company_forecast_dir(company_dir)
+    dcf_path = forecast_dir / "dcf_detail.csv"
+    forecast_is_path = forecast_dir / "forecast_is.csv"
+    summary_path = forecast_dir / "dcf_summary.json"
+    params_path = modelking_dir(company_dir) / "forecast_params.yaml"
+    missing = [path.name for path in (dcf_path, forecast_is_path, summary_path, params_path) if not path.exists()]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Run forecast first; missing {', '.join(missing)}")
+
+    dcf_summary = _forecast_summary(company_dir)
+    params = _read_yaml(params_path)
+    derived = _derived_metrics(company_dir)
+    market = _reverse_dcf_market_pack(derived=derived, dcf_summary=dcf_summary, params=params)
+    revenue_by_period = _forecast_revenue_by_period(company_dir)
+    dcf_rows = _dcf_detail(company_dir)
+    if not dcf_rows:
+        raise HTTPException(status_code=400, detail="Run forecast first; dcf_detail.csv is empty")
+    if not revenue_by_period:
+        raise HTTPException(status_code=400, detail="Run forecast first; forecast revenue is empty")
+
+    terminal_capex_da_ratio = _optional_float(dcf_summary.get("terminal_capex_da_ratio"))
+    if terminal_capex_da_ratio is None:
+        terminal_capex_da_ratio = _optional_float(get_path(params, "model.terminal_capex_da_ratio"))
+    if terminal_capex_da_ratio is None:
+        terminal_capex_da_ratio = DEFAULT_TERMINAL_CAPEX_DA_RATIO
+    yearly: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for index, row in enumerate(dcf_rows, start=1):
+        period = int(row["period"])
+        revenue = revenue_by_period.get(period)
+        if revenue is None or abs(revenue) < 1e-9:
+            warnings.append(f"Revenue missing or zero for {period}; margins set to 0")
+            revenue = 0.0
+        fcff = float(row.get("fcff") or 0.0)
+        nopat = float(row.get("nopat") or 0.0)
+        da = float(row.get("da") or 0.0)
+        fcff_margin = fcff / revenue if abs(revenue) >= 1e-9 else 0.0
+        nopat_margin = nopat / revenue if abs(revenue) >= 1e-9 else 0.0
+        da_margin = da / revenue if abs(revenue) >= 1e-9 else 0.0
+        fcff_to_nopat = fcff / nopat if abs(nopat) >= 1e-9 else 0.0
+        da_to_nopat = da / nopat if abs(nopat) >= 1e-9 else 0.0
+        yearly.append(
+            {
+                "index": index,
+                "period": str(period),
+                "revenue": revenue,
+                "fcff": fcff,
+                "nopat": nopat,
+                "da": da,
+                "fcff_margin": fcff_margin,
+                "nopat_margin": nopat_margin,
+                "da_margin": da_margin,
+                "terminal_fcff_margin": nopat_margin + da_margin * (1.0 - terminal_capex_da_ratio),
+                "fcff_to_nopat": fcff_to_nopat,
+                "da_to_nopat": da_to_nopat,
+                "terminal_fcff_to_nopat": 1.0 + da_to_nopat * (1.0 - terminal_capex_da_ratio),
+            }
+        )
+
+    summary = _company_summary(company_dir)
+    base_period = str(dcf_summary.get("base_period") or summary.get("base_period") or params.get("base_period") or "")
+    base_revenue = _optional_float(get_path(params, "income.revenue"))
+    yaml1_revenue_yoy = _reverse_dcf_yaml1_yoy(params)
+    if base_revenue is None and yaml1_revenue_yoy:
+        first_revenue = yearly[0]["revenue"]
+        base_revenue = first_revenue / (1.0 + yaml1_revenue_yoy[0])
+    if base_revenue is None:
+        raise HTTPException(status_code=400, detail="Base revenue is missing")
+    base_nopat = _reverse_dcf_base_nopat(company_dir, base_period)
+    if base_nopat is None and yearly:
+        first_nopat = _optional_float(yearly[0].get("nopat"))
+        first_growth = yaml1_revenue_yoy[0] if yaml1_revenue_yoy else None
+        if first_nopat is not None and first_growth is not None and first_growth > -1:
+            base_nopat = first_nopat / (1.0 + first_growth)
+    if base_nopat is None or abs(base_nopat) < 1e-9:
+        raise HTTPException(status_code=400, detail="Base NOPAT is missing")
+    current_model_profit_yoy = _reverse_dcf_profit_yoy(base_nopat, yearly)
+
+    return {
+        "schema_version": 1,
+        "company": {
+            "id": company_dir.name,
+            "name": summary.get("name") or dcf_summary.get("name") or company_dir.name.rsplit("_", 1)[0],
+            "ticker": summary.get("ticker") or dcf_summary.get("ticker"),
+            "base_period": base_period,
+        },
+        "market": market,
+        "defaults": {
+            "n1": 4,
+            "n2": 5,
+            "wacc": 0.08,
+            "terminal_growth": 0.025,
+            "reference_decay": 0.55,
+            "terminal_capex_da_ratio": terminal_capex_da_ratio,
+        },
+        "bounds": {
+            "n1": [1, 8],
+            "n2": [1, 10],
+            "growth": [-0.2, 0.4],
+            "wacc": [0.03, 0.2],
+            "terminal_growth": [-0.02, 0.06],
+            "reference_decay": [0, 1.2],
+        },
+        "base_model": {
+            "base_revenue": base_revenue,
+            "base_nopat": base_nopat,
+            "growth_metric": "nopat",
+            "forecast_years": int(dcf_summary.get("forecast_years") or len(yearly)),
+            "current_equity_value": _optional_float(dcf_summary.get("equity_value")),
+            "current_per_share_value": _optional_float(dcf_summary.get("per_share_value")),
+            "yaml1_revenue_yoy": yaml1_revenue_yoy,
+            "current_model_profit_yoy": current_model_profit_yoy,
+        },
+        "yearly": yearly,
+        "warnings": warnings,
+    }
+
+
+@app.get("/api/companies/{company_id}/reverse-dcf-base")
+def read_reverse_dcf_base(company_id: str) -> dict[str, Any]:
+    return _reverse_dcf_base_pack(_company_dir(company_id))
 
 
 class SensitivityPayload(BaseModel):
@@ -1987,6 +2406,12 @@ def assumption_preview(company_id: str, payload: AssumptionPreviewPayload) -> di
     patches = [_model_dump(item) for item in payload.patches]
     try:
         patched_yaml1 = _apply_assumption_patches(yaml1_data, patches)
+        ensure_assumptions_fresh(
+            yaml1_data=patched_yaml1,
+            yaml1_label=f"{yaml1_path}#preview",
+            defaults_path=company_defaults_path(company_dir),
+            clean_annual_path=company_db_path(company_dir),
+        )
         cleaned = clean_yaml1_data(
             patched_yaml1,
             company_defaults_path(company_dir),
@@ -2003,7 +2428,7 @@ def assumption_preview(company_id: str, payload: AssumptionPreviewPayload) -> di
                 DEFAULT_TERMINAL_CAPEX_DA_RATIO,
             ),
         )
-    except (Yaml1CleanError, CalcError, ValueError) as exc:
+    except (StaleAssumptionError, Yaml1CleanError, CalcError, ValueError) as exc:
         return {
             "dcf_summary": None,
             "dcf_detail": [],
@@ -2021,7 +2446,7 @@ def assumption_brief(company_id: str, payload: AssumptionBriefPayload) -> dict[s
     yaml1_path = _latest_yaml1(company_dir)
     core_path = _core_assumption(company_dir)
     yaml1_data = _read_yaml(yaml1_path) if yaml1_path else {}
-    prompt = _format_ka_change_prompt(
+    prompt = _format_frontend_edit_prompt(
         company_name=company_dir.name,
         core_path=str(core_path) if core_path else None,
         yaml1_path=str(yaml1_path) if yaml1_path else None,
