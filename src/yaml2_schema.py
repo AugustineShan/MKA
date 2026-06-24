@@ -27,6 +27,7 @@ DEFAULT_PLUG = "cash"
 
 REVIEW_FLAG_NEGATIVE_CASH = "negative_cash_from_plug"
 REVIEW_FLAG_CAPEX_BELOW_NON_PPE_AMORT = "capex_below_non_ppE_amort"
+REVIEW_FLAG_HEAVY_CAPEX_PCT_IGNORED = "heavy_capex_pct_ignored"
 
 REQUIRED_PATHS = [
     "version",

@@ -31,6 +31,7 @@ from src.defaults_gen import (
 from src.yaml2_schema import (
     DEFAULT_TERMINAL_CAPEX_DA_RATIO,
     REVIEW_FLAG_CAPEX_BELOW_NON_PPE_AMORT,
+    REVIEW_FLAG_HEAVY_CAPEX_PCT_IGNORED,
     REVIEW_FLAG_NEGATIVE_CASH,
     get_path,
     plain_value,
@@ -200,6 +201,15 @@ def build_income_statement(
     row["total_cogs"] = sum(row.get(field, 0.0) for field in cost_fields)
     row["total_opcost"] = row["total_cogs"]
 
+    # 重资产模式:PP&E 折旧从 oper_cost(经 gpm_ex_dep 已加回)拆出为显式 IS 行,
+    # 计入 total_cogs。三类摊销仍嵌在 oper_cost(与轻资产一致),不在此显式。
+    da_series = yaml2.get("da_series")
+    if da_series is not None:
+        ppe_dep = as_float(da_series[idx - 1]["ppe_depreciation"])
+        row["depreciation"] = ppe_dep
+        row["total_cogs"] += ppe_dep
+        row["total_opcost"] = row["total_cogs"]
+
     for field, value in op_adj.items():
         row[field] = value
     impact_fields = set(cost_abs) & IMPACT_ADJUSTMENT_FIELDS
@@ -275,22 +285,46 @@ def build_balance_sheet(
         + get_year_float(yaml2, "balance_sheet.use_right_asset_dep", idx)
         + get_year_float(yaml2, "balance_sheet.lt_amort_deferred_exp", idx)
     )
-    capex_ppe = capex - non_ppe_reinvest
-    if capex_ppe < 0.0:
+    da_series = yaml2.get("da_series")
+    heavy = da_series is not None
+    if heavy:
+        # 重资产:fix_assets/cip/ppe_dep/ppe_capex 全从 da_series 取,不滚 prev_fix*depr_rate。
+        # capex(合并现金口径,给 CF/FCFF)= da_series.ppe_capex + 三类 reinvest;≠ 任何转固额。
+        da_year = da_series[idx - 1]
+        depreciation = as_float(da_year["ppe_depreciation"])
+        capex = as_float(da_year["ppe_capex"]) + non_ppe_reinvest
         capex_ppe = 0.0
-        if review_flags is not None:
+        if capex_pct != 0.0 and review_flags is not None:
             review_flags.append(
                 {
-                    "code": REVIEW_FLAG_CAPEX_BELOW_NON_PPE_AMORT,
+                    "code": REVIEW_FLAG_HEAVY_CAPEX_PCT_IGNORED,
                     "severity": "warning",
                     "period": None,
-                    "message": "合并 capex 不足以覆盖非 PP&E 稳态再投资，PP&E 基数在缩，稳态假设吃紧",
-                    "value": capex - non_ppe_reinvest,
+                    "message": "重资产模式忽略 balance_sheet.capex_pct,PP&E capex 由 da_series.ppe_capex 驱动",
+                    "value": capex_pct,
                 }
             )
-    prev_fix = max(prev_bs.get("fix_assets", 0.0), prev_bs.get("fix_assets_total", 0.0), 0.0)
-    depreciation = prev_fix * depr_rate
-    row["fix_assets"] = max(prev_fix + capex_ppe - depreciation, 0.0)
+    else:
+        capex_ppe = capex - non_ppe_reinvest
+        if capex_ppe < 0.0:
+            capex_ppe = 0.0
+            if review_flags is not None:
+                review_flags.append(
+                    {
+                        "code": REVIEW_FLAG_CAPEX_BELOW_NON_PPE_AMORT,
+                        "severity": "warning",
+                        "period": None,
+                        "message": "合并 capex 不足以覆盖非 PP&E 稳态再投资，PP&E 基数在缩，稳态假设吃紧",
+                        "value": capex - non_ppe_reinvest,
+                    }
+                )
+        prev_fix = max(prev_bs.get("fix_assets", 0.0), prev_bs.get("fix_assets_total", 0.0), 0.0)
+        depreciation = prev_fix * depr_rate
+    if heavy:
+        row["fix_assets"] = as_float(da_year["fix_assets_net"])
+        row["cip"] = as_float(da_year["cip_balance"])
+    else:
+        row["fix_assets"] = max(prev_fix + capex_ppe - depreciation, 0.0)
     if prev_bs.get("fix_assets_total", 0.0) != 0.0:
         row["fix_assets_total"] = row["fix_assets"]
 
