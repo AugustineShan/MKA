@@ -2,20 +2,13 @@
 # 私人项目部署须知
 #   .env       — TuShare / GLM 等凭证与配置，纳入版本控制（私人仓库，切勿转公开）
 #   companies/ — 默认不纳入版本控制（体积大、含可再生二进制 PDF/db）。
-#                例外：新乳业_002946 作为测试公司整体纳入（除 公告/ 外）。
-#                其余公司部署时凭 .env 用 data_fetcher / report_downloader / clean 重新生成。
+#                部署时凭 .env 用 data_fetcher / report_downloader / clean 重新生成。
 # ====================================================================
 
 # Generated data directories
-# 用 companies/*（而非 companies/）才能用 ! 重新放行新乳业_002946 子目录
 companies/*
 .recon/
 annuals/
-
-# 测试公司新乳业_002946 整体纳入版本控制……
-!companies/新乳业_002946/
-# ……但 公告/ 不纳入（83M 可再生 PDF/Markdown，部署时用 report_downloader 重新下载）
-companies/新乳业_002946/公告/
 
 # ...but keep committed test fixtures even though annuals/ is ignored globally
 !tests/fixtures/company_002946/annuals/
