@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ import pandas as pd
 
 from src.calc import (
     as_float,
+    as_int,
     build_forecast_statements,
     value_from_statements,
     write_outputs,
@@ -40,7 +42,12 @@ from src.company_paths import (
     latest_yaml1_path,
     modelking_dir,
 )
-from src.yaml2_schema import DEFAULT_TERMINAL_CAPEX_DA_RATIO, get_path, write_yaml2
+from src.yaml2_schema import (
+    DEFAULT_TERMINAL_CAPEX_DA_RATIO,
+    get_path,
+    plain_value,
+    write_yaml2,
+)
 
 
 INTERNAL_DIR_NAME = ".modelking"
@@ -49,10 +56,95 @@ CLEAN_REPORT_FILENAME = "yaml1_clean_report.json"
 FORECAST_BUILD_FILENAME = "forecast_build.json"
 MANIFEST_FILENAME = "run_manifest.json"
 
+_log = logging.getLogger(__name__)
+
 
 def gpm_to_ex_dep(gpm: float, base_total_dep: float, revenue: float) -> float:
     """把 loaded gpm 转成 ex-depreciation gpm,保留 /ka 输入语义。"""
     return gpm + (base_total_dep / revenue if revenue else 0.0)
+
+
+def _apply_gpm_ex_dep(forecast_params: dict[str, Any], base_total_dep: float) -> None:
+    """重资产模式:把 income.gpm 逐年覆盖为 ex-depreciation gpm。
+
+    gpm_ex[t] = gpm_loaded[t] + base_total_dep / revenue[t],revenue[t] 由
+    base_revenue × ∏(1+revenue_yoy) 滚动得到。base 年因 da_roll 校准使
+    ppe_dep ≈ base_ppe_dep,故 EBIT_heavy(base) = EBIT_light(base)(会计中性)。
+    保留 /ka 常规 loaded-gpm 输入语义;折旧拆出为显式 IS 行在 calc 重资产分支
+    (Step 4)处理,此处只改 gpm 输入。
+    """
+    income = forecast_params.get("income")
+    gpm_arr = get_path(forecast_params, "income.gpm")
+    if not isinstance(gpm_arr, list) or not isinstance(income, dict):
+        return
+    base_revenue = as_float(get_path(forecast_params, "income.revenue"))
+    yoy_raw = get_path(forecast_params, "model.revenue_yoy")
+    yoy = plain_value(yoy_raw) if isinstance(yoy_raw, list) else []
+    revenue = base_revenue
+    new_arr: list[float] = []
+    for i, gpm_val in enumerate(gpm_arr):
+        y = plain_value(yoy[i]) if i < len(yoy) else 0.0
+        revenue *= 1.0 + as_float(y)
+        new_arr.append(as_float(gpm_val) + (base_total_dep / revenue if revenue else 0.0))
+    income["gpm"] = new_arr
+
+
+def _maybe_roll_da_series(
+    forecast_params: dict[str, Any],
+    company_dir: Path,
+    clean_annual_path: Path,
+) -> list[dict] | None:
+    """重资产模式注入:若 Agent/da_schedule.yaml 启用则滚动 da_series。
+
+    返回 da_series(并已就地完成 gpm→ex-dep 覆盖),否则 None(轻资产,bit-exact)。
+    DaAlignError(base 对齐失败)向上抛(硬错);其余异常记 warning 回退轻资产,
+    绝不阻塞 forecast。
+
+    base_ppe_dep = 现金流量表 depr_fa_coga_dpba(给 roll_da_series 校准存量折旧);
+    base_total_dep = ppe + 三类摊销(给 gpm→ex-dep 加回,与 IS 显式折旧行对齐)。
+    """
+    from src.company_paths import da_schedule_path
+    from src.da_roll import DaAlignError, load_da_schedule, roll_da_series
+
+    sched_path = da_schedule_path(company_dir)
+    base_period = str(get_path(forecast_params, "base_period"))
+    try:
+        sched = load_da_schedule(sched_path, base_period)
+    except DaAlignError:
+        raise
+    if sched is None:
+        return None
+
+    base_year = int(base_period[:4])
+    years = as_int(get_path(forecast_params, "model.forecast_years"))
+    base_bs_dict = get_path(forecast_params, "balance_sheet.base") or {}
+
+    try:
+        clean_annual = load_clean_annual(clean_annual_path)
+    except Exception as exc:  # noqa: BLE001 - fall back, do not block forecast.
+        _log.warning("da_roll: clean_annual load failed, falling back to light-asset: %s", exc)
+        return None
+    base_row = clean_annual.get(base_year, {})
+    base_ppe_dep = as_float(base_row.get("depr_fa_coga_dpba"))
+    base_total_dep = (
+        base_ppe_dep
+        + as_float(base_row.get("amort_intang_assets"))
+        + as_float(base_row.get("lt_amort_deferred_exp"))
+        + as_float(base_row.get("use_right_asset_dep"))
+    )
+
+    try:
+        da_series = roll_da_series(
+            sched, base_bs_dict, years, base_year, base_ppe_dep
+        )
+    except DaAlignError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - fall back, do not block forecast.
+        _log.warning("da_roll failed, falling back to light-asset: %s", exc)
+        return None
+
+    _apply_gpm_ex_dep(forecast_params, base_total_dep)
+    return da_series
 
 
 @dataclass
@@ -181,6 +273,9 @@ def run_company_forecast(
     manifest_path = out_dir / MANIFEST_FILENAME
 
     cleaned = clean_yaml1(yaml1, defaults, clean_annual)
+    da_series = _maybe_roll_da_series(cleaned.forecast_params, company_dir, clean_annual)
+    if da_series is not None:
+        cleaned.forecast_params["da_series"] = da_series
     write_yaml2(forecast_params_path, cleaned.forecast_params)
     write_json(clean_report_path, cleaned.report)
     mark_hidden(internal)
