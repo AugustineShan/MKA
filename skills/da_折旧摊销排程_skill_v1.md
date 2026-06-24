@@ -136,7 +136,7 @@ py -m src.forecast --ticker {代码}
 `forecast.py` 的 `_maybe_roll_da_series` 执行:
 1. `load_da_schedule`(base_year 对齐校验,`DaAlignError` 硬抛)。
 2. `roll_da_series`(存量稳态折旧 scale 校准 + 扩张 cohort 直线折旧 + cip 转固队列)→ 产 `da_series`(逐年 `ppe_depreciation`/`fix_assets_net`/`cip_balance`/`ppe_capex`/`ppe_capex_split`)。
-3. **gpm→ex-dep 覆盖**:`base 年总折旧从现金流量表取(`depr_fa_coga_dpba` + 三类),加回 gpm 隐含经营结构得 `gpm_ex_dep`,IS 用 `gpm_ex_dep` 算 oper_cost、以 `ppe_depreciation` + 三类作单一显式折旧行扣 ebit。保留 /ka 常规 gpm(loaded)输入语义。
+3. **gpm→ex-dep 覆盖(仅 PP&E 拆分)**:base 年 PP&E 折旧从现金流量表 `depr_fa_coga_dpba` 取(**仅 PP&E**;三类摊销仍嵌在 gpm 内,与轻资产一致——da_roll 只建模 PP&E),加回 gpm 得 `gpm_ex_dep = gpm + base_ppe_dep/revenue`。IS 用 `gpm_ex_dep` 算 oper_cost、以 `ppe_depreciation` 作**单一显式 PP&E 折旧行**扣 ebit(三类不显式,仍嵌 oper_cost)。base 年 da_roll 校准使 ppe_dep≈base_ppe_dep,故 EBIT_heavy(base)=EBIT_light(base)(会计中性)。保留 /ka 常规 gpm(loaded)输入语义。
 4. 注入 forecast_params → `calc.py` 重资产分支:BS 的 `fix_assets`/`cip` 从 da_series、CF/FCFF 的 capex/da 从 da_series、yaml1 的 `capex_pct` **禁用并告警**。
 
 若 da_roll 异常(非 `DaAlignError`)→ 自动 warning 回退轻资产 + 不阻塞 forecast。
