@@ -29,6 +29,22 @@ export const pipelineSide: { label: string; desc: string }[] = [
   { label: "/webka", desc: "把素材打包到 WEBCLAUDE，交给网页端模型跑。" },
 ];
 
+// 入口路由：根据手头是否有 Excel 完整模型，决定从哪一站开始。
+export const entryRoutes: { n: number; title: string; route: string; desc: string }[] = [
+  {
+    n: 1,
+    title: "已有 Excel 完整模型",
+    route: "直接 /ka",
+    desc: "手头已有券商或自建 Excel 完整模型，跳过业务预理解，直接进入核心假设生成。",
+  },
+  {
+    n: 2,
+    title: "没有 Excel 完整模型",
+    route: "先用 /brkd 预理解",
+    desc: "从零开始，先用 /brkd 读懂研报和纪要、建立业务预理解，再进入 /ka。",
+  },
+];
+
 export const quickstart: { step: number; cmd: string; desc: string }[] = [
   { step: 1, cmd: "/init 公司", desc: "拉 TuShare 数据、清洗、补年报，生成 Agent/data.db。" },
   { step: 2, cmd: "/brkd 公司", desc: "读研报和纪要，生成业务预理解。" },
@@ -42,7 +58,7 @@ export const skills: SkillCard[] = [
     name: "/init",
     tag: "支线",
     when: "新公司入库，或日常刷新数据。",
-    command: "/init 美的集团",
+    command: "/init 新乳业",
     input: "公司名、股票代码或完整 ticker，例如 000333.SZ。",
     output: "companies/{公司}/Agent/data.db，以及年报 PDF/MD。",
     next: "数据干净后跑 /brkd 做业务预理解，或直接进入 /ka。",

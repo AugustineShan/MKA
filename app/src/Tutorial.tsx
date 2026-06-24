@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { pipelineMain, pipelineSide, quickstart, skills } from "./tutorialContent";
+import { entryRoutes, pipelineMain, pipelineSide, quickstart, skills } from "./tutorialContent";
 import type { AppSettings, SettingsField, SettingsValidation } from "./types";
 
 type TutorialProps = {
@@ -148,99 +148,29 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
         {error ? <div className="error-banner">{error}</div> : null}
 
         {settings ? (
-          <>
-            <section className="config-status-bar">
-              <StatusDot ok={validationReady(settings.validation)} label={validationReady(settings.validation) ? "路径可用" : "路径待检查"} />
-              <StatusDot ok={dataConfigured} label={dataConfigured ? "TuShare 已配置" : "TuShare 未配置"} />
-              <StatusDot ok={llmConfigured} label={llmConfigured ? "大模型已配置" : "大模型未配置"} />
-              <span className="config-status-count">{settings.validation.company_count} 家公司</span>
-            </section>
-
-            <section className="tutorial-section config-section">
-              <div className="config-section-head">
-                <div>
-                  <h2>基础配置</h2>
-                  <p>这些配置写入本地 .env；密钥不会在前端回显。</p>
-                </div>
-                <code>{settings.env_path}</code>
-              </div>
-
-              <div className="config-field wide">
-                <label htmlFor="companies-dir">工作台路径</label>
-                <div className="config-input-row">
-                  <input
-                    id="companies-dir"
-                    onChange={(event) => {
-                      setSaved(false);
-                      setCompaniesDir(event.currentTarget.value);
-                    }}
-                    value={companiesDir}
-                  />
-                  <button className="secondary-button" disabled={validating} onClick={validatePath} type="button">
-                    {validating ? "检查中" : "检查"}
-                  </button>
-                </div>
-                <div className="config-help">
-                  默认是 {settings.default_companies_dir}。当前路径
-                  {settings.validation.exists ? " 已存在" : " 不存在"}，
-                  {settings.validation.is_dir ? " 是文件夹" : " 不是可用文件夹"}，
-                  {settings.validation.writable ? " 可写" : " 写入状态待确认"}。
-                </div>
-                {!settings.validation.exists ? (
-                  <label className="config-checkbox">
-                    <input checked={createDir} onChange={(event) => setCreateDir(event.currentTarget.checked)} type="checkbox" />
-                    保存时创建这个文件夹
-                  </label>
-                ) : null}
-              </div>
-
-              <div className="config-grid">
-                {fieldsBySection.map(([section, fields]) => (
-                  <div className="config-card" key={section}>
-                    <h3>{sectionTitle(section)}</h3>
-                    {fields.map((field) => (
-                      <label className="config-field" key={field.key}>
-                        <span>
-                          {field.label}
-                          {field.secret && field.masked ? <small>{field.masked}</small> : null}
-                        </span>
-                        <input
-                          autoComplete="off"
-                          onChange={(event) => {
-                            setSaved(false);
-                            setDrafts((current) => ({ ...current, [field.key]: event.currentTarget.value }));
-                          }}
-                          placeholder={field.secret ? "留空不修改" : field.placeholder}
-                          type={field.secret ? "password" : "text"}
-                          value={drafts[field.key] ?? ""}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                ))}
-              </div>
-
-              {ratingReport ? (
-                <div className="config-note-strip">
-                  评级报告模板默认展示 {ratingReport.data_start_year}-{ratingReport.data_end_year} 年取数区间，
-                  {ratingReport.forecast_start_year}-{ratingReport.forecast_end_year} 年预测区间；预测区间会自动加 E。
-                </div>
-              ) : null}
-
-              <div className="config-actions">
-                <button className="primary-button" disabled={saving} onClick={() => saveSettings(false)} type="button">
-                  {saving ? "保存中" : "保存配置"}
-                </button>
-                {!settings.validation.exists ? (
-                  <button className="secondary-button" disabled={saving} onClick={() => saveSettings(true)} type="button">
-                    创建并保存
-                  </button>
-                ) : null}
-                {saved ? <span className="config-saved">已保存，公司列表已刷新。</span> : null}
-              </div>
-            </section>
-          </>
+          <section className="config-status-bar">
+            <StatusDot ok={validationReady(settings.validation)} label={validationReady(settings.validation) ? "路径可用" : "路径待检查"} />
+            <StatusDot ok={dataConfigured} label={dataConfigured ? "TuShare 已配置" : "TuShare 未配置"} />
+            <StatusDot ok={llmConfigured} label={llmConfigured ? "大模型已配置" : "大模型未配置"} />
+            <span className="config-status-count">{settings.validation.company_count} 家公司</span>
+          </section>
         ) : null}
+
+        <section className="tutorial-section">
+          <h2>从哪开始</h2>
+          <div className="entry-routes">
+            {entryRoutes.map((r) => (
+              <div className="entry-route" key={r.n}>
+                <span className="entry-route-num">{r.n}</span>
+                <div className="entry-route-body">
+                  <strong className="entry-route-title">{r.title}</strong>
+                  <p className="entry-route-desc">{r.desc}</p>
+                  <code className="entry-route-cmd">{r.route}</code>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
 
         <section className="tutorial-section">
           <h2>管线全景</h2>
@@ -301,6 +231,92 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
             ))}
           </div>
         </section>
+
+        {settings ? (
+          <section className="tutorial-section config-section">
+            <div className="config-section-head">
+              <div>
+                <h2>基础配置</h2>
+                <p>这些配置写入本地 .env；密钥不会在前端回显。</p>
+              </div>
+              <code>{settings.env_path}</code>
+            </div>
+
+            <div className="config-field wide">
+              <label htmlFor="companies-dir">工作台路径</label>
+              <div className="config-input-row">
+                <input
+                  id="companies-dir"
+                  onChange={(event) => {
+                    setSaved(false);
+                    setCompaniesDir(event.currentTarget.value);
+                  }}
+                  value={companiesDir}
+                />
+                <button className="secondary-button" disabled={validating} onClick={validatePath} type="button">
+                  {validating ? "检查中" : "检查"}
+                </button>
+              </div>
+              <div className="config-help">
+                默认是 {settings.default_companies_dir}。当前路径
+                {settings.validation.exists ? " 已存在" : " 不存在"}，
+                {settings.validation.is_dir ? " 是文件夹" : " 不是可用文件夹"}，
+                {settings.validation.writable ? " 可写" : " 写入状态待确认"}。
+              </div>
+              {!settings.validation.exists ? (
+                <label className="config-checkbox">
+                  <input checked={createDir} onChange={(event) => setCreateDir(event.currentTarget.checked)} type="checkbox" />
+                  保存时创建这个文件夹
+                </label>
+              ) : null}
+            </div>
+
+            <div className="config-grid">
+              {fieldsBySection.map(([section, fields]) => (
+                <div className="config-card" key={section}>
+                  <h3>{sectionTitle(section)}</h3>
+                  {fields.map((field) => (
+                    <label className="config-field" key={field.key}>
+                      <span>
+                        {field.label}
+                        {field.secret && field.masked ? <small>{field.masked}</small> : null}
+                      </span>
+                      <input
+                        autoComplete="off"
+                        onChange={(event) => {
+                          setSaved(false);
+                          setDrafts((current) => ({ ...current, [field.key]: event.currentTarget.value }));
+                        }}
+                        placeholder={field.secret ? "留空不修改" : field.placeholder}
+                        type={field.secret ? "password" : "text"}
+                        value={drafts[field.key] ?? ""}
+                      />
+                    </label>
+                  ))}
+                </div>
+              ))}
+            </div>
+
+            {ratingReport ? (
+              <div className="config-note-strip">
+                评级报告模板默认展示 {ratingReport.data_start_year}-{ratingReport.data_end_year} 年取数区间，
+                {ratingReport.forecast_start_year}-{ratingReport.forecast_end_year} 年预测区间；预测区间会自动加 E。
+              </div>
+            ) : null}
+
+            <div className="config-actions">
+              <button className="primary-button" disabled={saving} onClick={() => saveSettings(false)} type="button">
+                {saving ? "保存中" : "保存配置"}
+              </button>
+              {!settings.validation.exists ? (
+                <button className="secondary-button" disabled={saving} onClick={() => saveSettings(true)} type="button">
+                  创建并保存
+                </button>
+              ) : null}
+              {saved ? <span className="config-saved">已保存，公司列表已刷新。</span> : null}
+            </div>
+          </section>
+        ) : null}
       </div>
     </div>
   );
