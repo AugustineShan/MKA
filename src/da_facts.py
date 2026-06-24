@@ -2,7 +2,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from src.annual_report_utils import find_line, compact_window, find_all_lines
+from src.annual_report_utils import find_line, compact_window, find_all_lines, call_llm
 
 PPE_DETAIL_FIELDS = ("gross", "accum_dep", "impairment", "net",
                      "period_increase", "period_decrease", "period_dep")
@@ -48,6 +48,30 @@ def locate_note_sections(lines: list[str]) -> dict[str, dict]:
             # 明细段 = 末次命中;after=120 覆盖账面原值/累计折旧/增减变动/减值准备多张子表
             sections[det_key] = compact_window(lines, hits[-1], before=5, after=120)
     return sections
+
+def extract_note(note_type: str, window_text: str, year: int,
+                 allowed_fields: set[str]) -> dict[str, Any]:
+    """LLM 从年报附注片段提取结构化数据,带 schema 守卫剥掉幻觉字段。
+
+    note_type: ppe_detail / cip_detail / intangible_detail / ppe_policy / intangible_policy
+    allowed_fields: 允许输出的数值字段集合(不含 name);schema 外字段一律删除。
+    返回 {"categories": [{"name": str, **{f: float|null}}]} 或 {"error": str, "categories": []}。
+    """
+    schema_hint = {"categories": [{"name": str, **{f: float for f in allowed_fields}}]}
+    messages = [{
+        "role": "user",
+        "content": f"从年报附注提取{note_type}(年份{year})。只填表不推算,抽不到留 null。"
+                   f"严格按 schema:{schema_hint}。不要输出 schema 外字段。附注片段:\n{window_text}"
+    }]
+    raw = call_llm(messages)
+    if raw.get("error"):
+        return {"error": raw["error"], "categories": []}
+    # 防脏守卫:剥掉 LLM 编造的 schema 外字段(保留 name + allowed_fields 内字段)
+    for cat in raw.get("categories", []):
+        for k in list(cat.keys()):
+            if k != "name" and k not in allowed_fields:
+                del cat[k]
+    return raw
 
 def validate_da_facts(facts: dict[str, Any]) -> list[str]:
     errors: list[str] = []
