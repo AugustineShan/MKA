@@ -50,6 +50,11 @@ FORECAST_BUILD_FILENAME = "forecast_build.json"
 MANIFEST_FILENAME = "run_manifest.json"
 
 
+def gpm_to_ex_dep(gpm: float, base_total_dep: float, revenue: float) -> float:
+    """把 loaded gpm 转成 ex-depreciation gpm,保留 /ka 输入语义。"""
+    return gpm + (base_total_dep / revenue if revenue else 0.0)
+
+
 @dataclass
 class ForecastRun:
     company_dir: Path
