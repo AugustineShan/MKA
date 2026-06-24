@@ -88,3 +88,16 @@ def test_cip_negative_raises():
                      cat_life=10, cat_salvage=0.05, start_year=2025)
     with pytest.raises(CipInvariantError, match="negative"):
         state.cip_balance(2025)
+
+
+# ---------------------------------------------------------------------------
+# Task 2.5: 有机增长 capex organic_capex
+# ---------------------------------------------------------------------------
+def test_organic_capex_zero_when_g0():
+    from src.da_roll import organic_capex
+    assert organic_capex(stock_net=1000.0, g=0.0) == 0.0
+
+
+def test_organic_capex_funds_stock_growth():
+    from src.da_roll import organic_capex
+    assert organic_capex(stock_net=1000.0, g=0.03) == pytest.approx(30.0)

@@ -145,3 +145,14 @@ def roll_cip(base_cip: float, base_cip_to_fixed: dict,
         raise CipInvariantError(f"base cip over-transferred: {cum_base} > {base_cip}")
     return CipState(base_cip, base_cip_to_fixed, expansion_capex_by_year,
                     expansion_cip_to_fixed, cat_life, cat_salvage, start_year)
+
+
+# ---------------------------------------------------------------------------
+# Task 2.5: 有机增长 capex
+# ---------------------------------------------------------------------------
+def organic_capex(stock_net: float, g: float) -> float:
+    """g>0 时存量有机增长需供资(g × stock_net),否则现金 plug 静默吸收 BS/CF。
+
+    g=0 时返回 0(无扩张);g<0 视为 0(收缩不产生 capex,降值走减值/报废)。
+    """
+    return g * stock_net if g > 0 else 0.0
