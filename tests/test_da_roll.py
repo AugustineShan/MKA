@@ -166,3 +166,28 @@ def test_roll_da_series_smoke_structure():
         assert row["fix_assets_net"] > 0
         # ppe_depreciation 含存量折旧(scale 校准后 > 0)
         assert row["ppe_depreciation"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Task 2.7: base 年校准 _calibrate_scale
+# ---------------------------------------------------------------------------
+def test_base_year_calibrates_to_reported_dep():
+    """policy_dep = 1000*(1-0.05)/20 = 47.5;披露 60 → scale = 60/47.5。"""
+    from src.da_roll import _calibrate_scale
+    cats = [{"name": "房屋", "base_gross": 1000, "base_accum_dep": 200,
+             "life_years": 20, "salvage_rate": 0.05}]
+    scale = _calibrate_scale(cats, base_reported_dep=60.0)
+    assert scale == pytest.approx(60.0 / 47.5)
+
+
+def test_calibrate_scale_empty_cats_returns_one():
+    """空 cats → policy_dep=0 → 返回 1.0(不除零)。"""
+    from src.da_roll import _calibrate_scale
+    assert _calibrate_scale([], base_reported_dep=60.0) == 1.0
+
+
+def test_calibrate_scale_zero_reported_returns_zero():
+    """reported=0 → scale=0(无折旧,合理退化)。"""
+    from src.da_roll import _calibrate_scale
+    cats = [{"name": "房屋", "base_gross": 1000, "life_years": 20, "salvage_rate": 0.05}]
+    assert _calibrate_scale(cats, base_reported_dep=0.0) == 0.0
