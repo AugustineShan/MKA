@@ -1,11 +1,20 @@
 ﻿---
 name: webcomp
-description: 一键打包网页端编译 yaml1 所需输入材料（含 yaml1compiler skill）到公司目录下的 WEBCLAUDE/yaml1编译部分/ 文件夹，方便在 Claude.ai 网页端上传后执行 compiler。
+description: "[DEPRECATED 已废弃] 旧版网页端 yaml1 compiler 打包器，不再使用。改用 /comp 本地编译。请勿调用。"
 argument-hint: [公司名或代码，如 新乳业 / 002946]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
 
-# /webcomp — 网页端 yaml1 compiler 打包器
+# /webcomp — ⚠️ 已废弃（DEPRECATED）
+
+> **此技能已废弃，不再维护，请勿调用。**
+>
+> 网页端打包流程已下线。yaml1 编译统一走本地 `/comp`（`py -m src.forecast --ticker ...`）。
+> 保留本文件仅为历史参考，后续可能删除。
+
+## 历史用途（仅供参考）
+
+把 `/comp` 编译 yaml1 所需的四份输入材料，以及网页端执行所需的 **yaml1compiler skill**，一键汇总到 `companies\{公司名}_{代码}\WEBCLAUDE\yaml1编译部分\`，供 Claude.ai 网页端上传后执行 compiler。
 
 把 `/comp` 编译 yaml1 所需的四份输入材料，以及网页端执行所需的 **yaml1compiler skill**，一键汇总到 `companies\{公司名}_{代码}\WEBCLAUDE\yaml1编译部分\`，供 Claude.ai 网页端上传后执行 compiler。
 

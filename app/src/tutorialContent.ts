@@ -26,7 +26,7 @@ export const pipelineMain: string[] = [
 export const pipelineSide: { label: string; desc: string }[] = [
   { label: "/init", desc: "刷新数据到 clean_annual / clean_quarterly，是全链路前置动作。" },
   { label: "/annual-update", desc: "年报发布后，把旧核心假设滚动到最新年份。" },
-  { label: "/webka / /webcomp", desc: "把素材打包到 WEBCLAUDE，交给网页端模型跑。" },
+  { label: "/webka", desc: "把素材打包到 WEBCLAUDE，交给网页端模型跑。" },
 ];
 
 export const quickstart: { step: number; cmd: string; desc: string }[] = [
@@ -102,16 +102,5 @@ export const skills: SkillCard[] = [
     output: "WEBCLAUDE/核心假设部分/。",
     next: "上传到网页端配合 skill 跑。",
     discipline: ["不读 PDF，只打包 MD。", "缺 MD 先生成。"],
-  },
-  {
-    key: "webcomp",
-    name: "/webcomp",
-    tag: "支线",
-    when: "需要把 yaml1 编译素材打包到 Claude.ai 网页端运行。",
-    command: "python -m src.webcomp 新乳业",
-    input: "核心假设、defaults.yaml、数据格式参考、yaml1 compiler skill。",
-    output: "WEBCLAUDE/yaml1编译部分/。",
-    next: "上传到网页端配合 yaml1compiler 跑。",
-    discipline: ["不读 PDF。", "defaults.yaml 是目标命名空间，不是输入假设。"],
   },
 ];
