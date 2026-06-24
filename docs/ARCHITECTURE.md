@@ -244,49 +244,6 @@ python -m src.webka 002946.SZ
 - `D:\MKA\.claude\skills\comp\SKILL.md`
 - `C:\Users\Sheld\.claude\skills\comp\SKILL.md`
 
-### 3.0c webcomp.py（网页端 yaml1 compiler 打包器）
-
-`webcomp.py` 是 `/comp` 的网页端前置打包器，用于把编译 yaml1 所需的四份输入材料一键汇总到 `companies/{公司}/WEBCLAUDE/yaml1编译部分/`，方便用户在 Claude.ai 网页端上传后执行 compiler。
-
-与 `/comp` 的区别：
-- `/comp` 在 Claude Code 本地执行，动态加载 `yaml1compiler` skill 后直接编译。
-- `/webcomp` 只负责**复制输入材料和执行 skill 到固定文件夹**，本身不执行编译；编译工作交给网页端完成。
-
-**复制清单**（按阅读顺序加序号前缀）：
-
-| 序号文件 | 来源 | 是否必须 |
-|---|---|---|
-| `00_核心假设.md` | `companies/{公司}/*核心假设*.md` 最新一份 | **必须**，不存在则报错 |
-| `01_defaults.yaml` | `companies/{公司}/Agent/defaults.yaml` | **必须**，不存在则报错 |
-| `02_数据格式参考.md` | `D:\MKA\docs\数据格式参考.md` | 可选 |
-| `03_yaml1算法模板契约.md` | `D:\MKA\docs\yaml1算法模板契约.md` | 可选 |
-| `04_yaml1compiler_skill_vN.md` | `D:\MKA\skills\` 最新版 | 可选，网页端执行时需要 |
-
-**关键纪律**：
-- 每次执行先清空 `WEBCLAUDE/yaml1编译部分/` 再复制，防止过时文件污染。
-- 所有 skill（包括 `/comp`、`/webcomp` 及 yaml1compiler）**均不读取 PDF**。
-- `defaults.yaml` 是目标命名空间；`docs/数据格式参考.md` 和 `docs/yaml1算法模板契约.md` 是只读契约。
-
-**退出码语义**：
-
-| 码 | 含义 |
-|----|------|
-| 0 | 成功 |
-| 2 | 输入无法解析为唯一公司目录 |
-| 3 | 缺少 `*核心假设*.md` 或 `defaults.yaml` |
-| 1 | 其他 IO 异常 |
-
-**CLI**：
-```bash
-python -m src.webcomp 新乳业
-python -m src.webcomp 002946
-python -m src.webcomp 002946.SZ
-```
-
-配套 skill 文件同时部署于：
-- `D:\MKA\.claude\skills\webcomp\SKILL.md`
-- `C:\Users\Sheld\.claude\skills\webcomp\SKILL.md`
-
 ### 3.1 data_fetcher.py（阶段①）
 
 | 组件 | 职责 |
@@ -457,6 +414,11 @@ companies/{公司名}_{代码}/
 ├── 纪要/
 ├── 收集/
 ├── 重要文件/
+├── 内部报告/
+│   ├── 评级报告/
+│   ├── 跟踪报告/
+│   ├── 深度报告/
+│   └── 其他材料/
 └── Agent/
     ├── data.db
     ├── defaults.yaml
@@ -1052,7 +1014,6 @@ MKA/
 │   ├── __init__.py                # 使 src 成为 package
 │   ├── init.py                    # 一键编排入口
 │   ├── webka.py                   # 网页端核心假设打包器：汇总源文件到 WEBCLAUDE/核心假设部分/
-│   ├── webcomp.py                 # 网页端 yaml1 compiler 打包器：汇总输入材料到 WEBCLAUDE/yaml1编译部分/
 │   ├── data_fetcher.py            # 阶段①：TuShare 拉取 + 标准化 + 入库
 │   ├── clean.py                   # 阶段②：EAV→宽表 + 配平校验 + clean 表写入（字段分类/resolve 从 field_registry import）
 │   ├── field_registry.py          # field_registry.yaml loader:三表字段元数据唯一真源(clean + workbench 同源)
@@ -1095,6 +1056,11 @@ MKA/
 │       ├── 纪要/
 │       ├── 收集/
 │       ├── 重要文件/
+│       ├── 内部报告/             # 内部研究报告：评级/跟踪/深度/其他
+│       │   ├── 评级报告/
+│       │   ├── 跟踪报告/
+│       │   ├── 深度报告/
+│       │   └── 其他材料/
 │       └── Agent/                 # 建模 Agent 的运行时与机器产物
 │           ├── data.db            # SQLite（raw_tushare/meta/clean_annual/clean_quarterly）
 │           ├── defaults.yaml      # YAML2 默认参数集（生成产物）
