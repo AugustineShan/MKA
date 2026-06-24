@@ -94,6 +94,7 @@ def _maybe_roll_da_series(
     forecast_params: dict[str, Any],
     company_dir: Path,
     clean_annual_path: Path,
+    gate_warnings: list[dict[str, Any]] | None = None,
 ) -> list[dict] | None:
     """重资产模式注入:若 Agent/da_schedule.yaml 启用则滚动 da_series。
 
@@ -103,9 +104,17 @@ def _maybe_roll_da_series(
 
     base_ppe_dep = 现金流量表 depr_fa_coga_dpba(仅 PP&E 折旧):同时给 roll_da_series
     校准存量折旧、给 gpm→ex-dep 加回。三类摊销不进 da_roll 也不进 gpm 加回。
+
+    gate_warnings:终值归一化门(da_roll.normalization_gate)若末年未归一,
+    把 warning dict 追加到此列表,由调用方并入 clean report warnings(不静默放行)。
     """
     from src.company_paths import da_schedule_path
-    from src.da_roll import DaAlignError, load_da_schedule, roll_da_series
+    from src.da_roll import (
+        DaAlignError,
+        load_da_schedule,
+        normalization_gate,
+        roll_da_series,
+    )
 
     sched_path = da_schedule_path(company_dir)
     base_period = str(get_path(forecast_params, "base_period"))
@@ -139,6 +148,17 @@ def _maybe_roll_da_series(
         return None
 
     _apply_gpm_ex_dep(forecast_params, base_ppe_dep)
+
+    # 终值双边归一化门(spec §9.4):末年 cip 应抽干 + Δda/da 接近稳态增速。
+    g = as_float(get_path(sched, "ppe.存量策略.net_growth_rate"))
+    perpetual = as_float(get_path(forecast_params, "model.terminal_growth"))
+    passed, reason = normalization_gate(da_series, g, perpetual)
+    if not passed and gate_warnings is not None:
+        gate_warnings.append({
+            "code": "da_not_normalized",
+            "severity": "warning",
+            "message": f"终值未归一化:{reason}(显式期 da 是瞬态,终值 da 不可信;建议拉长显式期或由分析师确认接受偏差)",
+        })
     return da_series
 
 
@@ -270,9 +290,13 @@ def run_company_forecast(
     manifest_path = out_dir / MANIFEST_FILENAME
 
     cleaned = clean_yaml1(yaml1, defaults, clean_annual)
-    da_series = _maybe_roll_da_series(cleaned.forecast_params, company_dir, clean_annual)
+    da_warnings: list[dict[str, Any]] = []
+    da_series = _maybe_roll_da_series(
+        cleaned.forecast_params, company_dir, clean_annual, da_warnings)
     if da_series is not None:
         cleaned.forecast_params["da_series"] = da_series
+    if da_warnings:
+        cleaned.report.setdefault("warnings", []).extend(da_warnings)
     write_yaml2(forecast_params_path, cleaned.forecast_params)
     write_json(clean_report_path, cleaned.report)
     mark_hidden(internal)
