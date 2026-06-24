@@ -2,7 +2,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from src.annual_report_utils import find_line, compact_window, find_all_lines, call_llm
+from pathlib import Path
+
+from src.annual_report_utils import (find_line, compact_window, find_all_lines,
+                                     call_llm, parallel_map, annual_markdown_path, write_json)
+from src.company_paths import recon_dir
 
 PPE_DETAIL_FIELDS = ("gross", "accum_dep", "impairment", "net",
                      "period_increase", "period_decrease", "period_dep")
@@ -95,13 +99,79 @@ def check_rollforward(year: int, category: str, vals: dict[str, Any]) -> dict[st
     return {"year": year, "category": category,
             "closed": abs(residual) < TOLERANCE_MILLION, "residual": residual}
 
+# extract_note 允许的数值字段白名单(roll-forward 全套 + 账面原值/累计折旧/减值/净值)
+_DA_ALLOWED_FIELDS = {"gross", "accum_dep", "impairment", "net",
+                      "period_increase", "period_decrease", "period_dep",
+                      "opening_net", "closing_net"}
+
+def extract_company_facts(company_dir: Path, base_year: int,
+                          years: list[int]) -> dict[str, Any]:
+    """并行从年报 Markdown 提取 DA 事实,合并落盘到 recon/da_facts_latest.json。
+
+    对 (note_type, year) 笛卡尔积并行跑 locate+extract,policy 类只取 base_year。
+    merge 分派:detail 类(ppe_detail/cip_detail/intangible_detail) → facts[nt][year],
+    policy 类(ppe_policy/intangible_policy) → facts["policy"][nt]。
+    """
+    jobs = [(nt, y) for nt in ("ppe_detail", "cip_detail", "intangible_detail")
+            for y in years]
+    jobs.append(("ppe_policy", base_year))
+    jobs.append(("intangible_policy", base_year))
+
+    def run(job: tuple[str, int]) -> dict[str, Any]:
+        nt, year = job
+        md = annual_markdown_path(company_dir, str(year))
+        if not md:
+            return {"note_type": nt, "year": year, "error": "md not found"}
+        lines = md.read_text(encoding="utf-8").splitlines()
+        sections = locate_note_sections(lines)
+        sec = sections.get(nt)
+        if not sec:
+            return {"note_type": nt, "year": year, "error": "section not located"}
+        return {"note_type": nt, "year": year,
+                "data": extract_note(nt, sec["text"], year, _DA_ALLOWED_FIELDS)}
+
+    results = parallel_map(run, jobs, max_workers=3)
+
+    facts: dict[str, Any] = {
+        "company": company_dir.name, "base_year": base_year,
+        "ppe_detail": {}, "cip_detail": {}, "intangible_detail": {},
+        "policy": {}, "roll_forward_checks": [],
+        "missing_flags": [], "evidence_anchors": [],
+    }
+    detail_keys = {"ppe_detail", "cip_detail", "intangible_detail"}
+    for r in results:
+        nt = r["note_type"]
+        year = r["year"]
+        if r.get("error"):
+            facts["missing_flags"].append(
+                {"note_type": nt, "year": year, "reason": r["error"]})
+            continue
+        data = r["data"]
+        if data.get("error"):
+            facts["missing_flags"].append(
+                {"note_type": nt, "year": year, "reason": f"llm: {data['error']}"})
+            continue
+        if nt in detail_keys:
+            facts[nt][str(year)] = data
+        else:  # policy 类
+            facts["policy"][nt] = data
+
+    facts["validation_errors"] = validate_da_facts(facts)
+
+    out = recon_dir(company_dir) / "da_facts_latest.json"
+    write_json(out, facts)
+    return facts
+
 def validate_da_facts(facts: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if "base_year" not in facts:
         errors.append("base_year missing")
     ppe_detail = facts.get("ppe_detail", {})
+    # missing_flags 可能含字段级 {year,category,field} 或 section 级 {note_type,year,reason} 两种形态;
+    # 只取字段级的做零填充校验,section 级的跳过(键不齐)。
     missing_flags = {(m["year"], m["category"], m["field"])
-                     for m in facts.get("missing_flags", [])}
+                     for m in facts.get("missing_flags", [])
+                     if "category" in m and "field" in m}
     for year, cats in ppe_detail.items():
         for cat, vals in cats.items():
             if not isinstance(vals, dict):
@@ -113,3 +183,17 @@ def validate_da_facts(facts: dict[str, Any]) -> list[str]:
                 if v == 0.0 and (year, cat, field) not in missing_flags:
                     errors.append(f"{year}.{cat}.{field}=0 without missing_flag (zero-fill forbidden)")
     return errors
+
+if __name__ == "__main__":
+    import argparse
+    from src.company_paths import find_company_dir
+
+    p = argparse.ArgumentParser(description="提取年报 DA 事实(固定资产/无形资产/在建工程)")
+    p.add_argument("--ticker", required=True, help="股票代码,如 002946.SZ")
+    p.add_argument("--base-year", type=int, required=True, help="基年,如 2024")
+    p.add_argument("--years", type=int, default=5, help="回溯年数(含基年),默认 5")
+    args = p.parse_args()
+
+    cd = find_company_dir(args.ticker)
+    yrs = list(range(args.base_year - args.years + 1, args.base_year + 1))
+    extract_company_facts(cd, args.base_year, yrs)
