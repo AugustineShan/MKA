@@ -136,7 +136,7 @@ LLM 读 `da_facts.json` 后,**先基于历史结构提一版完整默认假设**
 FCFF 维持部分净效果 = +存量稳态折旧(da 加回) − 维持性 capex(=存量稳态折旧) = 0
 ```
 
-> **注**:存量熔化是否"经 depreciation→EBIT→NOPAT 泄漏进终值、系统性高估估值",取决于 depreciation 是否进 IS(见 §9.2 open question)。当前 calc.py 里 depreciation 不进 IS(只在 CF/FCFF 加回),故熔化的主要危害是 BS 基数萎缩 + 与收入假设不自洽;若重资产模式让 ppe_depreciation 显式进 IS(gpm loaded),则另有经由 nopat 的终值泄漏路径。
+> **注**:存量熔化是否"经 depreciation→EBIT→NOPAT 泄漏进终值、系统性高估估值",取决于 depreciation 是否进 IS(见 §9.2 open question)。当前 calc.py 里 depreciation 不进 IS(只在 CF/FCFF 加回),故熔化的主要危害是 BS 基数萎缩 + 与收入假设不自洽;若重资产模式让 ppe_depreciation 显式进 IS(作为 IS 折旧行扣 ebit),则另有经由 nopat 的终值泄漏路径。
 
 ### 6.3 扩张性 capex:进 cip → 转固 → 显式 cohort
 - 扩张 capex 进 `cip_balance`(在建工程,不折旧)。
@@ -221,19 +221,19 @@ terminal_fcff = last_nopat + last_da × (1 − terminal_capex_da_ratio)
 terminal_value = terminal_fcff × (1 + g) / (wacc − g)
 ```
 
-### 9.2 "da 在终值抵消"是错觉(关键,依赖 gpm loaded 假设)
-ratio=1 时 `terminal_fcff = nopat`,da 表面消失。但 `nopat = ebit × (1−tax)`,ebit 已扣 da——**末年 da 的水平经由 nopat 全额流进终值**。da 没抵消,只是换了通道。
+### 9.2 "da 在终值抵消"是错觉(关键,依赖 da 是否显式进 IS)
+ratio=1 时 `terminal_fcff = nopat`,da 表面消失。但若 da 显式进 IS(作为折旧行扣 ebit),则 `nopat = ebit × (1−tax)` 已扣 da——**末年 da 的水平经由 nopat 全额流进终值**。da 没抵消,只是换了通道。
 
-**前提声明(重要)**:此论证依赖 **gpm 是含折旧的 loaded margin** 这一隐含语义。calc.py 里 `oper_cost = revenue × (1−gpm)`,`depreciation` 不进 IS(不扣 oper_cost/ebit/nopat),只在 CF/FCFF 加回。这只有在 gpm 已含折旧时才自洽(折旧进成本压低毛利,+da 在 CF 是非现金加回)。defaults_gen 的 gpm = 1 − oper_cost/revenue(历史毛利含历史折旧),符合 loaded 语义。
+**前提声明(重要)**:此论证的真实条件是 **da_roll 的 ppe_depreciation 显式进 IS**(作为 IS 折旧行扣 ebit→压 nopat),与 gpm 是否 loaded 无直接关系。当前 calc.py 里 `depreciation` **不进 IS**(`oper_cost = revenue × (1−gpm)`,depreciation 不扣 oper_cost/ebit/nopat),只在 CF/FCFF 加回——所以当前 calc.py 行为是"da 不进 IS",`last_da` 不流进 nopat,ratio=1 时 `last_da` 在 terminal_fcff 精确归零、对 terminal_value 无关。
 
-**若 gpm 视作折旧前毛利**(分析师显式设 ex-depreciation):ratio=1 时 `last_da` 在 `terminal_fcff` 中精确归零,`last_da` 水平对 terminal_value 无关,§9.3 的扭曲机制退化为仅 ratio<1 情形(`last_da×(1−ratio)` 直接进终值),且方向与 loaded 相反。
+> **gpm loaded 是另一回事**:defaults_gen 的 gpm = 1 − oper_cost/revenue,oper_cost 含历史折旧,故 gpm 确实 loaded(含历史折旧)。但 gpm 里隐含的是**固定的历史折旧**,不随 da_roll 的 cohort 瞬态变化——它压 nopat 但不传递 da_roll 末年 da 的瞬态。"da via nopat 流进终值"特指 **da_roll 的 ppe_depreciation 作为独立 IS 行**,这才是会随 cohort 瞬态变、从而扭曲终值的通道。
 
-**🔴 重资产模式 open question(留 planning,需用户定)**:da_roll 产出的 `ppe_depreciation`(分类别真实滚动)与 gpm(loaded,含历史折旧)里的折旧部分如何对齐——base 年应一致(都=历史折旧),预测年 da_roll 随 cohort 变化而 gpm 折旧部分不变,存在脱钩/双重计算风险。需在 planning 定:重资产模式是否让 `ppe_depreciation` 显式进 IS(gpm 改 ex-depreciation,IS 新增折旧行),还是保持 gpm loaded、接受 da_roll 与 gpm 折旧部分的小不一致。这决定 §9.3 机制是否成立、归一化门(§9.4)的保护范围。
+**🔴 重资产模式 open question(留 planning,需用户定)**:da_roll 产出的 `ppe_depreciation`(分类别真实滚动)是否显式进 IS?若**进 IS**(IS 新增折旧行扣 ebit),则 gpm 须相应改成 ex-depreciation(毛利不含折旧,否则 gpm 含的历史折旧与 ppe_depreciation 双重扣减),§9.3 的"da via nopat"机制成立。若**不进 IS**(保持当前 calc.py 语义,da 只在 CF/FCFF 加回),则 §9.3 机制退化为仅 ratio<1 情形,但 da_roll 的 ppe_depreciation 与 gpm 里隐含的历史折旧存在脱钩(gpm 折旧固定、da_roll 随 cohort 变)。两种选择的取舍 + gpm 语义联动,留 planning 由用户定。这决定 §9.3 机制是否成立、归一化门(§9.4)的保护范围。
 
 ### 9.3 末年 da 必须是稳态 da(真正脆弱点)
-① 修的是"末年 da 不萎缩"(存量永续更新保证)。但终值真正脆弱点是**末年 da 是不是稳态 da**——显式期在扩张半途结束时,末年 da 是爬坡瞬态值,会扭曲终值。扭曲的具体机制和方向取决于 IS 语义(见 §9.2):
-- **gpm loaded(ppe_depreciation 进 IS)**:末年 da 经由 nopat 流进终值。末年 da 偏低(cohort 未成熟)→ nopat 偏高 → 终值高估;末年 da 偏高(扩张峰值)→ nopat 偏低 → 终值低估。
-- **gpm ex-depreciation(当前 calc.py 语义,depreciation 不进 IS)**:ratio=1 时 last_da 在 terminal_fcff 精确归零,末年 da 水平不影响终值;仅 ratio<1 时 `last_da×(1−ratio)` 进终值,末年 da 偏低 → 该正项偏小 → 终值偏低(方向与 loaded 相反)。
+① 修的是"末年 da 不萎缩"(存量永续更新保证)。但终值真正脆弱点是**末年 da 是不是稳态 da**——显式期在扩张半途结束时,末年 da 是爬坡瞬态值,会扭曲终值。扭曲的具体机制和方向取决于 **da_roll 的 ppe_depreciation 是否显式进 IS**(见 §9.2):
+- **da 显式进 IS**(重资产模式让 ppe_depreciation 作为 IS 折旧行):末年 da 经由 nopat 流进终值。末年 da 偏低(cohort 未成熟)→ nopat 偏高 → 终值高估;末年 da 偏高(扩张峰值)→ nopat 偏低 → 终值低估。
+- **da 不进 IS**(当前 calc.py 语义):ratio=1 时 last_da 在 terminal_fcff 精确归零,末年 da 水平不影响终值;仅 ratio<1 时 `last_da×(1−ratio)` 进终值,末年 da 偏低 → 该正项偏小 → 终值偏低(方向与"da 进 IS"相反)。
 
 两种语义下末年 da 非稳态都会扭曲终值(方向不同),归一化门(§9.4)在两种语义下都有价值——保证末年 da 是稳态 da,消除瞬态扭曲。
 
