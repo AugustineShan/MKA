@@ -7,9 +7,9 @@ import type {
   CompanyDetail,
   CompanySummary,
   DcfDetailRow,
+  DerivedMetrics,
   EditableAssumption,
   EditableAssumptionCell,
-  FileItem,
   QuarterlyRow,
   QuarterlyView,
   StashBlock,
@@ -30,7 +30,6 @@ const tabs: Array<{ key: TabKey; label: string }> = [
   { key: "statements", label: "完整三表" },
   { key: "dcf", label: "DCF" },
   { key: "quarterly", label: "季度展示" },
-  { key: "materials", label: "Materials" },
 ];
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -65,11 +64,10 @@ async function previewAssumptions(companyId: string, patches: AssumptionPatch[])
 async function generateAssumptionBrief(
   companyId: string,
   patches: AssumptionPatch[],
-  previewSummary?: Record<string, unknown> | null,
 ): Promise<{ prompt: string }> {
   return apiPostJson<{ prompt: string }>(
     `/api/companies/${encodeURIComponent(companyId)}/assumption-brief`,
-    { patches, preview_summary: previewSummary ?? null },
+    { patches },
   );
 }
 
@@ -131,6 +129,11 @@ function formatYuan(value: unknown): string {
   if (abs >= 100_000_000) return `${formatNumber(value / 100_000_000, 1)} 亿`;
   if (abs >= 10_000) return `${formatNumber(value / 10_000, 1)} 万`;
   return formatNumber(value, 0);
+}
+
+function formatYiFromMillion(value: unknown, digits = 1): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "-";
+  return formatNumber(value / 100, digits);
 }
 
 function calcCagr(start: number, end: number | undefined, periods: number): number | null {
@@ -212,9 +215,9 @@ function StatusPill({ label, tone = "neutral" }: { label: string; tone?: "neutra
   return <span className={`status-pill ${tone}`}>{label}</span>;
 }
 
-function MetricCard({ label, value, caption }: { label: string; value: string; caption?: string }) {
+function MetricCard({ label, value, caption, tone = "default" }: { label: string; value: string; caption?: string; tone?: "default" | "highlight" }) {
   return (
-    <div className="metric-card">
+    <div className={`metric-card ${tone === "highlight" ? "metric-card-highlight" : ""}`}>
       <div className="eyebrow">{label}</div>
       <div className="metric-value">{value}</div>
       {caption ? <div className="metric-caption">{caption}</div> : null}
@@ -965,6 +968,31 @@ function makeMetricRow(
   };
 }
 
+function derivedAnnualMetricValues(derivedMetrics: DerivedMetrics | null | undefined, metric: string, visibleYears: string[]): Record<string, number | null> | null {
+  const annual = derivedMetrics?.annual;
+  if (!annual) return null;
+  let hasValue = false;
+  const values = visibleYears.reduce<Record<string, number | null>>((acc, year) => {
+    const value = annual[year]?.[metric];
+    acc[year] = typeof value === "number" && Number.isFinite(value) ? value : null;
+    if (acc[year] !== null) hasValue = true;
+    return acc;
+  }, {});
+  return hasValue ? values : null;
+}
+
+function makeDerivedMetricRow(
+  derivedMetrics: DerivedMetrics | null | undefined,
+  metric: string,
+  field: string,
+  label: string,
+  visibleYears: string[],
+  displayFormat: StatementDisplayFormat = "percent",
+): StatementDisplayRow | null {
+  const values = derivedAnnualMetricValues(derivedMetrics, metric, visibleYears);
+  return values ? makeMetricRow(field, label, values, displayFormat) : null;
+}
+
 function hasNonZeroInYears(row: StatementRow | undefined, years: string[]): boolean {
   if (!row) return false;
   return years.some((year) => {
@@ -979,7 +1007,7 @@ function shouldUseComboFallback(row: StatementRow, rowMap: Map<string, Statement
   return !splitRows.length || !splitRows.some((splitRow) => hasNonZeroInYears(splitRow, visibleYears));
 }
 
-function buildStatementDisplayRows(sheet: StatementSheet, showZeroRows: boolean, showTechnicalRows: boolean, visibleYears: string[]): StatementDisplayRow[] {
+function buildStatementDisplayRows(sheet: StatementSheet, showZeroRows: boolean, showTechnicalRows: boolean, visibleYears: string[], derivedMetrics?: DerivedMetrics | null): StatementDisplayRow[] {
   const rowMap = new Map(sheet.rows.map((row) => [row.field, row]));
   const hidden = STATEMENT_HIDDEN_ROWS[sheet.key] ?? new Set<string>();
   const relocateAfter = STATEMENT_RELOCATE_AFTER[sheet.key] ?? {};
@@ -1019,6 +1047,25 @@ function buildStatementDisplayRows(sheet: StatementSheet, showZeroRows: boolean,
       if (!row || (!showZeroRows && row.is_zero)) return;
       metricRowsByAnchor.set(anchor, [...(metricRowsByAnchor.get(anchor) ?? []), row]);
     };
+    const addDerived = (anchor: string, metric: string, field: string, label: string, displayFormat: StatementDisplayFormat = "percent") => {
+      addMetric(anchor, makeDerivedMetricRow(derivedMetrics, metric, field, label, visibleYears, displayFormat));
+    };
+    if (derivedMetrics?.annual) {
+      if (revenue) addDerived(revenue.field, "revenue_yoy", "revenue_yoy_display", "收入同比", "signedPercent");
+      if (operCost && revenue) addDerived("oper_cost", "gross_margin", "gross_margin_display", "毛利率");
+      addDerived("sell_exp", "sell_exp_rate", "sell_exp_rate_display", "销售费用率");
+      addDerived("admin_exp", "admin_exp_rate", "admin_exp_rate_display", "管理费用率");
+      addDerived("rd_exp", "rd_exp_rate", "rd_exp_rate_display", "研发费用率");
+      addDerived("fin_exp", "fin_exp_rate", "fin_exp_rate_display", "财务费用率");
+      if (totalCogs) addDerived("total_cogs", "total_cogs_rate", "total_cogs_rate_display", "营业总成本率");
+      if (operateProfit) addDerived("operate_profit", "operate_margin", "operate_margin_display", "营业利润率");
+      if (totalProfit) addDerived("total_profit", "total_profit_margin", "total_profit_margin_display", "利润总额率");
+      if (incomeTax && totalProfit) addDerived("income_tax", "effective_tax_rate", "income_tax_rate_display", "所得税率");
+      if (netIncome) {
+        addDerived("n_income", "n_income_margin", "net_margin_display", "净利率");
+        addDerived("n_income", "n_income_yoy", "n_income_yoy_display", "净利润同比", "signedPercent");
+      }
+    } else {
     const revValues = revenue?.values ?? {};
     const ratioToRevenue = (row?: StatementRow) =>
       visibleYears.reduce<Record<string, number | null>>((acc, year) => {
@@ -1051,6 +1098,7 @@ function buildStatementDisplayRows(sheet: StatementSheet, showZeroRows: boolean,
       addMetric("n_income", makeMetricRow("net_margin_display", "净利率", ratioToRevenue(netIncome)));
       addMetric("n_income", makeMetricRow("n_income_yoy_display", "净利润同比", calcYoy(netIncome.values, visibleYears), "signedPercent"));
     }
+    }
   }
 
   const out: StatementDisplayRow[] = [];
@@ -1082,13 +1130,13 @@ function formatStatementCell(value: number | null | undefined, displayFormat: St
   return formatNumber(value);
 }
 
-function FullStatementTable({ sheet, basePeriod, showZeroRows, showTechnicalRows, years }: { sheet: StatementSheet; basePeriod: string; showZeroRows: boolean; showTechnicalRows: boolean; years?: string[] }) {
+function FullStatementTable({ sheet, basePeriod, showZeroRows, showTechnicalRows, years, derivedMetrics }: { sheet: StatementSheet; basePeriod: string; showZeroRows: boolean; showTechnicalRows: boolean; years?: string[]; derivedMetrics?: DerivedMetrics | null }) {
   const visibleYears = years ?? sheet.years;
   const historyYears = useMemo(() => {
     const base = Number(basePeriod);
     return new Set(visibleYears.filter((y) => (Number(y) || 0) <= base));
   }, [visibleYears, basePeriod]);
-  const rows = useMemo(() => buildStatementDisplayRows(sheet, showZeroRows, showTechnicalRows, visibleYears), [sheet, showZeroRows, showTechnicalRows, visibleYears]);
+  const rows = useMemo(() => buildStatementDisplayRows(sheet, showZeroRows, showTechnicalRows, visibleYears, derivedMetrics), [sheet, showZeroRows, showTechnicalRows, visibleYears, derivedMetrics]);
   const keyRows = STATEMENT_KEY_ROWS[sheet.key] ?? new Set<string>();
   const yearLabel = (year: string) => (historyYears.has(year) ? year : `${year}E`);
   return (
@@ -1149,7 +1197,7 @@ type AxisRow = {
   editablePath?: string;
   // int=整数金额(百万元) · num2=2位小数(参考项通用) · decimal=小数比率×100+%(旋钮) ·
   // signedDecimal=带符号同比% · volume=1位小数(万吨)
-  format?: "int" | "num2" | "decimal" | "signedDecimal" | "volume";
+  format?: "int" | "num2" | "decimal" | "decimal1" | "signedDecimal" | "volume";
 };
 
 type AssumptionInlineEdit = {
@@ -1171,6 +1219,8 @@ function formatAxisCell(v: number | null | undefined, format: AxisRow["format"])
   switch (format) {
     case "decimal":
       return formatPercent(v, 2);
+    case "decimal1":
+      return formatPercent(v, 1);
     case "signedDecimal":
       return formatSignedPercent(v, 1);
     case "num2":
@@ -1330,15 +1380,21 @@ function UnifiedYearTable({
                           <div className="assumption-inline-editor">
                             <input
                               autoFocus
+                              onBlur={(event) => {
+                                if (event.currentTarget.dataset.cancel === "true") return;
+                                onCommitInlineEdit?.(editable.assumption, editable.cell);
+                              }}
                               onChange={(event) => onInlineEditChange?.(event.currentTarget.value)}
                               onKeyDown={(event) => {
                                 if (event.key === "Enter") onCommitInlineEdit?.(editable.assumption, editable.cell);
-                                if (event.key === "Escape") onCancelInlineEdit?.();
+                                if (event.key === "Escape") {
+                                  event.currentTarget.dataset.cancel = "true";
+                                  onCancelInlineEdit?.();
+                                }
                               }}
                               type="text"
                               value={inlineEdit?.raw ?? ""}
                             />
-                            <button onClick={() => onCommitInlineEdit?.(editable.assumption, editable.cell)} type="button">OK</button>
                           </div>
                         ) : editable ? (
                           <button
@@ -1369,8 +1425,14 @@ function UnifiedYearTable({
 
 // ── 区域分组构建器 ──
 
+function displayKnobLabel(label: string, path: string): string {
+  const cleaned = label.replace(/^#/, "").replace(/\(.*\)$/, "").replace(/^(减|加):/, "").trim() || path;
+  if (path.startsWith("income.cost_rates.") && !cleaned.endsWith("率")) return `${cleaned}率`;
+  return cleaned;
+}
+
 function knobLabel(k: AssumptionsKnob): string {
-  return k.src.replace(/^#/, "").replace(/\(.*\)$/, "").trim() || k.path;
+  return displayKnobLabel(k.src, k.path);
 }
 function knobIsRate(path: string): boolean {
   return path.includes("gpm") || path.includes("cost_rates") || path.includes("tax_rate") || path.includes("minority");
@@ -1418,6 +1480,49 @@ function profitRowsForRevenueBlock(
   ];
 }
 
+function historicalAssumptionValues(path: string, sheet: StatementSheet | undefined, baseYear: number): Record<string, number | null> {
+  const values: Record<string, number | null> = {};
+  if (!sheet || !baseYear) return values;
+  const pathParts = path.split(".");
+  const directField = path.startsWith("income.") ? pathParts[pathParts.length - 1] : null;
+  for (const year of sheet.years) {
+    if (Number(year) > baseYear) continue;
+    const revenue = statementValue(sheet, ["revenue", "total_revenue"], year);
+
+    if (path === "income.gpm") {
+      const cost = statementValue(sheet, ["oper_cost"], year);
+      values[year] = typeof revenue === "number" && revenue !== 0 && typeof cost === "number" ? (revenue - cost) / revenue : null;
+      continue;
+    }
+
+    if (path.startsWith("income.cost_rates.")) {
+      const field = path.slice("income.cost_rates.".length);
+      const cost = statementValue(sheet, [field], year);
+      values[year] = typeof revenue === "number" && revenue !== 0 && typeof cost === "number" ? cost / revenue : null;
+      continue;
+    }
+
+    if (path === "income.effective_tax_rate") {
+      const tax = statementValue(sheet, ["income_tax"], year);
+      const profit = statementValue(sheet, ["total_profit"], year);
+      values[year] = typeof tax === "number" && typeof profit === "number" && profit !== 0 ? tax / profit : null;
+      continue;
+    }
+
+    if (path === "income.minority_ratio") {
+      const minority = statementValue(sheet, ["minority_gain"], year);
+      const netIncome = statementValue(sheet, ["n_income"], year);
+      values[year] = typeof minority === "number" && typeof netIncome === "number" && netIncome !== 0 ? minority / netIncome : null;
+      continue;
+    }
+
+    if (directField) {
+      values[year] = statementValue(sheet, [directField], year);
+    }
+  }
+  return values;
+}
+
 const REVENUE_DRIVER_LABELS: Record<string, string> = {
   volume: "销量增速",
   price: "吨价增速",
@@ -1450,7 +1555,7 @@ function revenueDriverAxisRow(row: EditableAssumption, segmentName: string): Axi
     muted: true,
     driver: true,
     editablePath: row.path,
-    format: editableAxisFormat(row),
+    format: editableIsGrowth(row) ? "decimal1" : editableAxisFormat(row),
   };
 }
 
@@ -1529,11 +1634,13 @@ function buildRevenueGroups(
   return groups;
 }
 
-function buildAssumptionsGroups(view: Yaml1AssumptionsView): AxisGroup[] {
+function buildAssumptionsGroups(view: Yaml1AssumptionsView, fullStatementSheets?: StatementSheet[]): AxisGroup[] {
+  const fullIs = fullStatementSheets?.find((s) => s.key === "is");
+  const baseYear = Number(view.base_period);
   return view.sections.map((sec) => ({
     title: sec.title,
     rows: sec.knobs.map((k) => {
-      const values: Record<string, number | null> = {};
+      const values: Record<string, number | null> = historicalAssumptionValues(k.path, fullIs, baseYear);
       view.years.forEach((y, i) => { values[y] = k.values[i] ?? null; });
       return { label: knobLabel(k), values, note: k.note, override: k.is_override, bold: k.is_override, editablePath: k.path, format: knobIsRate(k.path) ? "decimal" : "int" };
     }),
@@ -1564,14 +1671,14 @@ function editablePointer(row: EditableAssumption, year: string): string | null {
 
 function editableDisplayValue(row: EditableAssumption, value: number | null): string {
   if (value == null) return "";
-  if (row.format === "percent") return formatPercent(value, 2);
+  if (editableIsPercent(row)) return formatPercent(value, editableIsGrowth(row) ? 1 : 2);
   if (row.format === "integer") return formatNumber(value, 0);
   return formatNumber(value, 2);
 }
 
 function editableInputValue(row: EditableAssumption, value: number | null): string {
   if (value == null) return "";
-  const displayValue = row.format === "percent" ? value * 100 : value;
+  const displayValue = editableIsPercent(row) ? value * 100 : value;
   return `${Number(displayValue.toFixed(6))}`;
 }
 
@@ -1580,7 +1687,7 @@ function parseEditableInput(row: EditableAssumption, raw: string): number | null
   if (trimmed === "") return null;
   const parsed = Number(trimmed.replace(/,/g, "").replace(/%$/, ""));
   if (!Number.isFinite(parsed)) return null;
-  return row.format === "percent" ? parsed / 100 : parsed;
+  return editableIsPercent(row) ? parsed / 100 : parsed;
 }
 
 function editableCellForPeriod(row: EditableAssumption, period: string): EditableAssumptionCell | undefined {
@@ -1604,9 +1711,17 @@ function editablePeriods(rows: EditableAssumption[]): string[] {
 }
 
 function editableAxisFormat(row: EditableAssumption): AxisRow["format"] {
-  if (row.format === "percent") return "decimal";
+  if (editableIsPercent(row)) return "decimal";
   if (row.format === "integer") return "int";
   return "num2";
+}
+
+function editableIsPercent(row: EditableAssumption): boolean {
+  return row.format === "percent" || row.unit === "pct" || row.family === "yoy";
+}
+
+function editableIsGrowth(row: EditableAssumption): boolean {
+  return row.family === "yoy" || row.path.endsWith(".revenue_yoy") || row.path.endsWith(".projection");
 }
 
 function buildEditableAxisGroups(editable: EditableAssumption[], representedPaths: Set<string>): AxisGroup[] {
@@ -1621,7 +1736,7 @@ function buildEditableAxisGroups(editable: EditableAssumption[], representedPath
       const values: Record<string, number | null> = {};
       for (const cell of row.cells) values[cell.year] = cell.value;
       return {
-        label: row.label,
+        label: displayKnobLabel(row.label, row.path),
         values,
         note: [row.path, row.src, row.note].filter(Boolean).join("\n"),
         editablePath: row.path,
@@ -1776,14 +1891,14 @@ const ANNUAL_SOURCE_LABELS: Record<string, string> = {
   business_profitability_yoy_split: "经营情况",
 };
 
-const ANNUAL_SERIES_METRICS = [
+const ANNUAL_SERIES_ROWS = [
   { key: "revenue_yuan", label: "收入" },
   { key: "revenue_pct", label: "占比" },
   { key: "revenue_yoy_pct", label: "同比" },
   { key: "gross_margin_pct", label: "毛利率" },
 ] as const;
 
-type AnnualSeriesMetric = (typeof ANNUAL_SERIES_METRICS)[number]["key"];
+type AnnualSeriesMetric = (typeof ANNUAL_SERIES_ROWS)[number]["key"];
 
 function normalizeDisclosureName(value: string): string {
   return value.replace(/[（）()及与和、/\\\s]/g, "").toLowerCase();
@@ -1844,43 +1959,61 @@ function AnnualRevenueDisclosure({
   rows?: AnnualRevenueBreakdownRow[];
   modelSegments: Yaml1RevenueSegment[];
 }) {
-  const allRows = rows ?? [];
+  const rawRows = rows ?? [];
+  const availablePeriodTypes = useMemo(
+    () =>
+      [
+        { key: "annual", label: "年度" },
+        { key: "h1", label: "半年度" },
+      ].filter((period) => rawRows.some((row) => (row.period_type ?? "annual") === period.key)),
+    [rawRows],
+  );
+  const [periodType, setPeriodType] = useState<"annual" | "h1">("annual");
+  useEffect(() => {
+    if (availablePeriodTypes.length && !availablePeriodTypes.some((period) => period.key === periodType)) {
+      setPeriodType(availablePeriodTypes[0].key as "annual" | "h1");
+    }
+  }, [availablePeriodTypes, periodType]);
+  const allRows = useMemo(
+    () => rawRows.filter((row) => (row.period_type ?? "annual") === periodType),
+    [rawRows, periodType],
+  );
   const years = useMemo(() => [...new Set(allRows.map((row) => row.year))].sort((a, b) => b - a), [allRows]);
   const seriesYears = useMemo(() => [...years].sort((a, b) => a - b), [years]);
-  const [activeYear, setActiveYear] = useState<number | null>(years[0] ?? null);
-  const [viewMode, setViewMode] = useState<"snapshot" | "series">("series");
-  const [seriesMetric, setSeriesMetric] = useState<AnnualSeriesMetric>("revenue_yuan");
-
-  useEffect(() => {
-    if (!years.length) {
-      setActiveYear(null);
-      return;
-    }
-    setActiveYear((current) => (current && years.includes(current) ? current : years[0]));
-  }, [years]);
-
-  const yearRows = useMemo(() => allRows.filter((row) => row.year === activeYear), [allRows, activeYear]);
+  const structureYears = useMemo(() => years.slice(0, 3), [years]);
+  const [viewMode, setViewMode] = useState<"structure" | "series">("series");
   const availableDimensions = useMemo(
     () => ANNUAL_DIMENSIONS.filter((dimension) => allRows.some((row) => row.dimension === dimension.key)),
     [allRows],
   );
-  const [activeDimension, setActiveDimension] = useState<string>("product");
-
-  useEffect(() => {
-    if (!availableDimensions.length) return;
-    setActiveDimension((current) =>
-      availableDimensions.some((dimension) => dimension.key === current) ? current : availableDimensions[0].key,
-    );
-  }, [availableDimensions]);
-
-  const visibleRows = useMemo(
+  const activeDimensionDef = useMemo(
+    () => availableDimensions.find((dimension) => dimension.key === "product") ?? availableDimensions[0] ?? { key: "product", label: "披露口径" },
+    [availableDimensions],
+  );
+  const activeDimension = activeDimensionDef.key;
+  const activeLabel = activeDimensionDef.label;
+  const activePeriodLabel = availablePeriodTypes.find((period) => period.key === periodType)?.label ?? "年度";
+  const formatPeriodHeader = (year: number) => (periodType === "h1" ? `${year}H1` : String(year));
+  const latestYear = years[0] ?? null;
+  const latestRows = useMemo(
     () =>
-      yearRows
-        .filter((row) => row.dimension === activeDimension)
+      allRows
+        .filter((row) => row.year === latestYear && row.dimension === activeDimension)
         .sort((left, right) => (right.revenue_yuan ?? 0) - (left.revenue_yuan ?? 0)),
-    [yearRows, activeDimension],
+    [allRows, activeDimension, latestYear],
   );
   const dimensionRows = useMemo(() => allRows.filter((row) => row.dimension === activeDimension), [allRows, activeDimension]);
+  const structureGroups = useMemo(
+    () =>
+      structureYears.map((year) => {
+        const yearRows = dimensionRows
+          .filter((row) => row.year === year)
+          .sort((left, right) => (right.revenue_yuan ?? 0) - (left.revenue_yuan ?? 0));
+        const total = yearRows.reduce((sum, row) => sum + (typeof row.revenue_yuan === "number" ? row.revenue_yuan : 0), 0);
+        return { year, rows: yearRows, total };
+      }),
+    [dimensionRows, structureYears],
+  );
   const seriesItems = useMemo(() => {
     const names = [...new Set(dimensionRows.map((row) => row.item_name).filter(Boolean))];
     return names
@@ -1897,15 +2030,14 @@ function AnnualRevenueDisclosure({
   const normalizedModelNames = useMemo(() => modelNames.map(normalizeDisclosureName), [modelNames]);
   const matchedRows = useMemo(() => {
     if (activeDimension !== "product" || !normalizedModelNames.length) return [];
-    return visibleRows.filter((row) => {
+    return latestRows.filter((row) => {
       const disclosed = normalizeDisclosureName(row.item_name);
       return normalizedModelNames.some((model) => disclosed.includes(model) || model.includes(disclosed));
     });
-  }, [activeDimension, normalizedModelNames, visibleRows]);
-  const matchRate = visibleRows.length ? matchedRows.length / visibleRows.length : null;
-  const activeLabel = availableDimensions.find((dimension) => dimension.key === activeDimension)?.label ?? "披露口径";
+  }, [activeDimension, latestRows, normalizedModelNames]);
+  const matchRate = latestRows.length ? matchedRows.length / latestRows.length : null;
 
-  if (!allRows.length) {
+  if (!rawRows.length) {
     return (
       <section className="card yaml-region annual-disclosure">
         <div className="yaml-region-heading">
@@ -1929,11 +2061,15 @@ function AnnualRevenueDisclosure({
         </div>
         <div className="annual-disclosure-stats">
           <div>
-            <span>展示</span>
-            <strong>{viewMode === "snapshot" ? activeYear ?? "-" : "时间序列"}</strong>
+            <span>期间</span>
+            <strong>{activePeriodLabel}</strong>
           </div>
           <div>
-            <span>维度</span>
+            <span>展示</span>
+            <strong>{viewMode === "structure" ? "三年结构" : "时间序列"}</strong>
+          </div>
+          <div>
+            <span>自动口径</span>
             <strong>{activeLabel}</strong>
           </div>
           <div>
@@ -1944,43 +2080,28 @@ function AnnualRevenueDisclosure({
       </div>
 
       <div className="annual-disclosure-controls">
+        {availablePeriodTypes.length > 1 ? (
+          <div className="range-toggle annual-mode-toggle" role="group">
+            {availablePeriodTypes.map((period) => (
+              <button
+                className={periodType === period.key ? "active" : ""}
+                key={period.key}
+                onClick={() => setPeriodType(period.key as "annual" | "h1")}
+                type="button"
+              >
+                {period.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <div className="range-toggle annual-mode-toggle" role="group">
-          <button className={viewMode === "snapshot" ? "active" : ""} onClick={() => setViewMode("snapshot")} type="button">
-            单年结构
+          <button className={viewMode === "structure" ? "active" : ""} onClick={() => setViewMode("structure")} type="button">
+            三年结构
           </button>
           <button className={viewMode === "series" ? "active" : ""} onClick={() => setViewMode("series")} type="button">
             时间序列
           </button>
         </div>
-        <div className="sheet-tabs compact-tabs" role="tablist">
-          {years.map((year) => (
-            <button className={viewMode === "snapshot" && year === activeYear ? "active" : ""} key={year} onClick={() => { setActiveYear(year); setViewMode("snapshot"); }} type="button">
-              {year}
-            </button>
-          ))}
-        </div>
-        <div className="sheet-tabs compact-tabs" role="tablist">
-          {availableDimensions.map((dimension) => (
-            <button
-              className={dimension.key === activeDimension ? "active" : ""}
-              key={dimension.key}
-              onClick={() => setActiveDimension(dimension.key)}
-              type="button"
-            >
-              <span>{dimension.label}</span>
-              <small>{allRows.filter((row) => row.dimension === dimension.key).length}</small>
-            </button>
-          ))}
-        </div>
-        {viewMode === "series" ? (
-          <div className="sheet-tabs compact-tabs" role="tablist">
-            {ANNUAL_SERIES_METRICS.map((metric) => (
-              <button className={seriesMetric === metric.key ? "active" : ""} key={metric.key} onClick={() => setSeriesMetric(metric.key)} type="button">
-                {metric.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
       </div>
 
       {viewMode === "series" && seriesItems.length ? (
@@ -1990,95 +2111,109 @@ function AnnualRevenueDisclosure({
               <tr>
                 <th>{activeLabel}</th>
                 {seriesYears.map((year) => (
-                  <th className="numeric" key={year}>{year}</th>
+                  <th className="numeric" key={year}>{formatPeriodHeader(year)}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {seriesItems.map((item) => (
-                <tr key={item.name}>
-                  <td className="statement-label">
-                    <span>{item.name}</span>
-                  </td>
-                  {seriesYears.map((year) => {
-                    const rowsInYear = dimensionRows.filter((row) => row.year === year);
-                    const row = pickAnnualSeriesRow(rowsInYear.filter((candidate) => candidate.item_name === item.name), seriesMetric);
-                    const value = annualMetricValue(row, seriesMetric, rowsInYear);
-                    return (
-                      <td className={`numeric ${seriesMetric === "revenue_yoy_pct" && value != null && value < 0 ? "negative" : ""}`} key={year}>
-                        {formatAnnualMetric(value, seriesMetric)}
+                <Fragment key={item.name}>
+                  {ANNUAL_SERIES_ROWS.map((metric, metricIndex) => (
+                    <tr className={metricIndex === 0 ? "annual-series-item-start" : "annual-series-metric-row"} key={`${item.name}-${metric.key}`}>
+                      <td className={metricIndex === 0 ? "statement-label annual-series-item-label" : "statement-label annual-series-metric-label"}>
+                        {metricIndex === 0 ? <span>{item.name}</span> : null}
+                        <small>{metric.label}</small>
                       </td>
-                    );
-                  })}
-                </tr>
+                      {seriesYears.map((year) => {
+                        const rowsInYear = dimensionRows.filter((row) => row.year === year);
+                        const row = pickAnnualSeriesRow(rowsInYear.filter((candidate) => candidate.item_name === item.name), metric.key);
+                        const value = annualMetricValue(row, metric.key, rowsInYear);
+                        return (
+                          <td className={`numeric ${metric.key === "revenue_yoy_pct" && value != null && value < 0 ? "negative" : ""}`} key={year}>
+                            {formatAnnualMetric(value, metric.key)}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </Fragment>
               ))}
             </tbody>
           </table>
         </div>
       ) : null}
 
-      {viewMode === "snapshot" && visibleRows.length ? (
-        <>
-          <div className="annual-bars">
-            {visibleRows.slice(0, 12).map((row) => {
-              const share = disclosureShare(row, visibleRows);
-              return (
-                <div className="annual-bar-row" key={`${row.year}-${row.dimension}-${row.item_name}-${row.source_line}`}>
-                  <div className="annual-bar-label" title={row.item_name}>{row.item_name}</div>
-                  <div className="annual-bar-track">
-                    <span style={{ width: `${Math.max(2, Math.min(100, share ?? 0))}%` }} />
-                  </div>
-                  <div className="annual-bar-value">{share == null ? "-" : formatPctPoint(share, 1)}</div>
-                  <div className="annual-bar-revenue">{formatYuan(row.revenue_yuan)}</div>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="table-scroll workbook-scroll annual-disclosure-table-wrap">
-            <table className="financial-table annual-disclosure-table">
-              <thead>
-                <tr>
-                  <th>项目</th>
-                  <th className="numeric">收入</th>
-                  <th className="numeric">占比</th>
-                  <th className="numeric">同比</th>
-                  <th className="numeric">毛利率</th>
-                  <th>来源</th>
-                  <th>置信度</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((row) => {
-                  const share = disclosureShare(row, visibleRows);
+      {viewMode === "structure" && structureGroups.some((group) => group.rows.length > 0) ? (
+        <div className="annual-structure-grid">
+          {structureGroups.map((group) => (
+            <article className="annual-structure-card" key={group.year}>
+              <div className="annual-structure-card-head">
+                <span>{formatPeriodHeader(group.year)}</span>
+                <strong>{formatYuan(group.total)}</strong>
+              </div>
+              <div className="annual-structure-list">
+                {group.rows.slice(0, 8).map((row) => {
+                  const share = disclosureShare(row, group.rows);
                   return (
-                    <tr key={`${row.year}-${row.dimension}-${row.item_name}-${row.source_table}-${row.source_line}`}>
-                      <td className="statement-label">
-                        <span>{row.item_name}</span>
-                      </td>
-                      <td className="numeric">{formatYuan(row.revenue_yuan)}</td>
-                      <td className="numeric">{share == null ? "-" : formatPctPoint(share, 1)}</td>
-                      <td className={`numeric ${typeof row.revenue_yoy_pct === "number" && row.revenue_yoy_pct < 0 ? "negative" : ""}`}>
-                        {formatSignedPctPoint(row.revenue_yoy_pct)}
-                      </td>
-                      <td className="numeric">{formatPctPoint(row.gross_margin_pct)}</td>
-                      <td>
-                        <span className="source-chip">{ANNUAL_SOURCE_LABELS[row.source_table] ?? row.source_table}</span>
-                        <small className="source-line">line {row.source_line}</small>
-                      </td>
-                      <td>
-                        <span className={`confidence-pill ${row.confidence}`}>{row.confidence || "-"}</span>
-                      </td>
-                    </tr>
+                    <div className="annual-structure-row" key={`${row.year}-${row.dimension}-${row.item_name}-${row.source_table}-${row.source_line}`}>
+                      <div className="annual-structure-copy">
+                        <span title={row.item_name}>{row.item_name}</span>
+                        <small>{formatYuan(row.revenue_yuan)}{typeof row.revenue_yoy_pct === "number" ? ` · ${formatSignedPctPoint(row.revenue_yoy_pct)}` : ""}</small>
+                      </div>
+                      <div className="annual-structure-share">
+                        <div className="annual-bar-track">
+                          <span style={{ width: `${Math.max(2, Math.min(100, share ?? 0))}%` }} />
+                        </div>
+                        <strong>{share == null ? "-" : formatPctPoint(share, 1)}</strong>
+                      </div>
+                    </div>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
-        </>
+              </div>
+            </article>
+          ))}
+        </div>
       ) : null}
 
-      {(viewMode === "snapshot" && !visibleRows.length) || (viewMode === "series" && !seriesItems.length) ? (
+      {viewMode === "structure" && latestRows.length ? (
+        <div className="table-scroll workbook-scroll annual-disclosure-table-wrap">
+          <table className="financial-table annual-disclosure-table">
+            <thead>
+              <tr>
+                <th>项目</th>
+                <th className="numeric">收入</th>
+                <th className="numeric">占比</th>
+                <th className="numeric">同比</th>
+                <th className="numeric">毛利率</th>
+                <th>来源</th>
+              </tr>
+            </thead>
+            <tbody>
+              {latestRows.map((row) => {
+                const share = disclosureShare(row, latestRows);
+              return (
+                  <tr key={`${row.year}-${row.dimension}-${row.item_name}-${row.source_table}-${row.source_line}`}>
+                    <td className="statement-label">
+                      <span>{row.item_name}</span>
+                    </td>
+                    <td className="numeric">{formatYuan(row.revenue_yuan)}</td>
+                    <td className="numeric">{share == null ? "-" : formatPctPoint(share, 1)}</td>
+                    <td className={`numeric ${typeof row.revenue_yoy_pct === "number" && row.revenue_yoy_pct < 0 ? "negative" : ""}`}>
+                      {formatSignedPctPoint(row.revenue_yoy_pct)}
+                    </td>
+                    <td className="numeric">{formatPctPoint(row.gross_margin_pct)}</td>
+                    <td>
+                      <span className="source-chip">{ANNUAL_SOURCE_LABELS[row.source_table] ?? row.source_table}</span>
+                    </td>
+                  </tr>
+              );
+            })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {(viewMode === "structure" && !structureGroups.some((group) => group.rows.length > 0)) || (viewMode === "series" && !seriesItems.length) ? (
         <div className="annual-empty">
           <h3>当前维度无披露项</h3>
           <p>这一年报没有抽到该维度下的收入拆分。</p>
@@ -2087,6 +2222,8 @@ function AnnualRevenueDisclosure({
     </section>
   );
 }
+
+type YamlSubtab = "model" | "read" | "reference" | "disclosure";
 
 function YamlWorkbook({
   companyId,
@@ -2126,6 +2263,8 @@ function YamlWorkbook({
   const [briefLoading, setBriefLoading] = useState(false);
   const [briefError, setBriefError] = useState<string | null>(null);
   const [inlineEdit, setInlineEdit] = useState<AssumptionInlineEdit | null>(null);
+  const [yamlSubtab, setYamlSubtab] = useState<YamlSubtab>("model");
+  const [modelRangeMode, setModelRangeMode] = useState<"recent" | "full">("recent");
   const editableRows = editableAssumptions ?? [];
   const patches = useMemo(() => buildAssumptionPatches(editableRows, draftValues), [editableRows, draftValues]);
   const editablePathMap = useMemo(() => editableRowsByPath(editableRows), [editableRows]);
@@ -2144,6 +2283,8 @@ function YamlWorkbook({
     setBriefPrompt("");
     setBriefError(null);
     setInlineEdit(null);
+    setYamlSubtab("model");
+    setModelRangeMode("recent");
   }, [initialPresentation, path]);
 
   useEffect(() => {
@@ -2214,7 +2355,7 @@ function YamlWorkbook({
     setBriefLoading(true);
     setBriefError(null);
     try {
-      const result = await generateAssumptionBrief(companyId, patches, preview?.dcf_summary ?? null);
+      const result = await generateAssumptionBrief(companyId, patches);
       setBriefPrompt(result.prompt);
     } catch (error) {
       setBriefError(error instanceof Error ? error.message : "生成 prompt 失败");
@@ -2230,6 +2371,8 @@ function YamlWorkbook({
   const insightItems = presentation?.insights?.filter(Boolean) ?? [];
   const riskItems = presentation?.risks?.filter(Boolean) ?? [];
   const hasBusinessRead = insightItems.length > 0 || riskItems.length > 0;
+  const leadInsight = insightItems[0] ?? "";
+  const memoInsightItems = leadInsight ? insightItems.slice(1) : insightItems;
 
   // 三区一轴：每区一张表、一个共享年份轴，缺数据留空。约定分派，非公司特判。
   const allStash = stashView ?? [];
@@ -2250,7 +2393,7 @@ function YamlWorkbook({
 
   // ② 关键假设区
   const asmBase = assumptionsView ? Number(assumptionsView.base_period) : 0;
-  const assumptionGroups = assumptionsView ? buildAssumptionsGroups(assumptionsView) : [];
+  const assumptionGroups = assumptionsView ? buildAssumptionsGroups(assumptionsView, fullStatementSheets) : [];
   const assumptionYears = assumptionsView?.years ?? [];
   const terminal = assumptionsView?.terminal;
   const representedEditablePaths = new Set<string>();
@@ -2259,11 +2402,18 @@ function YamlWorkbook({
       if (row.editablePath) representedEditablePaths.add(row.editablePath);
     }
   }
-  const nonInlineEditableRows = revenueView ? editableRows.filter((row) => row.group !== "revenue_driver") : editableRows;
-  const supplementalEditableRows = nonInlineEditableRows;
+  const supplementalEditableRows = revenueView ? editableRows.filter((row) => row.group !== "revenue_driver") : editableRows;
   const supplementalEditableGroups = buildEditableAxisGroups(supplementalEditableRows, representedEditablePaths);
   const modelGroups = [...revenueGroups, ...supplementalEditableGroups, ...assumptionGroups];
   const modelYears = unionYears([revenueYears, assumptionYears, editablePeriodList]);
+  const modelVisibleYears = useMemo(() => {
+    if (modelRangeMode === "full") return modelYears;
+    const base = revenueBase || asmBase;
+    if (!base) return modelYears.slice(-5);
+    const history = modelYears.filter((year) => Number(year) <= base).slice(-5);
+    const forecast = modelYears.filter((year) => Number(year) > base);
+    return [...history, ...forecast];
+  }, [asmBase, modelRangeMode, modelYears, revenueBase]);
 
   // ③ 参考区
   const refBase = revenueBase || asmBase;
@@ -2301,6 +2451,20 @@ function YamlWorkbook({
         </div>
       </section>
 
+      <nav className="yaml-subtabs sheet-tabs compact-tabs" role="tablist" aria-label="核心假设展示子页面">
+        {[
+          ["model", "核心假设"],
+          ["read", "业务解读"],
+          ["reference", "参考项"],
+          ["disclosure", "年报披露口径"],
+        ].map(([key, label]) => (
+          <button className={yamlSubtab === key ? "active" : ""} key={key} onClick={() => setYamlSubtab(key as YamlSubtab)} type="button">
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {yamlSubtab === "model" ? (
       <section className="card yaml-region assumption-workbench-toolbar">
         <div className="yaml-region-heading">
           <div>
@@ -2335,6 +2499,11 @@ function YamlWorkbook({
           <span>{previewLoading ? "Preview 重算中..." : preview ? "Preview 已更新" : "使用正式 forecast"}</span>
           {preview?.dcf_summary?.per_share_value != null ? <strong>试算每股 {formatNumber(preview.dcf_summary.per_share_value, 2)}</strong> : null}
         </div>
+        {patches.length ? (
+          <div className="assumption-flow-alert">
+            已有草稿改动：生成 /ka prompt 后，回到流程执行 /ka 修改核心假设.md，再执行 /comp 重新编译 yaml1 和 forecast。
+          </div>
+        ) : null}
         {previewError ? <div className="error-banner">{previewError}</div> : null}
         {briefError ? <div className="error-banner">{briefError}</div> : null}
         {briefPrompt ? (
@@ -2344,15 +2513,22 @@ function YamlWorkbook({
           </div>
         ) : null}
       </section>
+      ) : null}
 
-      {modelGroups.length > 0 ? (
+      {yamlSubtab === "model" && modelGroups.length > 0 ? (
         <section className="card yaml-region">
-          <div className="yaml-region-heading">
-            <div className="eyebrow">① Model table</div>
-            <h2>收入拆分 + 关键假设</h2>
+          <div className="yaml-region-heading model-table-heading">
+            <div>
+              <div className="eyebrow">① Model table</div>
+              <h2>收入拆分 + 关键假设</h2>
+            </div>
+            <div className="range-toggle model-range-toggle" role="group">
+              <button className={modelRangeMode === "recent" ? "active" : ""} onClick={() => setModelRangeMode("recent")} type="button">近5年 + 预测</button>
+              <button className={modelRangeMode === "full" ? "active" : ""} onClick={() => setModelRangeMode("full")} type="button">展开全部年份</button>
+            </div>
           </div>
           <UnifiedYearTable
-            years={modelYears}
+            years={modelVisibleYears}
             baseYear={revenueBase || asmBase}
             groups={modelGroups}
             editMode={editMode}
@@ -2369,16 +2545,7 @@ function YamlWorkbook({
         </section>
       ) : null}
 
-      {nonInlineEditableRows.length > 0 ? (
-        <details className="card yaml-region assumption-advanced-list">
-          <summary>
-            <span>全部可调假设</span>
-            <small>{nonInlineEditableRows.length} knobs</small>
-          </summary>
-          <EditableAssumptionsTable editable={nonInlineEditableRows} editMode={editMode} drafts={draftValues} onDraft={updateDraft} />
-        </details>
-      ) : null}
-
+      {yamlSubtab === "read" ? (
       <section className="card yaml-region business-read-panel">
         <div className="yaml-region-heading business-read-heading">
           <div>
@@ -2411,24 +2578,43 @@ function YamlWorkbook({
         ) : null}
 
         {hasBusinessRead ? (
-          <section className="presentation-notes business-read-notes">
-            {insightItems.length ? (
-              <div className="business-read">
-                <div className="eyebrow">Business read</div>
-                <ul>{insightItems.map((item) => <li key={item}>{item}</li>)}</ul>
-              </div>
+          <section className="business-read-memo">
+            {leadInsight ? (
+              <article className="business-read-lead">
+                <div className="eyebrow">Primary read</div>
+                <p>{leadInsight}</p>
+              </article>
             ) : null}
-            {riskItems.length ? (
-              <aside className="risk-footnote">
-                <div className="eyebrow">Things to review</div>
-                <ul>{riskItems.map((item) => <li key={item}>{item}</li>)}</ul>
-              </aside>
-            ) : null}
+            <div className="business-read-memo-grid">
+              {memoInsightItems.length ? (
+                <div className="business-read-memo-column">
+                  <div className="memo-section-label">Drivers</div>
+                  {memoInsightItems.map((item, index) => (
+                    <article className="business-read-memo-item" key={item}>
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      <p>{item}</p>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
+              {riskItems.length ? (
+                <aside className="business-read-watchlist">
+                  <div className="memo-section-label">Watchlist</div>
+                  {riskItems.map((item, index) => (
+                    <article className="business-read-risk-item" key={item}>
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      <p>{item}</p>
+                    </article>
+                  ))}
+                </aside>
+              ) : null}
+            </div>
           </section>
         ) : null}
       </section>
+      ) : null}
 
-      {(refGroups.length > 0 || refRest.length > 0) ? (
+      {yamlSubtab === "reference" && (refGroups.length > 0 || refRest.length > 0) ? (
         <section className="card yaml-region business-read-panel">
           <div className="yaml-region-heading">
             <div className="eyebrow">④ Reference items · stash</div>
@@ -2447,17 +2633,7 @@ function YamlWorkbook({
         </section>
       ) : null}
 
-      <AnnualRevenueDisclosure rows={annualRevenueBreakdown} modelSegments={revenueView?.segments ?? []} />
-
-      {yaml1Text ? (
-        <details className="raw-yaml-block">
-          <summary>
-            <span>原始 YAML1</span>
-            <small>{path ?? ""}</small>
-          </summary>
-          <pre className="raw-yaml-pre">{yaml1Text}</pre>
-        </details>
-      ) : null}
+      {yamlSubtab === "disclosure" ? <AnnualRevenueDisclosure rows={annualRevenueBreakdown} modelSegments={revenueView?.segments ?? []} /> : null}
     </div>
   );
 }
@@ -2687,7 +2863,7 @@ function StatementsView({ detail }: { detail: CompanyDetail }) {
         </div>
         <SheetTabs active={active} items={sheets.map((sheet) => ({ key: sheet.key, label: sheet.name, count: sheet.rows.length }))} onSelect={setActive} />
         {activeSheet ? (
-          <FullStatementTable basePeriod={basePeriod} sheet={activeSheet} showTechnicalRows={showTechnicalRows} showZeroRows={showZeroRows} years={visibleYears} />
+          <FullStatementTable basePeriod={basePeriod} derivedMetrics={detail.derived_metrics} sheet={activeSheet} showTechnicalRows={showTechnicalRows} showZeroRows={showZeroRows} years={visibleYears} />
         ) : null}
       </div>
     </div>
@@ -2734,10 +2910,10 @@ function DcfView({ detail }: { detail: CompanyDetail }) {
     <div className="view-stack">
       <div className="dcf-topline">
         <section className="metric-grid dcf-metric-grid">
-          <MetricCard label="Per-share value" value={formatNumber(dcf?.per_share_value)} caption="DCF 输出" />
-          <MetricCard label="Enterprise value" value={formatNumber(dcf?.enterprise_value)} />
-          <MetricCard label="Equity value" value={formatNumber(dcf?.equity_value)} />
-          <MetricCard label="Terminal PV" value={formatNumber(dcf?.terminal_pv)} />
+          <MetricCard label="Per-share value" value={formatNumber(dcf?.per_share_value)} caption="元/股" />
+          <MetricCard label="Equity value" value={formatYiFromMillion(dcf?.equity_value)} caption="亿元" tone="highlight" />
+          <MetricCard label="Enterprise value" value={formatYiFromMillion(dcf?.enterprise_value)} caption="亿元" />
+          <MetricCard label="Terminal PV" value={formatYiFromMillion(dcf?.terminal_pv)} caption="亿元" />
         </section>
         <SensitivityPanel
           compact
@@ -2749,36 +2925,6 @@ function DcfView({ detail }: { detail: CompanyDetail }) {
       </div>
       <ValuationBridge dcf={dcf} detail={detail.dcf_detail ?? []} />
     </div>
-  );
-}
-
-function MaterialsView({ files }: { files: FileItem[] }) {
-  if (!files.length) {
-    return <EmptyState title="No material index" body="active_vore/ and extractions/ are empty or missing for this company." />;
-  }
-  return (
-    <section className="card">
-      <div className="section-heading">
-        <div>
-          <div className="eyebrow">Source material</div>
-          <h2>active_vore and extraction files</h2>
-        </div>
-      </div>
-      <div className="file-list">
-        {files.map((file) => (
-          <div className="file-row" key={file.path}>
-            <div>
-              <div className="file-name">{file.name}</div>
-              <div className="file-path">{file.path}</div>
-            </div>
-            <div className="file-meta">
-              <span>{file.kind.toUpperCase()}</span>
-              <span>{formatNumber(file.size / 1024, 1)} KB</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
   );
 }
 
@@ -3191,7 +3337,7 @@ function DetailView({
     );
   }
   if (tab === "dcf") return <DcfView detail={detail} />;
-  return <MaterialsView files={detail.materials} />;
+  return <Overview detail={detail} running={running} onRun={onRun} />;
 }
 
 export default function App() {
@@ -3283,7 +3429,7 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <button className="tutorial-btn" onClick={() => setShowTutorial(true)} type="button">使用教程</button>
+            <button className="tutorial-btn" onClick={() => setShowTutorial(true)} type="button">配置和教程</button>
           </div>
         </header>
 
@@ -3300,7 +3446,7 @@ export default function App() {
         {!detailLoading && detail ? <DetailView detail={detail} onRun={regenerateForecast} running={running} tab={tab} /> : null}
         {!detailLoading && !detail && !error ? <EmptyState title="No company selected" body="Select a company from the sidebar to inspect its model folder." /> : null}
       </main>
-      {showTutorial ? <Tutorial onClose={() => setShowTutorial(false)} /> : null}
+      {showTutorial ? <Tutorial onClose={() => setShowTutorial(false)} onSaved={loadCompanies} /> : null}
     </div>
   );
 }

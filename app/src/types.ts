@@ -109,6 +109,32 @@ export type StatementSheet = {
   rows: StatementRow[];
 };
 
+export type DerivedMetrics = {
+  schema_version?: number;
+  generated_at?: string;
+  ticker?: string | null;
+  name?: string | null;
+  base_period?: string | number | null;
+  periods?: string[];
+  market_snapshot?: Record<string, number | string | null | undefined>;
+  annual?: Record<string, Record<string, number | null | undefined>>;
+  quarterly?: {
+    periods?: string[];
+    rows?: QuarterlyRow[];
+    metrics_by_period?: Record<string, Record<string, number | null | undefined>>;
+    [key: string]: unknown;
+  } | null;
+  valuation?: Record<string, unknown>;
+  rating_report_rows?: Array<{
+    metric: string;
+    label: string;
+    values: Record<string, number | null | undefined>;
+  }>;
+  metric_labels?: Record<string, string>;
+  source_files?: Record<string, string>;
+  warnings?: string[];
+};
+
 export type QuarterState = "actual" | "inherit" | "manual" | "q4" | string;
 
 export type QuarterlyRow = {
@@ -152,6 +178,9 @@ export type FileItem = {
 
 export type AnnualRevenueBreakdownRow = {
   year: number;
+  period?: string;
+  period_type?: "annual" | "h1" | string;
+  period_label?: string;
   dimension: "industry" | "product" | "region" | "sales_model" | string;
   dimension_label: string;
   item_name: string;
@@ -260,6 +289,7 @@ export type DcfDetailRow = {
 
 export type AssumptionPreview = {
   dcf_summary?: Record<string, unknown> | null;
+  derived_metrics?: DerivedMetrics | null;
   dcf_detail?: DcfDetailRow[];
   statement_sheets?: StatementSheet[];
   result_rows: StatementRow[];
@@ -279,6 +309,7 @@ export type CompanyDetail = {
   yaml1_assumptions_view?: Yaml1AssumptionsView | null;
   editable_assumptions?: EditableAssumption[];
   dcf_summary?: Record<string, unknown> | null;
+  derived_metrics?: DerivedMetrics | null;
   manifest?: Record<string, unknown> | null;
   tables: TableFile[];
   statement_sheets?: StatementSheet[];
@@ -289,4 +320,40 @@ export type CompanyDetail = {
   materials: FileItem[];
 };
 
-export type TabKey = "overview" | "yaml1" | "quarterly" | "statements" | "dcf" | "materials";
+export type TabKey = "overview" | "yaml1" | "quarterly" | "statements" | "dcf";
+
+export type SettingsField = {
+  key: string;
+  label: string;
+  section: "workspace" | "data" | "llm" | string;
+  secret: boolean;
+  placeholder?: string;
+  configured: boolean;
+  value?: string;
+  masked?: string | null;
+};
+
+export type SettingsValidation = {
+  path: string;
+  exists: boolean;
+  is_dir: boolean;
+  writable: boolean;
+  company_count: number;
+};
+
+export type RatingReportSettings = {
+  data_start_year: number;
+  data_end_year: number;
+  forecast_start_year: number;
+  forecast_end_year: number;
+};
+
+export type AppSettings = {
+  env_path: string;
+  root: string;
+  companies_dir: string;
+  default_companies_dir: string;
+  fields: SettingsField[];
+  validation: SettingsValidation;
+  rating_report?: RatingReportSettings;
+};
