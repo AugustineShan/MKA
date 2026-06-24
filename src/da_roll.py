@@ -90,3 +90,58 @@ class Cohort:
         depreciated = self.annual_dep() * elapsed
         salvage = self.gross * self.salvage_rate
         return max(self.gross - depreciated, salvage)
+
+
+# ---------------------------------------------------------------------------
+# Task 2.4: base_cip_to_fixed 转固 + CipState
+# ---------------------------------------------------------------------------
+class CipInvariantError(RuntimeError):
+    """cip 余额违反非负 / base 转固超额不变量时抛出。"""
+
+
+@dataclass
+class CipState:
+    """某类资产的在建工程(CIP)滚动状态。
+
+    cip_balance(year) = base_cip + Σ扩张capex - Σbase转固 - Σ扩张转固
+    transferred_cohorts(year) = 当年转固额(base+expansion 合并)形成的 Cohort 列表
+    """
+    base_cip: float
+    base_transfers: dict
+    expansion_capex: dict
+    expansion_transfers: dict
+    life: int
+    salvage: float
+    start_year: int
+
+    def cip_balance(self, year: int) -> float:
+        bal = self.base_cip
+        for y in range(self.start_year, year + 1):
+            bal += self.expansion_capex.get(y, 0.0)
+            bal -= self.base_transfers.get(y, 0.0)
+            bal -= self.expansion_transfers.get(y, 0.0)
+        if bal < -1e-6:
+            raise CipInvariantError(f"cip negative at {year}: {bal}")
+        return bal
+
+    def transferred_cohorts(self, year: int) -> list[Cohort]:
+        out: list[Cohort] = []
+        amt = self.base_transfers.get(year, 0.0) + self.expansion_transfers.get(year, 0.0)
+        if amt > 0:
+            out.append(Cohort(amt, self.salvage, self.life, year))
+        return out
+
+
+def roll_cip(base_cip: float, base_cip_to_fixed: dict,
+             expansion_capex_by_year: dict, expansion_cip_to_fixed: dict,
+             cat_life: int, cat_salvage: float, start_year: int) -> CipState:
+    """校验 base 转固不超额并构造 CipState。
+
+    base cip 是存量(期初余额),其累计转固不得超过 base_cip;扩张 capex 是流量,
+    当年堆积可被当年或后续转固消耗。两类转固合并形成 cohort。
+    """
+    cum_base = sum(base_cip_to_fixed.values())
+    if cum_base > base_cip + 1e-6:
+        raise CipInvariantError(f"base cip over-transferred: {cum_base} > {base_cip}")
+    return CipState(base_cip, base_cip_to_fixed, expansion_capex_by_year,
+                    expansion_cip_to_fixed, cat_life, cat_salvage, start_year)

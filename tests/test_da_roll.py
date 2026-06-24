@@ -51,3 +51,40 @@ def test_cohort_residual_floor():
     c = Cohort(gross=1000.0, salvage_rate=0.05, life=10, start_year=2025)
     total = sum(c.dep_in_year(y) for y in range(2025, 2040))
     assert total <= 950.0 + 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Task 2.4: base_cip_to_fixed 转固
+# ---------------------------------------------------------------------------
+def test_base_cip_transfers_and_depreciates():
+    from src.da_roll import roll_cip
+    state = roll_cip(base_cip=200.0,
+                     base_cip_to_fixed={2025: 80.0, 2026: 60.0},
+                     expansion_capex_by_year={2025: 50.0},
+                     expansion_cip_to_fixed={2025: 30.0},
+                     cat_life=10, cat_salvage=0.05, start_year=2025)
+    assert state.cip_balance(2025) == 200.0 + 50.0 - 80.0 - 30.0  # 140
+    assert state.transferred_cohorts(2025)[0].gross == 80.0 + 30.0  # base+expansion 转固合并
+
+
+def test_base_cip_over_transfer_raises():
+    """base 转固累计 > base_cip → CipInvariantError(不许凭空创造资产)。"""
+    from src.da_roll import roll_cip, CipInvariantError
+    with pytest.raises(CipInvariantError, match="over-transferred"):
+        roll_cip(base_cip=100.0,
+                 base_cip_to_fixed={2025: 80.0, 2026: 30.0},  # 110 > 100
+                 expansion_capex_by_year={},
+                 expansion_cip_to_fixed={},
+                 cat_life=10, cat_salvage=0.05, start_year=2025)
+
+
+def test_cip_negative_raises():
+    """某年 cip 余额 < 0(转固超 capex 堆积)→ CipInvariantError。"""
+    from src.da_roll import roll_cip, CipInvariantError
+    state = roll_cip(base_cip=0.0,
+                     base_cip_to_fixed={},
+                     expansion_capex_by_year={2025: 50.0},
+                     expansion_cip_to_fixed={2025: 60.0, 2026: 0.0},  # 转固 > 当年 capex
+                     cat_life=10, cat_salvage=0.05, start_year=2025)
+    with pytest.raises(CipInvariantError, match="negative"):
+        state.cip_balance(2025)
