@@ -2,6 +2,7 @@
 
 > 新开 Codex 线程时，先读本文件。它是 MKA 的项目地图，不是所有执行细则的副本。
 > 真正执行某个 skill 时，必须再读 `D:\MKA\.claude\skills\{skill}\SKILL.md`。
+> 调用 skill 前先读 `docs/技能简要分类.md` 分流；任何新增或修改 skill，必须同步更新该文档，并保留 `CLAUDE.md` / `Codex.md` 的入口提示。
 
 ## 0. 一句话
 

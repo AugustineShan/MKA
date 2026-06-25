@@ -38,6 +38,7 @@ from src.derived_metrics import DERIVED_METRICS_FILENAME
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_TEMPLATE_PATH = BASE_DIR / "templates" / "boshi_company_output.xlsm"
 DEFAULT_OUTPUT_EXTENSION = ".xlsx"
+DEFAULT_WORKBOOK_AUTHOR = "ModelKing"
 COMMENT_SHEET_TITLES = {"\u70b9\u8bc4\u6a21\u677f", "\ub4d0\ud300\uce5c\uacbc"}
 OOXML_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 OOXML_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -511,6 +512,16 @@ def _safe_filename_part(value: Any, fallback: str = "Company") -> str:
     text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", text)
     text = text.strip(" .")
     return text or fallback
+
+
+def _workbook_author(researcher_name: str) -> str:
+    return researcher_name.strip() or DEFAULT_WORKBOOK_AUTHOR
+
+
+def _apply_output_identity(workbook: Any, researcher_name: str) -> None:
+    author = _workbook_author(researcher_name)
+    workbook.properties.creator = author
+    workbook.properties.lastModifiedBy = author
 
 
 def _default_output_path(company_dir: Path, metrics: dict[str, Any]) -> Path:
@@ -2236,7 +2247,7 @@ def _rating_year_label(year: int, is_forecast: bool) -> int | str:
     return f"{year}E" if is_forecast else year
 
 
-def _fill_summary(ws: Any, metrics: dict[str, Any]) -> None:
+def _fill_summary(ws: Any, metrics: dict[str, Any], *, researcher_name: str = "") -> None:
     name = metrics.get("name") or metrics.get("ticker") or ""
     ticker = metrics.get("ticker") or ""
     base_period = int(float(metrics.get("base_period") or 0))
@@ -2245,6 +2256,10 @@ def _fill_summary(ws: Any, metrics: dict[str, Any]) -> None:
     _set(ws, "B2", name)
     _set(ws, "BM2", ticker)
     _set(ws, "BE2", None)
+    _set(ws, "B3", "研究员")
+    _set(ws, "BM3", researcher_name or None)
+    _set(ws, "B4", None)
+    _set(ws, "BM4", None)
 
     for column, year in zip(SUMMARY_COLUMNS, SUMMARY_YEARS):
         label = _year_label(year, base_period)
@@ -2403,17 +2418,19 @@ def export_company_excel(
     out_path = Path(output_path) if output_path else _default_output_path(company_path, metrics)
     explicit_output_path = output_path is not None
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    researcher_name = app_config.get_researcher_name()
 
     workbook = load_workbook(template, keep_vba=False, data_only=False, keep_links=False)
     workbook.defined_names.clear()
     statements = _statement_records(company_path)
-    _fill_summary(_sheet(workbook, "Summary", 0), metrics)
+    _fill_summary(_sheet(workbook, "Summary", 0), metrics, researcher_name=researcher_name)
     _fill_model_bs(_sheet(workbook, "Model-BS", 1), company_path, metrics, statements)
     _fill_rating(_sheet(workbook, "评级报告模板", 3), metrics)
     _remove_comment_sheets(workbook)
     _fill_core_assumptions_sheet(workbook, company_path, metrics, statements)
     _fill_full_statement_sheets(workbook, company_path, metrics)
     _fill_semiannual_sheets(workbook, company_path, metrics)
+    _apply_output_identity(workbook, researcher_name)
 
     with tempfile.TemporaryDirectory(prefix="boshi_excel_") as tmp_dir:
         temp_path = Path(tmp_dir) / out_path.name

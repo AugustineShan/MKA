@@ -33,7 +33,7 @@ TuShare Pro API
 
 **边界**：仅处理 A 股一般工商业（comp_type=1）财报数据，不覆盖金融企业、港股美股或行情 K 线。`defaults.yaml` 是唯一 YAML2，表示“什么都不变会怎样”的机器平推底座；`yaml1` 是稀疏判断覆盖层，`calc.py` 永远看不到 yaml1，只吃清洗后的标准参数。
 
-**建模技能管线**：取数流水线之外，业务理解层由多个 skill 协同，而不是一个 Agent 通吃。`/load` 只读 `Skills素材包/LOAD外部EXCEL模型理解器（一次最多一个）/` 的唯一 Excel，建立 load-vintage 时间沙箱，主产物写公司根目录 `{原Excel文件名}_核心假设.md`，并同步副本到 `Agent/Load/{load_id}/`；`/brkd` 先把 `Skills素材包/BRKD业务理解器（研报和纪要放在这里）/` 幂等转为 `markdown存储区/`，再结合 `/init` 历史事实和年报生成 `Agent业务讨论.md`；`/ka` 不读原始 Excel/研报/纪要，只裁决最高权重材料、BRKD、LOAD 和 `/init` 校验层，生成正式 `核心假设.md`；`/comp` 忠实翻译为 `yaml1` 并跑 forecast。已有正式稿的调整交给 `/adj`、`/frontend-edit` 或 `/annual-update`。
+**建模技能管线**：取数流水线之外，业务理解层由多个 skill 协同，而不是一个 Agent 通吃。`/load` 只读 `Skills素材包/LOAD外部EXCEL模型理解器（一次最多一个）/` 的唯一 Excel，建立 load-vintage 时间沙箱，主产物写公司根目录 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md`，并同步副本到 `Agent/Load/{load_id}/`；`/brkd` 先把 `Skills素材包/BRKD业务理解器（研报和纪要放在这里）/` 幂等转为 `markdown存储区/`，再结合 `/init` 历史事实和年报生成 `Agent业务讨论.md`，若另存核心假设式 draft 则必须命名 `*_核心假设_brkd{YYYYMMDD}.md`；Alphapai-load 的 `核心假设参考.md` 是 root reference 候选；`/ka` 不读原始 Excel/研报/纪要，只裁决最高权重材料、BRKD、LOAD、reference 候选和 `/init` 校验层，生成正式 `核心假设.md`；`/comp` 忠实翻译为 `yaml1` 并跑 forecast。已有正式稿的调整交给 `/adj`、`/frontend-edit` 或 `/annual-update`。
 
 ---
 
@@ -186,7 +186,7 @@ D:\MKA\deprecatedlogs\webka\SKILL.md
 `webload.py` 是 `/load` 的网页端打包器。它先调用 `src.model_load.prepare` 创建 `Agent/Load/{load_id}/`，锁定外部 Excel 模型的历史末年、预测起点和显式预测期；然后把网页端执行 `/load` 需要的安全材料复制到 `companies/{公司}/WEBCLAUDE/模型装载部分/`。
 
 与 `/load` 的区别：
-- `/load` 是真正的模型装载流程，按 `/ka` 的会议纪律先 overview、再分段确认、最后写 `{原Excel文件名}_核心假设.md`。
+- `/load` 是真正的模型装载流程，按 `/ka` 的会议纪律先 overview、再分段确认、最后写 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md`。
 - `/webload` 只负责 prepare + 打包，不替用户理解模型、不生成核心假设、不编译 yaml1、不跑 DCF。
 
 **复制清单**：
@@ -198,7 +198,7 @@ D:\MKA\deprecatedlogs\webka\SKILL.md
 | `02_model_boundary.md` | `Agent/Load/{load_id}/model_boundary.md` | 人读时间边界 |
 | `03_model_boundary.json` | `Agent/Load/{load_id}/model_boundary.json` | 机器可读时间边界 |
 | `04_forbidden_materials.md` | `Agent/Load/{load_id}/forbidden_materials.md` | 禁读清单，只可看清单 |
-| `05_{原Excel文件名}_核心假设_脚手架.md` | `Agent/Load/{load_id}/{原Excel文件名}_核心假设.md` | 网页端补写目标 |
+| `05_{原Excel文件名}_核心假设_load{YYYYMMDD}_脚手架.md` | `Agent/Load/{load_id}/{原Excel文件名}_核心假设_load{YYYYMMDD}.md` | 网页端补写目标 |
 | `06_核心假设源语言_skill_vN.md` | `D:\MKA\skills\` 最新版 | `/comp` 可编译的核心假设源语言契约 |
 | `07_模型装载器_skill_vN.md` | `D:\MKA\skills\` 最新版 | load 时间沙箱覆盖层 |
 | `08_load_manifest.json` | `Agent/Load/{load_id}/load_manifest.json` | 沙箱路径和材料清单 |
@@ -208,8 +208,8 @@ D:\MKA\deprecatedlogs\webka\SKILL.md
 **关键纪律**：
 - `model_load.prepare` 报时间轴冲突则停止，不打包。
 - 网页端不得读取 `forbidden_materials.md` 中列出的正文材料。
-- 网页端用户确认 overview 前，不补完 `{原Excel文件名}_核心假设.md`。
-- 网页端产出的 `{原Excel文件名}_核心假设.md` 放回 `Agent/Load/{load_id}/` 后，本地继续编译 `yaml1_load_*.yaml` 并运行 `py -m src.model_load dcf`。
+- 网页端用户确认 overview 前，不补完 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md`。
+- 网页端产出的 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md` 放回 `Agent/Load/{load_id}/` 后，本地继续编译 `yaml1_load_*.yaml` 并运行 `py -m src.model_load dcf`。
 
 **CLI**：
 ```bash
@@ -228,14 +228,17 @@ python -m src.webload 688775.SH --overwrite
 
 **执行顺序**（必须遵守）：
 1. 解析公司目录。
-2. **先动态加载最新版 `yaml1compiler` skill**：扫描 `D:\MKA\skills\`，匹配 `yaml1compiler_v*.md`，取版本号最大。
-3. 再读取四份输入材料：
-   - `companies/{公司}/*核心假设*.md` 最新一份（语义层：判断、历史、旋钮、时间轴、覆盖项）
+2. **正式假设选择门**：只在公司根目录非递归选 `状态: official` 的当前核心假设；排除参考稿、草稿、`Agent/Load/` 沙箱稿和任意子目录产物。
+3. **先跑年份门禁**：用选中的正式稿执行 `src.assumption_staleness`；若 clean 实际年覆盖预测起点或 defaults 基期落后，立即停并提示 `/annual-update`。
+4. **动态加载最新版 `yaml1compiler` skill**：扫描 `D:\MKA\skills\`，匹配 `yaml1compiler_v*.md`，取版本号最大。
+5. 再读取五份输入材料：
+   - 第二步选中的根目录 `状态: official` 核心假设（语义层：判断、历史、旋钮、时间轴、覆盖项）
    - `companies/{公司}/Agent/defaults.yaml`（目标命名空间）
    - `docs/数据格式参考.md`（中文科目 ↔ TuShare 字段字典）
    - `docs/yaml1算法模板契约.md`（cleaner/calc 支持的算法模板硬边界）
-4. 按加载到的 compiler skill 执行编译。
-5. 输出：`companies/{公司}/Agent/yaml1_公司名_YYYYMMDD.yaml`。
+   - `docs/knobs块契约.md`（核心假设末尾 `knobs` 机器自报清单与 fidelity block-diff 真源）
+6. 按加载到的 compiler skill 执行编译。
+7. 输出：`companies/{公司}/Agent/yaml1_公司名_YYYYMMDD.yaml`。
 
 **关键纪律**：
 - 所有 skill 均不读取 PDF。
@@ -490,7 +493,7 @@ companies/{公司名}_{代码}/
 
 沙盘预览调用 `POST /api/companies/{id}/assumption-preview`：后端复制 yaml1，在内存中按 JSON pointer 应用 patch，走 `clean_yaml1_data()` → `build_forecast_statements()` → `value_from_statements()`，返回临时 DCF、临时 forecast 三表和可展示的 result rows。该接口不写 `核心假设.md`、不写 `yaml1*.yaml`、不写 `.modelking/`，因此不会污染正式输出。
 
-正式落盘仍通过语义源头闭环：前端调用 `POST /api/companies/{id}/assumption-brief` 生成 `/frontend-edit` 指令，携带当前 `核心假设.md`、当前 `yaml1` 和沙盘 patch。`/frontend-edit` 只做前端已拍板的小范围定点回写：同步更新核心假设正文和 `knobs` 块，再走 `/comp` 重新编译并由 `forecast.py` 正式重算。普通自然语言小改优先走 `/adj quick`；结构性改动或新增材料走 `/adj incremental -> /comp`。禁止前端直接把 patch 写回 yaml1 当源头，因为 yaml1 是 compiler 产物，不是人工编辑源。
+正式落盘仍通过语义源头闭环：前端调用 `POST /api/companies/{id}/assumption-brief` 生成 `/frontend-edit` 指令，携带当前 `核心假设.md`、当前 `yaml1` 和沙盘 patch。`/frontend-edit` 只做前端已拍板的小范围定点回写：同步更新核心假设正文和 `knobs` 块，并在 A4 白名单内定点 patch 当前 yaml1 后由 `forecast.py` 正式重算；这不是把 yaml1 当判断源头，而是已有 knob 纯数值小改的受限缓存更新。普通自然语言小改优先走 `/adj quick`；结构性改动或新增材料走 `/adj incremental -> /comp`。禁止前端直接把 patch 写回 yaml1 当源头，因为 yaml1 是 compiler 产物，不是人工编辑源。
 
 DCF tab 额外提供三个实时 sensitivity 滑块（WACC、terminal growth、terminal CAPEX / D&A ratio），调用 `POST /api/companies/{id}/dcf-sensitivity` 即时刷新每股价值，无需重跑三表。视觉遵循 Apple HIG / SF Pro：白/灰系统底色、单一 #0071E3 交互蓝、轻边框和轻阴影；金融表格数字右对齐、SF Mono、负数红色、轻 zebra；YAML 面板是唯一允许多语法色的区域。
 
@@ -503,7 +506,7 @@ npm run build
 py -m src.workbench
 ```
 
-Windows 双击入口为 `run_workbench.cmd`。默认服务地址为 `http://127.0.0.1:8765`；如只验证前端构建，可运行 `npm run build`。
+Windows 双击入口为 `first_use.cmd`（首次自动装依赖、之后每次双击直接启动）。默认服务地址为 `http://127.0.0.1:8765`；如只验证前端构建，可运行 `npm run build`。
 
 ### 3.6 vendor/use_cninfo（vendored cninfo 工具库）
 
@@ -1165,6 +1168,7 @@ MKA/
 | 跨端点消歧 | `endpoint.field` 前缀 | credit_impa_loss 在 income/cashflow 中值不同 |
 | cninfo 接入 | vendored `rollysys/use_cninfo` | 直接复用成熟的 `hisAnnouncement/query`、orgId、PDF 下载封装，避免重复维护接口细节 |
 | NULL vs 0 provenance | `null_fields_by_period`（`wide.attrs`，fillna 前捕获 income 端 NULL 字段） | `fillna(0.0)` 把 TuShare NULL 抹成 0，validator 无法区分"数据源缺口"与"公司真报 0"。provenance 只喂 validator（compute 路径仍吃 fillna 后数字），让 IS 1.2 的 operating_adjustment NULL 缺口硬失败进 reconciler，而非被 `missing_optional` 静默放行。reconciler `collect_failures` 同步取此 provenance 传 `check_is`，`llm_override_suggestions` 加联合闭合处理多字段联合缺失 |
+| IS check 候选窄化 + bridge IS 1.2 闭合 + 抓错列验证 | `failure_candidate_fields` 按 check 公式窄化；`_effective_bucket` 补查 IS/CF 分类；`_verify_llm_value_in_consolidated_statement` 紧容差重抽 | 防"非公式字段进候选→联合闭合 Σ≈残差批准→对 calc 零影响→制造下游 check 失败"脏 override（会稽山 2022 int_income）。每个 IS check 候选只含其公式 category 字段，Σ(proposed)≡calc 模拟（in-formula +1 符号）。bridge `_effective_bucket` 原本 BS-only 致 IS 1.2 提案全 reject，补查 IS/CF 分类后 Σ 闭合生效，重跑 clean 兜底。抓错列：LLM 提议值用合并利润表 statement snippet（裁到母公司表前）`find_alias_amount_matches` 确定性重抽，紧容差 0.05 百万匹配，挡 LLM 把附注/母公司表同名字段值当主表值（会稽山 2022 oth_income 7.88 vs 主表 10.54）。详见 CLAUDE.md「三层防脏守卫」第四层 +「IS 1.2 升级通道与符号坑」 |
 | 年报文件命名 | `{年份}_年度报告.pdf/.md` / `{年份}_年度报告_修订版.pdf/.md` | 同年份原始版与修订版可并存，文件已存在时跳过 |
 
 ---

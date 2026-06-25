@@ -185,10 +185,22 @@ def build_failure_context(
 # ─────────────────────────────────────────────────────────────────────
 
 def _effective_bucket(field: str, reclass_for_period: dict[str, str]) -> str | None:
-    """字段在本期的有效 bucket：已批准 reclass 优先，否则 BS_FIELD_CATEGORIES 静态分类。"""
+    """字段在本期的有效 bucket：已批准 reclass 优先，否则静态分类（BS/IS/CF）。
+
+    2026-06-25：原本只查 BS_FIELD_CATEGORIES，income/cashflow 字段一律返回 None，
+    导致 IS 1.2（bucket=operating_adjustment）的 add_override 提案 eff_bucket=None≠
+    bucket→贡献 0→全 reject（bridge 闭合不了 IS 1.2）。现补查 IS/CF 分类，使 IS 1.2
+    operating_adjustment 字段（oth_income/credit_impa_loss/asset_disp_income 等）的
+    eff_bucket 与 bucket 匹配，Σ(new_value)≈residual 闭合逻辑生效。最终闭合由重跑
+    clean 的 check_is 硬校验兜底（Σ 对符号翻转等边缘情形的误差会被 clean 捕获）。
+    """
     if field in reclass_for_period:
         return reclass_for_period[field]
-    return clean.BS_FIELD_CATEGORIES.get(field)
+    return (
+        clean.BS_FIELD_CATEGORIES.get(field)
+        or clean.IS_FIELD_CATEGORIES.get(field)
+        or clean.CF_FIELD_CATEGORIES.get(field)
+    )
 
 
 def evaluate_proposals(

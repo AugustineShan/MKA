@@ -1,6 +1,6 @@
 ﻿---
 name: comp
-description: 启动 yaml1 compiler：解析公司目录 → 先做年份门禁 → 动态加载最新版 yaml1compiler skill → 读取四份输入材料 → 编译生成 yaml1_公司名_YYYYMMDD.yaml → 自动跑 src.forecast 出 DCF。
+description: 启动 yaml1 compiler：解析公司目录 → 先做年份门禁 → 动态加载最新版 yaml1compiler skill → 读取五份输入材料 → 编译生成 yaml1_公司名_YYYYMMDD.yaml → 自动跑 src.forecast 出 DCF。
 argument-hint: [公司名或代码，如 新乳业 / 002946]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
@@ -15,7 +15,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 2. **正式假设选择门（年份门禁前）**：
    - 只在公司根目录非递归寻找当前正式稿；排除 `*参考*.md`、`*draft*`、`Agent\`、`WEBCLAUDE\`、归档目录和任意子目录产物。
    - 候选文件必须在抬头声明 `状态: official`。若最新可见稿是 `状态: reference` / `状态: draft`，或只找到参考稿/草稿，**立即停止**，提示用户先完成 `/ka` 形成正式 `核心假设.md`。
-   - `/load` 沙箱里的 `{原Excel文件名}_核心假设.md`、`model-extracted` 稿只能用于 load-vintage 沙箱编译，不能被本 `/comp` 当作公司当前正式假设。
+   - `/load` 沙箱里的 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md`、`model-extracted` 稿只能用于 load-vintage 沙箱编译，不能被本 `/comp` 当作公司当前正式假设。
 3. **年份门禁（先于 compiler）**：
    - 使用上一步选中的正式核心假设，并找到 `Agent\data.db`、`Agent\defaults.yaml`。
    - 若 `Agent\data.db` 存在，先运行：
@@ -25,11 +25,12 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
    - 若退出码为 `2`，表示 `clean_annual` 最新实际年已经覆盖核心假设预测起点，或 `defaults.yaml` 基期落后于最新实际年。**立即停止 `/comp`**，原样报告 stdout，并提示用户先跑 `/annual-update {公司}`。不要加载 compiler、不要生成新 yaml1、不要跑 DCF。
    - 若 `Agent\data.db` 不存在，年份门禁无法执行；允许继续编译 yaml1，但第六步 DCF 仍按「缺 data.db」规则跳过。
 4. **动态加载最新版 yaml1compiler skill**：扫描 `D:\MKA\skills\`，匹配 `yaml1compiler_v*.md`，取版本号最大的那份。**必须先通过年份门禁，再加载 compiler，再读输入材料**，防止注意力涣散。
-5. **读取四份输入材料**：
+5. **读取五份输入材料**：
    - 第二步选中的公司根目录 `状态: official` 核心假设（语义层：判断、历史、旋钮、时间轴、覆盖项）
    - `companies\{公司}\Agent\defaults.yaml`（目标命名空间：覆盖落到哪些真实路径）
    - `D:\MKA\docs\数据格式参考.md`（字典：中文科目 ↔ TuShare 字段语义对齐）
    - `D:\MKA\docs\yaml1算法模板契约.md`（算法硬边界：cleaner/calc 支持的模板清单）
+   - `D:\MKA\docs\knobs块契约.md`（解释核心假设末尾 `knobs` 机器自报清单；fidelity block-diff 的单一真源）
 6. **按加载到的 compiler skill 执行编译与审计**，生成 yaml1，输出到 `companies\{公司}\Agent\yaml1_公司名_YYYYMMDD.yaml`（日期 = 本次编译日 `YYYYMMDD`），并执行 `yaml1compiler` §9 的 compiler audit。
 7. **自动跑 DCF**：只有 compiler audit 判定 `audit_clean` 后，才允许调 `src.forecast` 跑正式 DCF。详见下方「第七步：自动 DCF」。
 
@@ -54,6 +55,8 @@ companies/{公司名}_{代码}/Agent/yaml1_公司名_YYYYMMDD.yaml
 ## 第七步：自动 DCF（compiler audit clean 后执行）
 
 yaml1 是 comp 的主产物，但**不是落盘即 official 成功**。落盘后必须先输出 compiler audit report；只有 `audit_clean` 才能自动跑一次正式 DCF，让用户拿到完整的 `Agent/forecast/`，不必再手动敲 `src.forecast`。
+
+汇报口吻要像 compiler 审计 memo，不像机器日志：先讲“这份核心假设被成功翻译成了什么 / 哪些覆盖项生效 / 哪些路径或语义被拦住 / DCF 是否跑通”，再给关键文件路径。不要把 stdout、yaml1 大段内容或 audit JSON 原样倾倒给用户；失败时只摘关键错误和下一步。
 
 ### Compiler Audit 门禁（不干净则不跑 DCF）
 

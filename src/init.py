@@ -1,7 +1,7 @@
-"""init.py - 一键编排 MKA 核心流程（取数 → 年报 → 清洗校验 → 核心指标速览 → 财务费用细则）。
+"""init.py - 一键编排 MKA 核心流程（取数 → 年报 → 清洗校验 → 核心指标速览 → 财务费用细则 → defaults.yaml）。
 
 给 Agent / 人用的单一入口：输入公司名 / 裸代码 / 完整 ticker，自动完成
-data_fetcher → report_downloader → clean → core_metrics_overview → financial_expense_analyzer 的确定性编排，
+data_fetcher → report_downloader → clean → core_metrics_overview → financial_expense_analyzer → defaults_gen 的确定性编排，
 并保证幂等（增量跳过、重跑只应用补数），最后输出一份"数据拉取报告"。
 
 设计边界（与 CLAUDE.md 纪律一致）：
@@ -66,10 +66,12 @@ from src.company_paths import (
     quarterly_reports_dir,
 )
 from src.core_metrics_overview import write_core_metrics_overview
+from src.defaults_gen import build_defaults, default_output_path
 from src.financial_expense_analyzer import (
     analyze_all_periods,
     default_yaml_path,
 )
+from src.yaml2_schema import write_yaml2
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 COMPANIES_DIR = BASE_DIR / "companies"
@@ -573,6 +575,27 @@ def stage_financial_expense(
         return f"⚠️ 分析失败: {exc}", None
 
 
+def stage_defaults(ticker: str, db_path: Path, *, verbose: bool) -> str:
+    """阶段⑥：生成 defaults.yaml（YAML2 机器平推底座）。
+
+    从 clean_annual + meta + financial_expense.yaml 派生 companies/{公司}/Agent/defaults.yaml，
+    供 /comp 与 src.forecast 消费。必须在 ③clean（产 clean_annual）与 ⑤财务费用细则（产
+    financial_expense.yaml）之后跑。失败仅 warning 不阻塞，但缺 defaults.yaml 会让 /comp 卡门禁。
+    """
+    LOGGER.info("[6/6] 生成 defaults.yaml %s ...", ticker)
+    try:
+        data = build_defaults(db_path, ticker=ticker)
+        output = default_output_path(db_path)
+        write_yaml2(output, data)
+        base_period = data.get("base_period", "?")
+        return f"✅ 已生成 {output.name}（base_period={base_period}）"
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            LOGGER.exception("defaults.yaml 生成失败")
+        LOGGER.warning("defaults.yaml 生成失败（/comp 与 forecast 将不可用）: %s", exc)
+        return f"⚠️ 生成失败: {exc}"
+
+
 def build_report(
     ticker: str,
     db_path: Path,
@@ -583,6 +606,7 @@ def build_report(
     clean_status: str,
     core_metrics_status: str,
     fin_exp_status: str,
+    defaults_status: str,
 ) -> str:
     meta = read_meta(db_path)
     name = meta.get("name", "?")
@@ -590,17 +614,18 @@ def build_report(
     lines.append("=" * 64)
     lines.append(f"  init 数据拉取报告: {name} ({ticker})")
     lines.append("=" * 64)
-    lines.append(f"  [0/5] 公司目录入口    : {artifacts_status}")
-    lines.append(f"  [1/5] TuShare 拉取      : {fetch_status}")
+    lines.append(f"  [0/6] 公司目录入口    : {artifacts_status}")
+    lines.append(f"  [1/6] TuShare 拉取      : {fetch_status}")
     if meta:
         lines.append(
             f"          latest_trade_date={meta.get('latest_trade_date','?')} "
             f"last_report_period={meta.get('last_report_period','?')}"
         )
-    lines.append(f"  [2/5] 年报 PDF/Markdown : {report_status}")
-    lines.append(f"  [3/5] clean 配平校验    : {clean_status}")
-    lines.append(f"  [4/5] 核心指标速览      : {core_metrics_status}")
-    lines.append(f"  [5/5] 财务费用细则      : {fin_exp_status}")
+    lines.append(f"  [2/6] 年报 PDF/Markdown : {report_status}")
+    lines.append(f"  [3/6] clean 配平校验    : {clean_status}")
+    lines.append(f"  [4/6] 核心指标速览      : {core_metrics_status}")
+    lines.append(f"  [5/6] 财务费用细则      : {fin_exp_status}")
+    lines.append(f"  [6/6] defaults.yaml     : {defaults_status}")
 
     with closing(sqlite3.connect(db_path)) as conn:
         def _count(table: str) -> int:
@@ -756,16 +781,28 @@ def run_one(
     t_finexp = time.monotonic() - t0
     LOGGER.info("⏱ 阶段⑤ 财务费用细则用时 %s", _fmt_dur(t_finexp))
 
+    # ⑥ defaults.yaml：clean 通过才派生（defaults_gen 读 clean_annual + financial_expense.yaml）。
+    if ok:
+        t0 = time.monotonic()
+        defaults_status = stage_defaults(ticker, db_path, verbose=verbose)
+        t_defaults = time.monotonic() - t0
+    else:
+        defaults_status = "⏭️ clean 未通过，未生成"
+        t_defaults = 0.0
+    LOGGER.info("⏱ 阶段⑥ defaults.yaml 用时 %s", _fmt_dur(t_defaults))
+
     LOGGER.info(
-        "⏱ 总用时 %s（取数 %s / 下载 %s / clean %s / 速览 %s / 财务费用 %s）",
+        "⏱ 总用时 %s（取数 %s / 下载 %s / clean %s / 速览 %s / 财务费用 %s / defaults %s）",
         _fmt_dur(time.monotonic() - t_total), _fmt_dur(t_fetch),
         _fmt_dur(reports_joined.get("dur", 0.0)),
         _fmt_dur(t_clean), _fmt_dur(t_core_metrics), _fmt_dur(t_finexp),
+        _fmt_dur(t_defaults),
     )
 
     print("\n" + build_report(
         ticker, db_path, artifacts_status, fetch_status, report_status,
-        revenue_breakdown_status, clean_status, core_metrics_status, fin_exp_status
+        revenue_breakdown_status, clean_status, core_metrics_status, fin_exp_status,
+        defaults_status,
     ))
 
     return 0 if ok else 3
@@ -773,7 +810,7 @@ def run_one(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="一键编排 MKA 核心流程：取数 → 年报 → 清洗校验 → 核心指标速览 → 财务费用细则（幂等）。"
+        description="一键编排 MKA 核心流程：取数 → 年报 → 清洗校验 → 核心指标速览 → 财务费用细则 → defaults.yaml（幂等）。"
     )
     parser.add_argument("inputs", nargs="+", help="公司名 / 裸代码 / 完整 ticker（可多个）")
     parser.add_argument("--force", action="store_true",

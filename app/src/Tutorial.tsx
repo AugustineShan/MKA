@@ -13,6 +13,8 @@ import {
   skillPrincipleStack,
   skillPrinciples,
   skills,
+  workspaceFolderTree,
+  workspacePlacementTips,
 } from "./tutorialContent";
 import type { AppSettings, SettingsField, SettingsValidation } from "./types";
 
@@ -28,6 +30,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function sectionTitle(section: string): string {
+  if (section === "output") return "输出配置";
   if (section === "workspace") return "工作台";
   if (section === "data") return "数据源";
   if (section === "llm") return "大模型";
@@ -53,7 +56,8 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const [activeTab, setActiveTab] = useState<"config" | "guide" | "codex" | "principles">("config");
+  const [activeTab, setActiveTab] = useState<"config" | "guide" | "workspace" | "codex" | "principles">("config");
+  const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
 
   const loadSettings = async () => {
     setLoading(true);
@@ -86,10 +90,13 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
     const groups = new Map<string, SettingsField[]>();
     for (const field of settings?.fields ?? []) {
       if (field.key === "MKA_COMPANIES_DIR") continue;
+      if (field.section === "output") continue;
       groups.set(field.section, [...(groups.get(field.section) ?? []), field]);
     }
     return [...groups.entries()];
   }, [settings]);
+
+  const outputFields = useMemo(() => (settings?.fields ?? []).filter((field) => field.section === "output"), [settings]);
 
   const skillCardsByKey = useMemo(() => new Map(skills.map((skill) => [skill.key, skill])), []);
 
@@ -150,6 +157,34 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
     }
   };
 
+  const copyPrompt = async (label: string, prompt: string) => {
+    const fallbackCopy = () => {
+      const textarea = document.createElement("textarea");
+      textarea.value = prompt;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    };
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(prompt);
+      } else {
+        fallbackCopy();
+      }
+    } catch {
+      fallbackCopy();
+    }
+    setCopiedPrompt(label);
+    window.setTimeout(() => setCopiedPrompt((current) => (current === label ? null : current)), 1400);
+  };
+
+  const starterPrompt = codexGuidePrompts[0];
+  const taskPrompts = codexGuidePrompts.slice(1);
+
   return (
     <div className="tutorial-overlay" role="dialog" aria-modal="true" aria-label="配置和教程">
       <div className="tutorial-page config-page">
@@ -184,6 +219,15 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
             教程
           </button>
           <button
+            aria-selected={activeTab === "workspace"}
+            className={activeTab === "workspace" ? "active" : ""}
+            onClick={() => setActiveTab("workspace")}
+            role="tab"
+            type="button"
+          >
+            工作台指南
+          </button>
+          <button
             aria-selected={activeTab === "codex"}
             className={activeTab === "codex" ? "active" : ""}
             onClick={() => setActiveTab("codex")}
@@ -216,6 +260,32 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
 
             {settings ? (
               <section className="tutorial-section config-section">
+                {outputFields.length ? (
+                  <div className="config-output-card">
+                    <div className="config-output-copy">
+                      <span>输出配置</span>
+                      <h2>交付文件里的署名</h2>
+                      <p>这里会写进导出的模型 Excel。未填写时导出为空，不再使用任何模板里的默认个人信息。</p>
+                    </div>
+                    <div className="config-output-fields">
+                      {outputFields.map((field) => (
+                        <label className="config-field" key={field.key}>
+                          <span>{field.label}</span>
+                          <input
+                            autoComplete="off"
+                            onChange={(event) => {
+                              setSaved(false);
+                              setDrafts((current) => ({ ...current, [field.key]: event.currentTarget.value }));
+                            }}
+                            placeholder={field.placeholder}
+                            type="text"
+                            value={drafts[field.key] ?? ""}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="config-section-head">
                   <div>
                     <h2>基础配置</h2>
@@ -330,7 +400,7 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
             <section className="tutorial-section">
               <div className="tutorial-section-intro">
                 <h2>我现在该从哪开始</h2>
-                <p>先选最像当前工作的卡片，按卡片下方命令往下跑。</p>
+                <p>历史底稿默认会先准备。这里按你手上的材料选路线，再按卡片下方命令往下跑。</p>
               </div>
               <div className="entry-routes">
                 {entryRoutes.map((r) => (
@@ -435,26 +505,101 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
               </div>
             </section>
           </div>
-        ) : activeTab === "codex" ? (
-          <div className="tutorial-guide codex-guide">
-            <section className="tutorial-section">
-              <h2>给 Codex 的使用指南</h2>
-              <div className="codex-guide-hero">
+        ) : activeTab === "workspace" ? (
+          <div className="tutorial-guide workspace-guide">
+            <section className="tutorial-section workspace-folder-map">
+              <header className="workspace-map-head">
                 <div>
-                  <strong>先读 Codex.md，再读对应 skill。</strong>
-                  <p>
-                    Codex 可以执行这个项目的技能，但它需要把这些技能当成本地操作手册加载。
-                    新开线程时先把项目地图交给它，具体任务再让它读对应的
-                    <code>.claude/skills</code> 入口和 <code>D:\MKA\skills</code> 里的动态细则。
-                  </p>
+                  <span>工作台指南</span>
+                  <h2>一家公司文件夹，就看这四块。</h2>
                 </div>
-                <code>D:\MKA\Codex.md</code>
+                <div className="workspace-map-root">
+                  <span className="folder-mark" />
+                  <code>companies/新乳业_002946/</code>
+                </div>
+              </header>
+
+              <div className="workspace-map-legend">
+                <span className="legend-archive">普通资料区：给人放，Agent 默认不读</span>
+                <span className="legend-input">Skills素材包：给 Agent 读</span>
+                <span className="legend-agent">Agent：结果和程序产物</span>
+              </div>
+
+              <div className="workspace-tree-grid">
+                {workspaceFolderTree.map((group) => (
+                  <article className={`workspace-tree-card ${group.tone}`} key={group.title}>
+                    <header>
+                      <span className="folder-mark" />
+                      <div>
+                        <strong>{group.title}</strong>
+                        <em>{group.tag}</em>
+                      </div>
+                    </header>
+                    <ul>
+                      {group.rows.map((row) => (
+                        <li className={row.hot ? "hot" : ""} key={row.name}>
+                          <code>{row.name}</code>
+                          <span>{row.purpose}</span>
+                          <b>{row.action}</b>
+                        </li>
+                      ))}
+                    </ul>
+                  </article>
+                ))}
+              </div>
+
+              <div className="workspace-map-note">
+                <strong>记住：</strong>
+                <span>截图里的 <code>内部报告</code>、<code>研报</code>、<code>纪要</code>、<code>收集</code>、<code>重要文件</code> 都是资料仓；要让 Agent 阅读，复制到 <code>Skills素材包</code>。</span>
               </div>
             </section>
 
+            <section className="tutorial-section workspace-placement">
+              <h2>我手上有材料，放哪儿</h2>
+              <div className="workspace-placement-table">
+                {workspacePlacementTips.map((item) => (
+                  <div className="workspace-placement-row" key={item.material}>
+                    <strong>{item.material}</strong>
+                    <code>{item.put}</code>
+                    <span>{item.run}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        ) : activeTab === "codex" ? (
+          <div className="tutorial-guide codex-guide">
+            <section className="tutorial-section codex-copy-hero">
+              <div className="codex-copy-hero-copy">
+                <span>给 Codex 的使用指南</span>
+                <h2>不用解释项目，直接复制这些话。</h2>
+                <p>
+                  先复制第一条开场，让 Codex 读项目地图；后面按你要做的任务复制模板，把【公司名】和需求替换掉。
+                </p>
+              </div>
+              {starterPrompt ? (
+                <article className="codex-starter-card">
+                  <header>
+                    <div>
+                      <strong>{starterPrompt.label}</strong>
+                      <span>{starterPrompt.when}</span>
+                    </div>
+                    <button
+                      className="codex-copy-button"
+                      onClick={() => copyPrompt(starterPrompt.label, starterPrompt.prompt)}
+                      type="button"
+                    >
+                      {copiedPrompt === starterPrompt.label ? "已复制" : "复制"}
+                    </button>
+                  </header>
+                  <code>{starterPrompt.prompt}</code>
+                </article>
+              ) : null}
+            </section>
+
             <section className="tutorial-section">
-              <h2>推荐加载顺序</h2>
-              <div className="codex-guide-grid">
+              <h2>三步用法</h2>
+              <div className="codex-guide-grid compact">
                 {codexGuideFlow.map((item) => (
                   <article className="codex-guide-card" key={item.title}>
                     <h3>{item.title}</h3>
@@ -465,11 +610,24 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
             </section>
 
             <section className="tutorial-section">
-              <h2>可直接复制的提示词</h2>
+              <h2>按任务复制</h2>
               <div className="codex-prompt-list">
-                {codexGuidePrompts.map((item) => (
+                {taskPrompts.map((item) => (
                   <article className="codex-prompt-card" key={item.label}>
-                    <span>{item.label}</span>
+                    <header>
+                      <div>
+                        <span>{item.label}</span>
+                        <strong>{item.command}</strong>
+                        <p>{item.when}</p>
+                      </div>
+                      <button
+                        className="codex-copy-button"
+                        onClick={() => copyPrompt(item.label, item.prompt)}
+                        type="button"
+                      >
+                        {copiedPrompt === item.label ? "已复制" : "复制"}
+                      </button>
+                    </header>
                     <code>{item.prompt}</code>
                   </article>
                 ))}
@@ -477,7 +635,7 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
             </section>
 
             <section className="tutorial-section">
-              <h2>边界提醒</h2>
+              <h2>做完后这样检查</h2>
               <div className="codex-guide-grid">
                 {codexGuideRules.map((item) => (
                   <article className="codex-guide-card" key={item.title}>
@@ -485,6 +643,19 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
                     <p>{item.body}</p>
                   </article>
                 ))}
+              </div>
+            </section>
+
+            <section className="tutorial-section codex-old-note">
+              <h2>只记住这一句</h2>
+              <div className="codex-guide-hero">
+                <div>
+                  <strong>Codex 不是直接吃 slash command，而是先读本地说明书再执行。</strong>
+                  <p>
+                    所以每个模板都会明确让它读取 <code>D:\MKA\Codex.md</code> 和对应的 <code>.claude/skills</code>。
+                  </p>
+                </div>
+                <code>D:\MKA\Codex.md</code>
               </div>
             </section>
           </div>

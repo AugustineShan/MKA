@@ -50,6 +50,31 @@ formula/DAG 层:
 
 formula/DAG 已有受限执行器，详见 `docs/formula_DAG开发文档.md`。它只在 `yaml1_cleaner.py` 内求值，最终仍必须压平成 `model.revenue_yoy`、`income.gpm` 或 `defaults.yaml` 中已经存在的标准路径。`calc.py` 不直接理解 formula。
 
+## terminal fade：交接增速与永续增速
+
+`terminal.fade` 支持在线性衰减里把中期经营交接增速和 Gordon 永续增速拆开：
+
+```yaml
+terminal:
+  explicit_end: 2030
+  fade:
+    kind: linear
+    to_year: 2037
+    target_growth: 0.055
+    target_basis: auto_stable_brand
+    fade_paths: [model.revenue_yoy]
+    hold_paths: [income.gpm]
+  perpetual_growth: 0.02
+```
+
+语义：
+
+- `target_growth` 是 fade 末年 `fade_paths` 收敛到的交接增速。
+- `perpetual_growth` 是 `calc.py` Gordon terminal value 使用的永续增速，并会覆盖 `model.terminal_growth`。
+- 缺少 `target_growth` 时，清洗层兼容旧语义：fade 直接收敛到 `perpetual_growth`。
+- 若写了 `target_growth`，它必须大于或等于 `perpetual_growth`，否则硬失败。
+- `target_basis` 只用于审计和解释，清洗层不执行。
+
 ## 结构层：decomposition_sum
 
 `decomposition` 是一棵树，默认语义是子节点求和。

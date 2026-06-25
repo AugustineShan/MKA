@@ -27,6 +27,8 @@ D:\MKA\skills\核心假设源语言_skill_v*.md
 
 `/adj quick` 允许 direct yaml1 patch 的唯一理由和边界见核心纪律 A4：白名单不可加宽；`核心假设.md` 是 canonical，yaml1 是派生缓存；三处不同源时 md 赢，回到 `/comp`，不得继续手 patch yaml1 去凑一致。
 
+交互风格继承核心纪律 A4：`quick` 给用户看“手术单”，`incremental` 给用户看“增量影响 memo”。先说你理解要改什么、为什么只是小改或为什么需要增量流程，再等确认；不要把 knobs/yaml1 清单机械倾倒给用户。
+
 ## 1. 解析公司与模式
 
 从 `$ARGUMENTS` 定位 `D:\MKA\companies\{公司}`。
@@ -62,11 +64,13 @@ quick 只能做已有 knobs 的数值小改。
 - 跑 `py -m src.forecast --yaml1 "<今日yaml1>"`。
   - **(audit R6/H2a)** official forecast 现在会自动跑 yaml1 结构/路径保真闸门:若 quick patch 不慎越界(改了 family/结构/path、偏离 defaults 命名空间),Gate A/B 会 FAIL 并阻断 forecast(exit 4),逼你回 `/comp`——quick 不再能静默把结构性改动送进 DCF。确需临时放行设 `MKA_FIDELITY_GATE=warn`。
 
+`knobs` 块语法以 `docs/knobs块契约.md` 为准；quick 只改已有条目的 `values[i]`，不改块结构。
+
 禁止：
 
 - 新增/删除收入线、费用线、below-OP 项。
 - 改 compiler family。
-- 改显式期、衰减期长度、`terminal.fade.to_year`。
+- 改显式期、衰减期长度、`terminal.fade.to_year` 或 `terminal.fade.target_growth`。
 - 整体毛利与分线毛利互相翻转。
 - 改历史事实、来源说明、业务线命名。
 - 改 yaml1 结构或发明 yaml1 path。
@@ -89,6 +93,16 @@ quick 执行：
 6. 定点 patch 今日 yaml1。
 7. 三处同源核对：正文、`knobs`、yaml1。
 8. 跑 forecast 并汇报 per-share value。
+
+patch plan 聊天格式要像手术单：
+
+```text
+我理解这是一个 quick 小改，只动已有旋钮：
+| 旋钮 | 年份 | 旧值 | 新值 | 影响 |
+
+不会改：结构、历史、来源、horizon、yaml1 path。
+确认后我归档旧稿，写今日新稿，定点 patch yaml1，并跑 forecast。
+```
 
 三处不同源时停止，不跑 forecast。tie-break：`核心假设.md` 赢，yaml1 视为派生缓存，回到 `/comp` 重编译。
 
@@ -123,6 +137,18 @@ companies\{公司}\Skills素材包\ADJ增量信息（用来改模型的边际信
 5. 形成“受影响假设清单”和“建议调整方案”，先和用户讨论。
 6. 用户拍板后，只修改核心假设源文，不直接改 yaml1。
 7. 调用 `/comp` 纪律重新编译 yaml1，再跑 DCF。
+
+讨论格式用增量影响 memo：
+
+```text
+我读完增量材料后，判断它影响这些地方：
+| 假设 | 旧稿怎么写 | 新信息怎么改变 | 我建议 |
+
+需要你拍板：
+- ...
+
+这个调整范围可以吗？确认后我只改这些受影响行，再走 /comp。
+```
 
 若增量材料与旧正式稿或其它来源冲突，按核心纪律 A2 与源语言 B7 写“来源与裁决”，不能静默丢掉未采用方。
 

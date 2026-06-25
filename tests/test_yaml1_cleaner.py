@@ -519,6 +519,65 @@ def test_clean_yaml1_expands_fade_hold_default_hold_and_alias_warning():
     assert any("末年增速<永续" in message for message in warnings)
 
 
+def test_terminal_fade_target_growth_separates_fade_from_gordon_growth(tmp_path):
+    yaml1_path, defaults_path, clean_path = paths()
+    yaml1 = yaml1_cleaner.load_yaml(yaml1_path)
+    yaml1["terminal"]["fade"]["target_growth"] = 0.055
+    yaml1["terminal"]["perpetual_growth"] = 0.02
+
+    result = yaml1_cleaner.clean_yaml1(write_yaml1_fixture(tmp_path, yaml1), defaults_path, clean_path)
+    y = result.forecast_params
+
+    revenue_yoy = y["model"]["revenue_yoy"]["value"]
+    assert revenue_yoy[-1] == pytest.approx(0.055)
+    assert y["model"]["terminal_growth"]["value"] == pytest.approx(0.02)
+    assert y["model"]["terminal_growth"]["source"] == "yaml1.terminal.perpetual_growth"
+    assert result.report["terminal_fade"]["target_growth"] == pytest.approx(0.055)
+    assert result.report["terminal_fade"]["perpetual_growth"] == pytest.approx(0.02)
+    warnings = [item["message"] for item in result.report["warnings"]]
+    assert any("末年增速<衰减交接增速" in message for message in warnings)
+
+
+def test_terminal_fade_target_growth_cannot_sit_below_gordon_growth(tmp_path):
+    yaml1_path, defaults_path, clean_path = paths()
+    yaml1 = yaml1_cleaner.load_yaml(yaml1_path)
+    yaml1["terminal"]["fade"]["target_growth"] = 0.01
+    yaml1["terminal"]["perpetual_growth"] = 0.02
+
+    with pytest.raises(yaml1_cleaner.Yaml1CleanError, match="target_growth"):
+        yaml1_cleaner.clean_yaml1(write_yaml1_fixture(tmp_path, yaml1), defaults_path, clean_path)
+
+
+def test_terminal_perpetual_growth_overrides_model_terminal_growth():
+    """yaml1 terminal.perpetual_growth 必须覆盖 model.terminal_growth，否则 calc.py Gordon 终值
+    用 defaults 0.025 而 fade 末端用 perpetual_growth，永续增速双源分裂、DCF 系统性偏高。"""
+    yaml1_path, defaults_path, clean_path = paths()
+
+    # 防回归前提：fixture 故意把两者设成不同值（perpetual=0.03 vs defaults=0.025）。
+    import src.yaml2_schema as yaml2_schema
+    defaults = yaml2_schema.read_yaml2(defaults_path)
+    assert defaults["model"]["terminal_growth"]["value"] == 0.025
+
+    result = yaml1_cleaner.clean_yaml1(yaml1_path, defaults_path, clean_path)
+    y = result.forecast_params
+
+    assert y["model"]["terminal_growth"]["value"] == pytest.approx(0.03)
+    assert y["model"]["terminal_growth"]["source"] == "yaml1.terminal.perpetual_growth"
+    assert result.report["terminal_growth_override"]["perpetual_growth"] == pytest.approx(0.03)
+
+
+def test_defaults_only_run_leaves_terminal_growth_at_defaults():
+    """defaults-only 运行（无 yaml1）不覆盖 model.terminal_growth：terminal 由
+    _empty_terminal_from_yaml2 构造，perpetual_growth 已 = model.terminal_growth，自洽。"""
+    _, defaults_path, clean_path = paths()
+
+    result = yaml1_cleaner.clean_yaml1(None, defaults_path, clean_path)
+    y = result.forecast_params
+
+    assert y["model"]["terminal_growth"]["value"] == pytest.approx(0.025)
+    assert "terminal_growth_override" not in result.report
+
+
 def test_resolve_yearly_shape_keeps_base_and_constants_scalar():
     yaml1_path, defaults_path, clean_path = paths()
 

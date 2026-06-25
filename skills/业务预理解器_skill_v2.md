@@ -194,6 +194,9 @@
 - 不应默认平推的项目:
 
 ## 机器自报清单（draft knobs，非 YAML1，待 /ka 拍板）
+
+语法以 `docs/knobs块契约.md` 为准；本版本只吐 draft/partial 候选，不能冒充 official。
+
 ```knobs
 horizon: [待 /ka 锁时间轴]
 knobs:

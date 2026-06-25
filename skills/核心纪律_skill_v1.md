@@ -68,6 +68,14 @@
 
 先在对话里押判断，再等分析师拍板，拍板后才落盘。
 
+交互风格是纪律的一部分：押判断要像分析师开会，不像机器审表。默认用“会议 memo”输出自己的理解和预测，再等确认：
+
+- 先讲结论，再讲证据：说明“我读下来这块在押什么 / 我建议怎么装 / 为什么”。
+- 控制在一个可读屏幕左右：3-5 条结论、一个紧凑表格、一个风险/待拍板清单。
+- 不在确认阶段倾倒完整 markdown、所有历史原子、所有 source range、逐条 JSON/YAML/knobs；这些必须完整落盘，但默认不全量贴进聊天。
+- 每次只问一个自然问题：`这段我这样理解/这样装可以吗？确认后我写入底稿，再进下一段。`
+- 用户要求看完整底稿、source range 或 knobs 时，可以展开；否则聊天为人读，文件为机器读。
+
 必须按语义区块停，不允许连写到底：
 
 1. overview/时间轴/骨架确认。
@@ -90,7 +98,7 @@
 
 direct yaml1 patch 的边界必须闭合：
 
-- 白名单不可加宽：只允许已有 knob 的 `values[i]` 或 `terminal.perpetual_growth` 标量；不得改结构、slug、family、horizon、fade、历史、来源、stash、新增/删除 path。
+- 白名单不可加宽：只允许已有 knob 的 `values[i]` 或 `terminal.perpetual_growth` 标量；不得改结构、slug、family、horizon、fade、`terminal.fade.target_growth`、历史、来源、stash、新增/删除 path。
 - 三处同源：核心假设正文、`knobs`、yaml1 必须一致。
 - tie-break 写死：`核心假设.md` 是 canonical，yaml1 是派生缓存；三处不一致时停止，md 赢，回到 `/comp` 重编译。禁止为了“对齐”再手 patch yaml1 去凑 md。
 - 若 compiler/yaml1 schema 改动导致 path 定位失效，停止并升级映射或走 `/comp`，不得猜路径。
@@ -112,6 +120,7 @@ direct yaml1 patch 的边界必须闭合：
 - 衰减给可解析规则，或明确写“交引擎默认”。
 - `knobs` 块是正文旋钮的同源回声，不是 YAML1，不写 yaml path，不做会计路径映射。
 - 正文改了，`knobs` 同步改；`knobs` 值必须和正文一字不差。
+- 具体语法以 `docs/knobs块契约.md` 为准；其他文档只引用，不另起规则。
 
 ## A7. 派生量预测序列不手算，交引擎
 

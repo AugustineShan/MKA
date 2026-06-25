@@ -556,7 +556,11 @@ def prepare_load(
     )
     _write_text(load_dir / "model_boundary.md", _boundary_markdown(boundary))
     _write_text(load_dir / "forbidden_materials.md", _forbidden_markdown(boundary, forbidden_reports, removed_rows, company_dir))
-    core_filename = f"{model.stem or '模型'}_核心假设.md"
+    # Root/sandbox LOAD outputs must not look like official core assumptions.
+    # Keep the model stem for traceability, and suffix the load run date so /ka
+    # can consume it as a model-extracted candidate without /comp/forecast
+    # mistaking it for the current official source.
+    core_filename = f"{model.stem or '模型'}_核心假设_load{datetime.now().strftime('%Y%m%d')}.md"
     core_path = load_dir / core_filename
     root_core_path = company_dir / core_filename
     _write_text(core_path, _core_assumption_scaffold(company_dir, boundary))

@@ -41,6 +41,17 @@ def test_read_env_values_supports_quoted_windows_paths(tmp_path: Path):
     assert values["MKA_COMPANIES_DIR"] == "D:\\MKA Companies\\companies"
 
 
+def test_researcher_name_is_exposed_and_writable(tmp_path: Path):
+    env_path = tmp_path / ".env"
+
+    app_config.write_env_updates({app_config.RESEARCHER_NAME_KEY: "张三"}, path=env_path)
+
+    assert app_config.get_researcher_name(env_path) == "张三"
+    field = next(field for field in app_config.ENV_FIELDS if field.key == app_config.RESEARCHER_NAME_KEY)
+    assert field.section == "output"
+    assert field.label == "研究员名字"
+
+
 def test_validate_companies_dir_counts_child_dirs(tmp_path: Path):
     companies = tmp_path / "companies"
     (companies / "测试_000001").mkdir(parents=True)

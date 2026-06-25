@@ -79,6 +79,9 @@
 ## 风险与看点
 
 ## 机器自报清单（partial knobs 块·仅收入 leaf·ka 扩展）
+
+语法以 `docs/knobs块契约.md` 为准；本版本只吐 partial 候选，不能冒充 official。
+
 ```knobs
 horizon: [2025, 2026, 2027, 2028]   # 建议显式期，ka 锁时间轴时确认
 knobs:

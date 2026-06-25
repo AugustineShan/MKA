@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -133,11 +134,13 @@ def test_prepare_load_builds_cutoff_db_defaults_and_forbidden_report(tmp_path: P
 
     defaults = yaml.safe_load((load_dir / "defaults.yaml").read_text(encoding="utf-8"))
     assert str(defaults["base_period"]) == "2024"
-    assert (load_dir / "model20250527_核心假设.md").exists()
-    assert not (company_dir / "model20250527_核心假设.md").exists()
-    assert result["core_assumption_path"] == str(load_dir / "model20250527_核心假设.md")
-    assert result["core_assumption_scaffold_path"] == str(load_dir / "model20250527_核心假设.md")
-    assert result["root_core_assumption_path"] == str(company_dir / "model20250527_核心假设.md")
+    expected_name = f"model20250527_核心假设_load{datetime.now().strftime('%Y%m%d')}.md"
+    assert (load_dir / expected_name).exists()
+    assert not (company_dir / expected_name).exists()
+    assert not (load_dir / "model20250527_核心假设.md").exists()
+    assert result["core_assumption_path"] == str(load_dir / expected_name)
+    assert result["core_assumption_scaffold_path"] == str(load_dir / expected_name)
+    assert result["root_core_assumption_path"] == str(company_dir / expected_name)
     forbidden = (load_dir / "forbidden_materials.md").read_text(encoding="utf-8")
     assert "2025年度报告.md" in forbidden
     assert result["removed_rows"]["clean_annual"] >= 1

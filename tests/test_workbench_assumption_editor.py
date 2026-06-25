@@ -5,6 +5,7 @@ from fastapi import HTTPException
 
 from src.workbench import (
     _apply_assumption_patches,
+    _assumptions_terminal,
     _editable_assumptions,
     _format_frontend_edit_prompt,
 )
@@ -55,6 +56,27 @@ def test_editable_assumptions_include_terminal_growth():
     rows = _editable_assumptions(data)
 
     assert any(row["cells"][0]["pointer"] == "/terminal/perpetual_growth" for row in rows)
+
+
+def test_assumptions_terminal_displays_fade_target_growth():
+    terminal = {
+        "explicit_end": 2030,
+        "fade": {
+            "kind": "linear",
+            "to_year": 2037,
+            "target_growth": 0.055,
+            "target_basis": "auto_stable_brand",
+            "fade_paths": ["model.revenue_yoy"],
+            "hold_paths": ["income.gpm"],
+        },
+        "perpetual_growth": 0.02,
+    }
+
+    view = _assumptions_terminal(terminal)
+
+    assert view["target_growth"] == 0.055
+    assert view["target_basis"] == "auto_stable_brand"
+    assert view["perpetual_growth"] == 0.02
 
 
 def test_apply_assumption_patches_updates_only_requested_pointer():

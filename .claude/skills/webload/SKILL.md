@@ -1,13 +1,13 @@
 ---
 name: webload
-description: 一键准备 /load 时间沙箱，并把网页端执行 /load 所需的共享纪律、核心假设源语言、load 运行纪律、边界、禁读清单、模型装载器和 `{原Excel文件名}_核心假设.md` 脚手架预合并成一个 Markdown，连同 allowed_materials 打包到 WEBCLAUDE/模型装载部分/。
+description: 一键准备 /load 时间沙箱，并把网页端执行 /load 所需的共享纪律、核心假设源语言、load 运行纪律、边界、禁读清单、模型装载器和 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md` 脚手架预合并成一个 Markdown，连同 allowed_materials 打包到 WEBCLAUDE/模型装载部分/。
 argument-hint: [公司名或代码，如 新乳业 / 002946]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
 
 # /webload - 网页端 LOAD 打包器
 
-`/webload` 是网页端执行 `/load` 的准备器。真正的模型理解仍由网页端 `/load` 完成；`/webload` 只负责先跑 deterministic prepare，然后把网页端需要的纪律、语法、边界和脚手架预合并成一个必读 Markdown。
+`/webload` 是网页端执行 `/load` 的准备器。真正的模型理解仍由网页端 `/load` 完成；`/webload` 只负责先跑 deterministic prepare，然后把网页端需要的纪律、语法、边界和脚手架预合并成一个必读 Markdown。打包内容必须包含 `docs/knobs块契约.md`，作为网页端写末尾 `knobs` 机器自报清单的单一真源。
 
 ## 执行动作
 
@@ -32,7 +32,7 @@ py -m src.webload "{公司}" --overwrite
 companies\{公司}\Agent\Load\{load_id}\
 ```
 
-并写入 `model_boundary.*`、`forbidden_materials.md`、`allowed_materials/`、沙箱 `data_cutoff.db`、沙箱 `defaults.yaml`、`{原Excel文件名}_核心假设.md` 脚手架。
+并写入 `model_boundary.*`、`forbidden_materials.md`、`allowed_materials/`、沙箱 `data_cutoff.db`、沙箱 `defaults.yaml`、`{原Excel文件名}_核心假设_load{YYYYMMDD}.md` 脚手架。
 
 5. 然后清空并重建：
 
@@ -56,7 +56,7 @@ companies\{公司}\WEBCLAUDE\模型装载部分\
 - `model_boundary.md`
 - `model_boundary.json`
 - `forbidden_materials.md`
-- `{原Excel文件名}_核心假设.md` 脚手架
+- `{原Excel文件名}_核心假设_load{YYYYMMDD}.md` 脚手架
 - `模型装载器_skill_vN.md`
 
 明确不打包：
@@ -80,11 +80,12 @@ companies\{公司}\WEBCLAUDE\模型装载部分\
 - 模型时间轴最高权威。
 - 不读取合并执行包禁读清单中列出的任何正文材料。
 - 只读 `allowed_materials/`。
-- 先给用户模型理解 overview，用户确认前不补完核心假设。
-- 用户确认后，按收入 -> 毛利/成本 -> 费用 -> below-OP 与税 -> 中期/terminal 分段先押再问。
-- 输出必须是 `/comp` 源语言的 `{原Excel文件名}_核心假设.md`，末尾带 `knobs` 机器自报清单代码块。
+- 先给用户模型理解 overview，用户确认前不补完核心假设；overview 必须用会议 memo 风格，先讲你对模型的理解、预测、关键旋钮和风险，不要机械倾倒单元格和 knobs。
+- 用户确认后，按时间轴 -> 收入 -> 毛利/成本 -> 费用 -> below-OP 与税 -> 中期/terminal 分段先押再问。
+- 每段聊天里只给结论、紧凑表格和待拍板点；完整 `/comp` 源语言、历史原子、source range 和 `knobs` 块写进 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md`。
+- 输出必须是 `/comp` 源语言的 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md`，末尾带 `knobs` 机器自报清单代码块。
 
-网页端生成的 `{原Excel文件名}_核心假设.md` 放回 load manifest 中的 `core_assumption_path`。
+网页端生成的 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md` 放回 load manifest 中的 `core_assumption_path`。
 
 然后本地继续编译 `yaml1_load_*.yaml` 并运行：
 

@@ -280,11 +280,37 @@ def failure_candidate_fields(failure: Failure) -> tuple[str, list[str]]:
     # BS check 走 bs_fields_for_bucket，本就只取明细 bucket 字段，不含 subtotal。
     if code == "IS 1.1":
         return "cost_item", fields_by_category(clean.IS_FIELD_CATEGORIES, {"cost_item"})
-    if code in {"IS 1.2", "IS 1.3", "IS 1.4", "IS 1.5", "IS 6.1", "IS 6.2", "IS 6.3"}:
-        return "income_formula", fields_by_category(
-            clean.IS_FIELD_CATEGORIES,
-            {"revenue_item", "cost_item", "operating_adjustment", "below_line", "tax", "attribution", "comprehensive", "sub_item"},
+    # IS 1.2 营业利润 = revenue_base - total_cogs + Σ(operating_adjustment)。
+    # revenue_base 与 total_cogs 已被 IS 1.6 / IS 1.1(adaptation) 钉死，IS 1.2 残差
+    # 只能由 operating_adjustment 字段（oth_income/credit_impa_loss/asset_disp_income
+    # 等 TuShare-NULL）解释。把 revenue_item（int_income 等）纳入 candidate 会让 LLM
+    # 提议不在 operate_profit 公式里的字段——对 IS 1.2 calc 零影响却被联合闭合批准
+    # （会稽山 2022：int_income+oth_income 被批，int_income 对 IS 1.2 无贡献，反而因
+    # int_income 进 IS 1.6 revenue_items 制造 IS 1.6 失败）。故 IS 1.2 只取
+    # operating_adjustment，与公式严格对齐。
+    if code == "IS 1.2":
+        return "operating_adjustment", fields_by_category(
+            clean.IS_FIELD_CATEGORIES, {"operating_adjustment"}
         )
+    # 其余 IS check 同样按公式窄化到对应 category（2026-06-25，会稽山 int_income
+    # 脏 override 同类防御）：非公式字段进候选会被联合闭合 Σ(value)≈残差 批准却对
+    # calc 零影响，制造下游 check 失败。每个 check 的残差只能由其公式字段解释
+    # （上游 check 已钉死其他分量）。
+    if code == "IS 1.3":
+        # total_profit = operate_profit + non_oper_income - non_oper_exp
+        return "below_line", fields_by_category(clean.IS_FIELD_CATEGORIES, {"below_line"})
+    if code == "IS 1.4":
+        # n_income = total_profit - income_tax
+        return "tax", fields_by_category(clean.IS_FIELD_CATEGORIES, {"tax"})
+    if code == "IS 1.5":
+        # n_income = n_income_attr_p + minority_gain
+        return "attribution", fields_by_category(clean.IS_FIELD_CATEGORIES, {"attribution"})
+    if code in {"IS 6.1", "IS 6.2"}:
+        # t_compr_income = n_income + oth_compr_income；归属 = attr_p + attr_m_s
+        return "comprehensive", fields_by_category(clean.IS_FIELD_CATEGORIES, {"comprehensive"})
+    if code == "IS 6.3":
+        # n_income = continued_net_profit + end_net_profit
+        return "sub_item", fields_by_category(clean.IS_FIELD_CATEGORIES, {"sub_item"})
     if code == "IS 1.6":
         return "revenue_item", fields_by_category(clean.IS_FIELD_CATEGORIES, {"revenue_item"})
 
@@ -1078,6 +1104,84 @@ def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, 
     return suggestions
 
 
+def _verify_llm_value_in_consolidated_statement(
+    analysis: dict[str, Any],
+    mapped_items: list[dict[str, Any]],
+    candidate_fields: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """对 LLM 提议的值用合并利润表 statement snippet 确定性重抽验证（防抓错表）。
+
+    reconciler LLM 偶尔把附注/母公司利润表里的同名字段值当合并主表值（会稽山 2022
+    oth_income 抓成附注 7.88 而非合并主表 10.54）。候选窄化(Fix A)后这类错值通常
+    Σ 不闭合→升级 subagent，但仍可能凑合通过联合闭合。本验证：对每个提议字段，在合并
+    利润表 statement snippet（裁到"母公司利润表"之前=合并口径）里用 find_alias_amount_matches
+    确定性重抽值；若 LLM 值与重抽值均不匹配→抓错表，拒绝该提议；重抽不到（格式特殊/
+    字段名不匹配）则放行不误杀。
+
+    返回 (verified_items, rejections)。
+    """
+    md_ctx = analysis.get("annual_report_context") or {}
+    snippets = md_ctx.get("snippets") or []
+    statement_texts = [
+        s.get("text", "")
+        for s in snippets
+        if isinstance(s, dict) and s.get("kind") == "statement"
+    ]
+    # 裁到合并口径：合并利润表在"母公司利润表"之前
+    consolidated_texts = []
+    for text in statement_texts:
+        cut = text.find("母公司利润表")
+        consolidated_texts.append(text[:cut] if cut != -1 else text)
+    if not any(t.strip() for t in consolidated_texts):
+        return mapped_items, []
+
+    cand_by_field = {
+        str(c.get("field")): c
+        for c in candidate_fields
+        if isinstance(c, dict) and c.get("field")
+    }
+    verified: list[dict[str, Any]] = []
+    rejections: list[dict[str, Any]] = []
+    for it in mapped_items:
+        field = str(it.get("candidate_tushare_field") or "")
+        llm_val = it.get("value_million_cny")
+        if llm_val is None:
+            verified.append(it)
+            continue
+        llm_val = float(llm_val)
+        cand = cand_by_field.get(field)
+        if not cand:
+            verified.append(it)
+            continue
+        aliases = annual_report_aliases_for_field(cand, [])
+        if not aliases:
+            verified.append(it)
+            continue
+        det_matches = find_alias_amount_matches(consolidated_texts, aliases)
+        if not det_matches:
+            # 重抽不到（格式特殊/字段名不匹配），不误杀
+            verified.append(it)
+            continue
+        det_vals = [float(m["value_million_cny"]) for m in det_matches]
+        # 紧容差匹配（0.05 百万 = 5 万元）：允许 LLM 四舍五入（10.54 vs 10.5379），但拒绝
+        # 抓错表的值（会稽山 7.88 vs 主表 10.5379/比较列 8.3280，差 0.45 > 0.05）。用
+        # clean.TOLERANCE(1 百万) 太宽——会把比较列/相近附注值当主表值放行。
+        if any(abs(llm_val - dv) < 0.05 for dv in det_vals):
+            verified.append(it)
+        else:
+            rejections.append({
+                "stage": "value_not_in_consolidated_statement",
+                "field": field,
+                "llm_value_million_cny": llm_val,
+                "consolidated_values_million_cny": det_vals,
+                "reason": (
+                    f"LLM 值 {llm_val:.4f} 与合并利润表重抽值 {det_vals} 均不匹配，"
+                    f"疑抓错表（附注/母公司表同名字段），拒绝该提议"
+                ),
+            })
+    return verified, rejections
+
+
 def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     # audit R3:守卫拒绝一个本可闭合的提议时,旧实现 continue/return [] 静默丢掉理由,
     # 残差仍未闭合却查不到"为什么没补"。这里把每条拒绝理由记进 analysis(随 evidence
@@ -1130,6 +1234,14 @@ def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
             })
             continue
         mapped_items.append({**item, "candidate_tushare_field": field})
+
+    # ② 值来源验证：用合并利润表 statement snippet 确定性重抽，挡 LLM 抓错表
+    # （附注/母公司表同名字段值，如会稽山 2022 oth_income 抓成 7.88 而非主表 10.54）。
+    # 重抽到不同值→拒绝该提议；重抽不到（格式特殊）→放行不误杀。
+    mapped_items, value_rejs = _verify_llm_value_in_consolidated_statement(
+        analysis, mapped_items, candidates
+    )
+    rej.extend(value_rejs)
 
     # 单字段闭合优先：某 missing item 的值恰好解释残差（diff<TOLERANCE）。
     out: list[dict[str, Any]] = []

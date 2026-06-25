@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = ROOT / ".env"
 DEFAULT_COMPANIES_DIR = ROOT / "companies"
 COMPANIES_DIR_KEY = "MKA_COMPANIES_DIR"
+RESEARCHER_NAME_KEY = "MKA_RESEARCHER_NAME"
 COMPANY_DIR_RE = re.compile(r"^.+_\d{6}$")
 RATING_REPORT_DATA_START_YEAR_KEY = "MKA_RATING_REPORT_DATA_START_YEAR"
 RATING_REPORT_DATA_END_YEAR_KEY = "MKA_RATING_REPORT_DATA_END_YEAR"
@@ -41,6 +42,7 @@ class EnvField:
 
 
 ENV_FIELDS: tuple[EnvField, ...] = (
+    EnvField(RESEARCHER_NAME_KEY, "研究员名字", "output", placeholder="例如：张三"),
     EnvField(COMPANIES_DIR_KEY, "工作台路径", "workspace", placeholder=str(DEFAULT_COMPANIES_DIR)),
     EnvField("TUSHARE_TOKEN", "TuShare Token", "data", secret=True),
     EnvField("TUSHARE_HTTP_URL", "TuShare HTTP URL", "data", placeholder="http://api.waditu.com/dataapi"),
@@ -140,6 +142,11 @@ def get_companies_dir() -> Path:
     if not raw:
         return DEFAULT_COMPANIES_DIR
     return Path(raw).expanduser().resolve()
+
+
+def get_researcher_name(path: Path | None = None) -> str:
+    values = read_env_values(path or ENV_PATH)
+    return str(values.get(RESEARCHER_NAME_KEY) or os.environ.get(RESEARCHER_NAME_KEY) or "").strip()
 
 
 def validate_companies_dir(path: Path) -> dict[str, Any]:

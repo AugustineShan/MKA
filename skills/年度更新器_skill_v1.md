@@ -7,9 +7,12 @@
 ```text
 skills/核心纪律_skill_v*.md
 skills/核心假设源语言_skill_v*.md
+docs/knobs块契约.md
 ```
 
-`annual-update` 完整继承核心纪律 A1-A7，编辑同一套核心假设源语言 B。它不是 `/ka`，也不是 `/adj incremental`：它是“数据新了 N 年，把旧稿滚过去”的特化操作。
+`annual-update` 完整继承核心纪律 A1-A7，编辑同一套核心假设源语言 B；滚动旧稿和重吐 `knobs` 块时以 `docs/knobs块契约.md` 为准。它不是 `/ka`，也不是 `/adj incremental`：它是“数据新了 N 年，把旧稿滚过去”的特化操作。
+
+交互风格继承核心纪律 A4：人机段是年度复盘会，不是滚表日志。聊天里先给你对真实数据、旧预测偏离、thesis 兑现度和建议重拨范围的理解；确认后才把完整源语言和 `knobs` 写进新稿。
 
 ## 0. 位置与边界
 
@@ -48,12 +51,12 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> --forecast-m
 
 1. 读最新旧稿，提取：
    - H：旧稿历史末年。
-   - 显式期、衰减期、永续点。
+   - 显式期、衰减期、衰减交接增速 `terminal.fade.target_growth`、永续点。
    - 收入骨架、毛利参数化、费用、below-OP、税率、少数股东、terminal。
 2. 读数据实际到达年份 A。
 3. 计算 N = A - H。若 N <= 0，报告无需更新并停。
 4. 守门：`(H, A]` 任何一年缺 clean_annual 或年报 Markdown，停止并精确报告缺口。
-5. 建总账：旧稿所有需要被处理的线、历史、stash、旋钮、时间轴四数都进入清单。
+5. 建总账：旧稿所有需要被处理的线、历史、stash、旋钮、时间轴四数和 `terminal.fade.target_growth` 都进入清单。
 6. 识别按需扩展字段：旧稿有历史序列但 fetcher 默认 24 条未覆盖的行，查 `src/field_registry.yaml` 或 `数据格式参考.md`，传给 fetcher。
 
 总账是完整性的地基：后面每项要么填，要么旗，要么平移，要么转 `/adj incremental`。
@@ -70,12 +73,32 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> --forecast-m
 
 同步动作：
 
-- 时间轴四数 +N 平移。
+- 时间轴四数 +N 平移；`terminal.fade.target_growth` 若旧稿已有则保留为待重定候选，若未来 thesis 明显改变则在第 4 步按 `/ka` 自动 fade profile 纪律重算并请分析师拍板。
 - `knobs` horizon 前移 N。
 - values 前移；新增显式期末年留给第 4 步重定。
 - 每填一项，在总账划掉一项。
 
 注意：这里计算历史实际费用率/税率，是搬运事实，不违反核心纪律 A3/A7；禁止的是手算未来派生预测序列。
+
+滚后时间轴确认门：
+
+- 在进入估算或重定未来前，先向分析师报告旧稿四数、数据实际到达年 A、N 年移动、滚后四数、显式期新增末年和已知拐点覆盖情况。
+- 分析师未确认前，不得估算拿不到的实际，不得重定未来，不得写新日期核心假设，不得跑 `/comp`。
+- 新稿抬头、进入中期/terminal 前的二次核对、末尾 `knobs` 的 `horizon/terminal` 必须都使用确认后的滚后四数。
+
+对用户输出用复盘 memo：
+
+```text
+我先对滚后边界和真实偏离：
+- 旧稿历史到 H，实际现在到 A，所以滚 N 年。
+- 旧预测偏离最大的线是...
+- 我建议这轮只重看...
+
+滚后时间轴建议:
+| 项 | 旧稿 | 新稿建议 | 理由 |
+
+这组时间轴和重看范围你认吗？认了我再处理估算和未来重定。
+```
 
 ## 4. 第 3 步：估算拿不到的实际
 
@@ -119,6 +142,8 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> --forecast-m
 - 最高权重材料或 thesis 有明确变化。
 
 干净的块可以明确写“无新信息，平移”，并在总账划掉。
+
+每个需要重定的块，聊天里只给会议 memo：真实 vs 旧预测、我的建议、新值表、风险/待校准。不要直接贴 fetcher JSON、完整新稿 markdown 或整块 `knobs`；用户确认后再写入文件。
 
 重定未来遵守核心纪律：
 

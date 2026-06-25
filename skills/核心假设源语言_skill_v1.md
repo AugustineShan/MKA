@@ -15,12 +15,31 @@
 - 人读：知道谁定、为什么、哪来的、还有什么没进模型。
 - 机器读：知道上挂科目、compiler family、逐年旋钮、horizon、terminal。
 
+## B0.1 范围边界：默认利润表 + 业务层盈利模型
+
+BRKD、LOAD、KA 默认收窄为“利润表 + 业务层盈利模型”这套源语言：收入、成本/毛利、费用率、below-OP、税率、少数股东等利润表相关判断可以进入正文和 knobs；BS/CF/DCF 驱动因素默认由 defaults.yaml、引擎或专门流程平推，不主动在这层建预测旋钮。
+
+默认不得把 `financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC` 等写成 BRKD/LOAD/KA 的预测对象或待拍板项：
+
+- `financial expense` 若来自现金、债务、利率或 BS 推导，视为引擎/专门流程派生，不进入本层旋钮；只有材料明确给出“其他财务费用”这类利润表外生项时，才可用 `other_fin_exp_abs`。
+- `EBIT`、营业利润、利润总额、净利润等派生利润不作旋钮；只能作为 sanity/观察，不能倒算残差。
+- `DA`、`CAPEX`、`CWC`、`shares`、`WACC` 等默认交引擎/defaults/专门流程处理，不在 `/brkd` 或 `/ka` 中主动裁决。
+- 材料中出现这些驱动因素但没有被分析师明示为核心 thesis 时，按核心纪律 A2 给明确去处：写入收纳区并标“非本层范围”，或写明丢弃原因；禁止静默删掉，也禁止包装成利润表预测。
+
+人工注入例外：如果最高权重材料或分析师明确说某个 BS/CF 因素是核心投资假设，例如周转率提升、库存去化、应收压降、合同负债改善、资本开支变化、折旧政策变化，则 `/ka` 可以单独开“资产负债表/营运资本/现金流人工覆盖”块。该例外必须同时满足：
+
+1. 先确认它是核心 thesis，不是为了“模型完整”顺手补。
+2. 必须落到现有 defaults.yaml/yaml1 命名空间，例如 `balance_sheet.revenue_pct.*`、`balance_sheet.cogs_days.*`、`balance_sheet.capex_pct`、`balance_sheet.depr_rate` 等；`/comp` 不得发明路径。
+3. 一个经济事项只能有一个旋钮：用存货周转天数，就不要再手填未来存货金额；用应收/收入占比，就不要再手填应收周转率。
+4. `DA/CAPEX` 若需要重资产排程、转固时滞或资产 cohort，优先走 `/da` 生成 `Agent/da_schedule.yaml`；`/ka` 只记录“需要 /da”或轻资产默认率覆盖，不自己造排程。
+5. 模板装不下时举旗为“现有模板不足，需 formula/引擎扩展”，不要硬塞到普通费用率、收入占比或利润表旋钮。
+
 ## B1. 标准过表顺序
 
 所有正式或半成品核心假设源文按这个顺序组织：
 
 ```text
-时间轴/本轮判断锚点 -> 收入 -> 毛利/成本 -> 费用 -> below-OP 与税 -> 中期/terminal -> 收纳区 -> knobs
+时间轴/本轮判断锚点 -> 收入 -> 毛利/成本 -> 费用 -> below-OP 与税 -> 可选 BS/营运资本/现金流人工覆盖 -> 中期/terminal -> 收纳区 -> knobs
 ```
 
 这不是纯纪律，而是源语言章节顺序。`/ka`、`/load`、`/annual-update`、`/adj incremental` 在需要逐段讨论时，也按这个顺序走。
@@ -35,6 +54,7 @@
 历史数据至: YYYY
 显式预测期: [YYYY, ...]
 衰减期至: YYYY 或 none
+衰减交接增速: x% / none
 永续增长: x%
 门槛来源: BRKD / LOAD / BRKD+LOAD / old official draft / annual-update
 ```
@@ -72,6 +92,45 @@
 
 非收入标准科目也遵守同一原则：上挂科目、compiler family、历史、预测、三件套、来源与裁决。
 
+## B3.1 可选 BS/营运资本/现金流人工覆盖块
+
+只有触发 B0.1 的人工注入例外时，才新增本块；没有明确核心 thesis 时不要写。
+
+```markdown
+## 资产负债表与营运资本人工覆盖
+
+### {科目/旋钮名} [上挂: {BS/CF标准科目}; compiler: bs_revenue_pct/bs_cogs_days/bs_scalar_pct; status: official]
+- 触发原因: 这是核心 thesis，因为...
+- defaults/yaml1 目标路径: balance_sheet.revenue_pct.accounts_receiv / balance_sheet.cogs_days.inventories / balance_sheet.capex_pct / ...
+- 历史:
+  - headline:
+  - 事实原子:
+  - 来源层级:
+  - 单位:
+- 预测:
+- 三件套:
+  - 谁定:
+  - 为什么:
+  - 来源:
+- 唯一旋钮声明: 本项只用 {收入占比/成本天数/capex_pct/depr_rate}，不同时手填未来金额或派生周转率。
+- 来源与裁决:
+- 风险/缺口:
+```
+
+示例：
+
+```markdown
+### 存货周转天数 [上挂: 存货; compiler: bs_cogs_days; status: official]
+- 触发原因: 库存去化是本轮核心 thesis。
+- defaults/yaml1 目标路径: balance_sheet.cogs_days.inventories
+- 历史: 2022=55天，2023=51天，2024=48天；来源: /init clean_annual + 年报存货披露。
+- 预测: 2025=46天，2026=44天，2027=42天，2028=40天。
+- 三件套: 谁定=分析师；为什么=供应链改革 + SKU 精简；来源=公司判断和最新观点.md。
+- 唯一旋钮声明: 只拍存货周转天数，不手填未来存货金额。
+```
+
+若目标路径在当前公司 `defaults.yaml` 中不存在，正文保留判断并写入缺口：`路径待核 / 需 formula 或引擎扩展`，不得硬塞。
+
 ## B4. compiler family
 
 常用 family：
@@ -83,7 +142,10 @@
 - `leaf margin -> income.gpm`：分线毛利折叠。
 - `cost_rate`：税金及附加、销售、管理、研发费用率。
 - `abs below-OP`：减值、投资收益、其他收益、公允、资产处置、营业外收支等绝对值项。
-- `other_fin_exp_abs`：其他财务费用外生项。
+- `other_fin_exp_abs`：其他财务费用外生项，仅限材料明确作为利润表外生项给出；BS/现金/债务派生的 `financial expense` 不写。
+- `bs_revenue_pct`：BS 科目 / 收入的人工覆盖，例如应收账款、合同资产、预付款、合同负债等，必须落到 `balance_sheet.revenue_pct.*` 现有路径。
+- `bs_cogs_days`：以营业成本天数表达的营运资本人工覆盖，例如存货周转天数、应付账款天数，必须落到 `balance_sheet.cogs_days.*` 现有路径。
+- `bs_scalar_pct`：轻资产/稳态下对 `balance_sheet.capex_pct`、`balance_sheet.depr_rate` 等 defaults 标量路径的人工覆盖；重资产排程优先 `/da`。
 - `formula`：受限长尾，不是默认选择。
 
 ## B5. 受限 formula
@@ -165,7 +227,9 @@ yoy、毛利率、占比等可推导量只能写在观察或 sanity 中，不作
 
 ## B9. knobs 块
 
-末尾必须有 `knobs` 块。它是正文旋钮的同源回声，不是 YAML1。
+末尾必须有 `knobs` 块。完整契约见 `docs/knobs块契约.md`；本节只放源语言侧最小形态。
+
+它是正文旋钮的同源回声，不是 YAML1。
 
 基本形态：
 
@@ -176,12 +240,14 @@ terminal:
   explicit_end: 2027
   fade:
     to_year: 2032
+    target_growth: 0.055
   perpetual_growth: 0.025
 knobs:
   - anchor: "#业务线A"
+    sub: 收入
     family: growth
     unit: pct
-    values: [0.05, 0.04, 0.03]
+    values: [5, 4, 3]
     status: official
     source: "正文同源"
 ```
@@ -195,6 +261,7 @@ knobs:
 - 不写 yaml1 path。
 - 不导出完整拆分结构。
 - 不做会计化路径映射。
+- `unit: pct` 写百分数显示值，例如 `5` 表示 5%，不是 `0.05`。
 
 ## B10. 状态标签
 

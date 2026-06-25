@@ -50,6 +50,7 @@ prompt 文本形如：
 - 保持原有结构、历史事实、来源说明、业务线命名、口径说明——**只动旋钮数值**。
 - 改完跑 forecast 覆盖 `Agent/forecast/`。
 - **单位口径不同**：md knobs 块用百分数（pct ×100）；yaml1 用小数（直接用 prompt 的 new_value，不转换）。
+- `knobs` 块完整语法以 `docs/knobs块契约.md` 为准；本 skill 只允许定点改已有条目的 `values[i]`。
 - `核心假设.md` 是 canonical，yaml1 是派生缓存。三处同源失败时停止，回到 `/comp`，不要手 patch yaml1 去凑一致。
 - **old_value 前置核对**：任何写入前,必须确认 prompt 的 `old_value` 与当前 yaml1、md knobs、md 正文旧值一致（按 unit 做小数/百分数转换）。旧值不一致说明前端基于过期状态,立即停止并要求刷新,不得继续 patch。
 
@@ -71,6 +72,8 @@ prompt 文本形如：
 10. **跑 forecast**：`py -m src.forecast --yaml1 "companies/{公司名}_{代码}/Agent/yaml1_{公司名}_{今日YYYYMMDD}.yaml"`，覆盖 `Agent/forecast/`。
 11. **汇报**：每条变更（旋钮 / 年份 / 旧值→新值 / md正文&knobs&yaml1 三处是否同源）、forecast 每股价值与 `Agent/forecast/` 路径；任何报错原样摆出。
 
+汇报口吻像手术回执，不像 patch 日志：先说“我只改了哪几个旋钮、没有碰哪些结构、三处同源是否通过、DCF 新结果是什么”，再列路径。不要把 yaml1 片段或全文 diff 贴满屏；用户需要时再展开。
+
 ## 逐条 patch 分流（md 侧）
 
 ### IS 旋钮（path 命中映射表）
@@ -88,9 +91,9 @@ md 侧改两处（不进 knobs 块、无 knobs 同源核对）：
 - `## 往后几年(中期)· 三段式` 段「终值:永续一个点(x%)」→ 新值。
 yaml1 侧改 `terminal.perpetual_growth` 标量（小数，不×100）。
 
-### terminal.explicit_end / terminal.fade.to_year（报错停止）
+### terminal.explicit_end / terminal.fade.to_year / terminal.fade.target_growth（报错停止）
 
-这俩改的是预测年数长度，会连带要求 knobs `horizon` 数组和所有 IS 旋钮 `values` 数组同步截断/补值，补值需拍新年份判断——不是定点 patch 能安全做的。**报错停止**，提示：「显式期/衰减期长度变更是结构性改动，请走 /adj incremental 流程」。
+这些改的是 terminal 结构或衰减交接逻辑，会连带要求中期段重新拍板，可能同步影响 fade 期展开和所有 IS 旋钮远端解释——不是定点 patch 能安全做的。**报错停止**，提示：「显式期/衰减期/衰减交接增速变更是结构性改动，请走 /adj incremental 流程」。
 
 ## IS 旋钮路径映射表（md knobs 侧，通用）
 

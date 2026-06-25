@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -35,6 +36,7 @@ def test_copy_to_webload_prepares_sandbox_and_packages_safe_materials(tmp_path: 
     package = copy_to_webload(company_dir, load_id="case", overwrite=True)
     load_dir = Path(package["source_load_manifest"]["load_dir"])
     package_dir = webclaude_dir(company_dir) / WEBLOAD_SUBDIR
+    expected_core_name = f"model20250527_核心假设_load{datetime.now().strftime('%Y%m%d')}.md"
 
     assert Path(package["package_dir"]) == package_dir
     assert load_dir.name == "case"
@@ -47,6 +49,7 @@ def test_copy_to_webload_prepares_sandbox_and_packages_safe_materials(tmp_path: 
     assert not (package_dir / "05_model_boundary.json").exists()
     assert not (package_dir / "06_forbidden_materials.md").exists()
     assert not (package_dir / "07_model20250527_核心假设.md").exists()
+    assert not (package_dir / f"07_{expected_core_name}").exists()
     assert not list(package_dir.glob("08_模型装载器_skill_v*.md"))
     assert not (package_dir / "09_load_manifest.json").exists()
     assert list((package_dir / "allowed_materials").glob("model20250527.xlsx"))
@@ -61,9 +64,16 @@ def test_copy_to_webload_prepares_sandbox_and_packages_safe_materials(tmp_path: 
     assert "模型装载器：/load 独有读法" in prompt
     assert "核心假设脚手架：按这个文件名和结构输出" in prompt
     assert "先给用户完整 overview" in prompt
+    assert "会议 memo 风格" in prompt
+    assert "不要机械倾倒单元格" in prompt
+    assert "按时间轴 -> 收入 -> 毛利/成本" in prompt
+    assert "利润表预测期边界" in prompt
+    assert "不要继续打开或导出 `Model-BS` / `DCF`" in prompt
+    assert "`financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in prompt
     assert "data_cutoff.db 不打包到网页端" in prompt
     assert "主产物回填路径" in prompt
-    assert str(company_dir / "model20250527_核心假设.md") in prompt
+    assert expected_core_name in prompt
+    assert str(company_dir / expected_core_name) in prompt
     assert "沙箱副本同步路径" in prompt
     assert "根目录主产物供 `/ka` 读取" in prompt
 

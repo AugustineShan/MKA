@@ -32,6 +32,10 @@ def test_core_discipline_defines_cross_cutting_rules():
     assert "核心假设.md` 是 canonical" in text
     assert "yaml1 是派生缓存" in text
     assert "md 赢" in text
+    assert "像分析师开会，不像机器审表" in text
+    assert "会议 memo" in text
+    assert "聊天为人读，文件为机器读" in text
+    assert "terminal.fade.target_growth" in text
 
 
 def test_core_source_language_defines_shared_comp_grammar():
@@ -39,9 +43,21 @@ def test_core_source_language_defines_shared_comp_grammar():
 
     assert "共享语法单一真源" in text
     assert "library/include" in text
-    assert "时间轴/本轮判断锚点 -> 收入 -> 毛利/成本 -> 费用 -> below-OP 与税 -> 中期/terminal" in text
+    assert "范围边界：默认利润表 + 业务层盈利模型" in text
+    assert "BRKD、LOAD、KA 默认收窄" in text
+    assert "`financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in text
+    assert "不在 `/brkd` 或 `/ka` 中主动裁决" in text
+    assert "衰减交接增速: x% / none" in text
+    assert "人工注入例外" in text
+    assert "BS/营运资本/现金流人工覆盖" in text
+    assert "balance_sheet.revenue_pct.*" in text
+    assert "balance_sheet.cogs_days.*" in text
+    assert "重资产排程优先 `/da`" in text
+    assert "BS/现金/债务派生的 `financial expense` 不写" in text
+    assert "可选 BS/营运资本/现金流人工覆盖 -> 中期/terminal" in text
     assert "上挂: 营业收入" in text
     assert "compiler: factor_product/growth/abs/formula" in text
+    assert "compiler: bs_revenue_pct/bs_cogs_days/bs_scalar_pct" in text
     assert "三件套" in text
     assert "受限 formula" in text
     assert "formula 只在这些情况可建议" in text
@@ -50,4 +66,5 @@ def test_core_source_language_defines_shared_comp_grammar():
     assert "formula未采用/待补" in text
     assert "同构 passthrough" in text
     assert "```knobs" in text
+    assert "target_growth: 0.055" in text
     assert "不写 yaml1 path" in text

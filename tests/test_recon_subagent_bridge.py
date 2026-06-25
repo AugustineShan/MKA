@@ -119,6 +119,61 @@ def test_evaluate_reclass_closes_target_lt_calc():
     assert clean_cat == "current_liab"
 
 
+# ── IS 1.2 operating_adjustment 联合闭合（2026-06-25，会稽山 601579 驱动） ──
+
+def _is12_context(residual, direction="target_gt_calc"):
+    """IS 1.2 failure，bucket=operating_adjustment（候选窄化后）。"""
+    return {
+        "failure": {
+            "code": "IS 1.2", "period": "2025", "statement": "income",
+            "residual": residual, "target_value": 320.4301, "calc_value": 317.0886,
+            "direction": direction, "message": "IS 1.2 2025 ...", "title": "营业利润",
+        },
+        "bucket": "operating_adjustment",
+        "candidate_fields": [
+            {"field": "oth_income", "description": "其他收益", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "credit_impa_loss", "description": "信用减值损失", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "asset_disp_income", "description": "资产处置收益", "value_million_cny": -2.0139, "clean_category": None},
+            {"field": "assets_impair_loss", "description": "资产减值损失", "value_million_cny": -19.5941, "clean_category": None},
+        ],
+        "reclass_for_period": {},
+        "net_residual": residual, "net_direction": direction, "markdown_path": "D:/x.md",
+    }
+
+
+def test_evaluate_closes_is12_joint_operating_adjustment():
+    """IS 1.2 多字段联合闭合：oth_income(9.2959)+credit_impa_loss(-5.9544)=3.3415≈残差。
+    会稽山 2025 实态。bridge 原本 BS-bucket-only 闭合不了 IS 1.2（_effective_bucket
+    只查 BS_FIELD_CATEGORIES→income 字段 None→贡献 0→全 reject）。Fix C 后 _effective_bucket
+    补查 IS_FIELD_CATEGORIES，operating_adjustment 字段 eff_bucket 匹配 bucket，Σ 闭合生效。"""
+    ctx = _is12_context(residual=3.3415)
+    props = [
+        {"period": "2025", "code": "IS 1.2", "field": "oth_income", "operation": "add_override",
+         "value_million_cny": 9.295911, "annual_report_item": "其他收益", "annual_report_value_raw": 9295911.69,
+         "unit": "元人民币", "evidence_lines": "4861-4863: 其他收益 9,295,911.69", "reasoning": "联合闭合"},
+        {"period": "2025", "code": "IS 1.2", "field": "credit_impa_loss", "operation": "add_override",
+         "value_million_cny": -5.95444002, "annual_report_item": "信用减值损失", "annual_report_value_raw": -5954440.02,
+         "unit": "元人民币", "evidence_lines": "4885-4887: 信用减值损失 -5,954,440.02", "reasoning": "联合闭合"},
+    ]
+    approved = bridge.evaluate_proposals(ctx, props)
+    assert len(approved) == 2  # 整组批准
+    fields = {p["field"] for p, _ in approved}
+    assert fields == {"oth_income", "credit_impa_loss"}
+
+
+def test_evaluate_is12_rejects_non_formula_field():
+    """int_income（revenue_item，不在 operate_profit 公式）即使被提议也闭合不了 IS 1.2——
+    eff_bucket='revenue_item'≠bucket='operating_adjustment'→贡献 0→残差不闭合→拒绝。
+    （候选窄化后 int_income 本不会进 candidate 集；此测试守 _effective_bucket 的 IS 分类。）"""
+    ctx = _is12_context(residual=9.8299)
+    # int_income 不在 candidate 集 → 反幻觉直接跳过；模拟 subagent 误提
+    ctx["candidate_fields"].append({"field": "int_income", "description": "利息收入", "value_million_cny": 0.0, "clean_category": None})
+    p = {"period": "2025", "code": "IS 1.2", "field": "int_income", "operation": "add_override",
+         "value_million_cny": 9.8299, "annual_report_item": "利息收入", "annual_report_value_raw": 9829963.56,
+         "unit": "元人民币", "evidence_lines": "x: 利息收入", "reasoning": "单字段"}
+    assert bridge.evaluate_proposals(ctx, [p]) == []  # int_income 非公式字段，不闭合
+
+
 # ── proposals_to_override_records（审计 schema） ─────────────────────
 
 def test_override_record_is_approved_claude_source():

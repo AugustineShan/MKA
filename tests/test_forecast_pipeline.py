@@ -14,7 +14,7 @@ import pytest
 from openpyxl import load_workbook
 
 from conftest import copy_fixture_company
-from src import yaml1_cleaner
+from src import app_config, yaml1_cleaner
 from src.assumption_staleness import StaleAssumptionError
 from src.company_paths import forecast_dir, modelking_dir
 from src.forecast import run_company_forecast
@@ -27,6 +27,8 @@ def _copy_new_hope_dairy(tmp_path: Path) -> Path:
 
 def test_run_company_forecast_hides_intermediates_and_rebuilds_forecast(tmp_path, monkeypatch):
     company_dir = _copy_new_hope_dairy(tmp_path)
+    monkeypatch.delenv(app_config.RESEARCHER_NAME_KEY, raising=False)
+    monkeypatch.setattr(app_config, "ENV_PATH", tmp_path / ".env")
     monkeypatch.setattr(yaml1_cleaner, "COMPANIES_DIR", tmp_path / "companies")
 
     out_dir = forecast_dir(company_dir)
@@ -87,6 +89,8 @@ def test_run_company_forecast_hides_intermediates_and_rebuilds_forecast(tmp_path
     assert output_path.exists()
 
     workbook = load_workbook(output_path, data_only=False)
+    assert workbook.properties.creator == "ModelKing"
+    assert workbook.properties.lastModifiedBy == "ModelKing"
     assert "Summary" in workbook.sheetnames
     assert len(workbook.worksheets) == 8
     assert not any(title in {"点评模板", "\ub4d0\ud300\uce5c\uacbc"} for title in workbook.sheetnames)
@@ -128,6 +132,10 @@ def test_run_company_forecast_hides_intermediates_and_rebuilds_forecast(tmp_path
     assert workbook["Summary"]["BR2"].value is None
     assert workbook["Summary"]["BU3"].value is None
     assert workbook["Summary"]["BV5"].value is None
+    assert workbook["Summary"]["B3"].value == "研究员"
+    assert workbook["Summary"]["BM3"].value is None
+    assert workbook["Summary"]["B4"].value is None
+    assert workbook["Summary"]["BM4"].value is None
     rating_sheet = workbook.worksheets[2]
     assert [rating_sheet.cell(1, column).value for column in range(2, 10)] == [
         2023,

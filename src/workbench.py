@@ -1151,6 +1151,8 @@ def _assumptions_terminal(term: Any) -> dict:
         "explicit_end": term.get("explicit_end"),
         "to_year": fade.get("to_year"),
         "kind": fade.get("kind"),
+        "target_growth": fade.get("target_growth"),
+        "target_basis": fade.get("target_basis"),
         "fade_paths": [_humanize_path(p) for p in (fade.get("fade_paths") or [])],
         "hold_paths": [_humanize_path(p) for p in (fade.get("hold_paths") or [])],
         "perpetual_growth": term.get("perpetual_growth"),

@@ -26,6 +26,8 @@ from src.yaml2_schema import get_path, read_yaml2
 CORE_ASSUMPTION_GLOB = "*核心假设*.md"
 
 _YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+_OFFICIAL_STATUS_RE = re.compile(r"状态\s*[:：]\s*official\b", re.IGNORECASE)
+_NON_OFFICIAL_STATUS_RE = re.compile(r"状态\s*[:：]\s*(?:reference|draft|model-extracted)\b", re.IGNORECASE)
 _HORIZON_LIST_RE = re.compile(r"horizon\s*[:=]\s*\[([^\]]+)\]", re.IGNORECASE)
 _HORIZON_RANGE_RE = re.compile(
     r"(?:horizon|forecast|预测期|显式期)[^\n\r]{0,80}?((?:19|20)\d{2})\s*[-~—–至到]\s*((?:19|20)\d{2})",
@@ -96,11 +98,44 @@ class StaleAssumptionError(RuntimeError):
         super().__init__(status.message())
 
 
+def _read_text_for_status(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+
+
+def _has_official_status(path: Path) -> bool:
+    return bool(_OFFICIAL_STATUS_RE.search(_read_text_for_status(path)))
+
+
+def _looks_non_official_candidate(path: Path) -> bool:
+    name = path.name
+    if (
+        "核心假设参考" in name
+        or "_核心假设_load" in name
+        or "_核心假设_brkd" in name
+        or "_核心假设_alphapai" in name
+    ):
+        return True
+    text = _read_text_for_status(path)
+    return bool(_NON_OFFICIAL_STATUS_RE.search(text))
+
+
 def latest_core_assumption_path(company_dir: Path) -> Path | None:
     candidates = [path for path in company_dir.glob(CORE_ASSUMPTION_GLOB) if path.is_file()]
     if not candidates:
         return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+    official = [path for path in candidates if _has_official_status(path)]
+    if official:
+        return max(official, key=lambda path: path.stat().st_mtime)
+    # Legacy compatibility: older fixtures/companies may lack a status header.
+    # Even in fallback mode, never let LOAD/BRKD/Alphapai/reference drafts become
+    # the official source for fidelity/staleness checks.
+    legacy = [path for path in candidates if not _looks_non_official_candidate(path)]
+    if not legacy:
+        return None
+    return max(legacy, key=lambda path: path.stat().st_mtime)
 
 
 def forecast_start_from_yaml1_data(data: dict[str, Any], *, label: str = "yaml1") -> ForecastHorizonSource | None:

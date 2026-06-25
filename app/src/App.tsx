@@ -35,6 +35,7 @@ import {
   nearestCurvePoint,
   pointInDomain,
   referenceIntersection,
+  referencePointForTargetG2,
   modelSegmentCagr,
 } from "./reverseDcf";
 import type { ModelSegmentCagr, ReverseDcfInputs, ReverseDcfPoint } from "./reverseDcf";
@@ -3275,7 +3276,7 @@ function ReverseDcfChart({
   return (
     <section className="reverse-chart-panel">
       <svg
-        aria-label="逆向 DCF 等市值曲线"
+        aria-label="逆向 DCF 等股权价值曲线"
         className="reverse-chart"
         onPointerDown={(event) => {
           setDragging(true);
@@ -3403,8 +3404,8 @@ function ReverseDcfReadout({
           <strong>{formatPercent(point?.terminalShareOfMarket, 1)}</strong>
         </div>
         <div className="reverse-readout-row">
-          <span>目标 EV</span>
-          <strong>{formatYiFromMillion(base.market.target_enterprise_value)} 亿元</strong>
+          <span>目标股权价值</span>
+          <strong>{formatYiFromMillion(base.market.market_cap)} 亿元</strong>
         </div>
       </div>
       {point && point.terminalShareOfMarket > 0.7 ? (
@@ -3417,10 +3418,12 @@ function ReverseDcfReadout({
 function ReverseDcfTool({ base }: { base: ReverseDcfBase }) {
   const [inputs, setInputs] = useState<ReverseDcfInputs>(() => defaultReverseDcfInputs(base));
   const [manualPoint, setManualPoint] = useState<{ g1: number; g2: number } | null>(null);
+  const [referenceDecayMode, setReferenceDecayMode] = useState<"auto" | "manual">("auto");
 
   useEffect(() => {
     setInputs(defaultReverseDcfInputs(base));
     setManualPoint(null);
+    setReferenceDecayMode("auto");
   }, [base]);
 
   const updateInputs = (patch: Partial<ReverseDcfInputs>) => {
@@ -3436,15 +3439,48 @@ function ReverseDcfTool({ base }: { base: ReverseDcfBase }) {
     });
   };
 
+  const updateReferenceDecay = (referenceDecay: number) => {
+    setReferenceDecayMode("manual");
+    setManualPoint(null);
+    updateInputs({ referenceDecay });
+  };
+
   const curve = useMemo(() => generateIsoCurve(base, inputs), [base, inputs]);
-  const referencePoint = useMemo(() => referenceIntersection(base, inputs, curve), [base, inputs, curve]);
+  const modelCagr = useMemo(() => modelSegmentCagr(base, inputs.n1, inputs.n2), [base, inputs.n1, inputs.n2]);
+  const modelPoint = modelCagr.g1 != null && modelCagr.g2 != null ? { g1: modelCagr.g1, g2: modelCagr.g2 } : null;
+  const autoReferencePoint = useMemo(
+    () => referencePointForTargetG2(base, inputs, modelCagr.g2),
+    [base, inputs, modelCagr.g2],
+  );
+  const usableAutoReferencePoint = autoReferencePoint?.k != null && Number.isFinite(autoReferencePoint.k) ? autoReferencePoint : null;
+  const autoReferenceDecay = usableAutoReferencePoint?.k ?? base.defaults.reference_decay;
+  const referenceDecay = referenceDecayMode === "manual" ? inputs.referenceDecay : autoReferenceDecay;
+  const effectiveInputs = useMemo(() => ({ ...inputs, referenceDecay }), [inputs, referenceDecay]);
+  const referencePoint = useMemo(
+    () => (
+      referenceDecayMode === "manual"
+        ? referenceIntersection(base, effectiveInputs, curve)
+        : usableAutoReferencePoint ?? referenceIntersection(base, effectiveInputs, curve)
+    ),
+    [base, curve, effectiveInputs, referenceDecayMode, usableAutoReferencePoint],
+  );
   const selectedPoint = useMemo(() => {
     if (!curve.length) return null;
     if (manualPoint) return nearestCurvePoint(curve, manualPoint.g1, manualPoint.g2) ?? referencePoint;
     return referencePoint ?? curve[Math.floor(curve.length / 2)] ?? null;
   }, [curve, manualPoint, referencePoint]);
-  const modelCagr = useMemo(() => modelSegmentCagr(base, inputs.n1, inputs.n2), [base, inputs.n1, inputs.n2]);
-  const modelPoint = modelCagr.g1 != null && modelCagr.g2 != null ? { g1: modelCagr.g1, g2: modelCagr.g2 } : null;
+  const referenceDecayMin = Math.min(base.bounds.reference_decay[0], referenceDecay);
+  const referenceDecayMax = Math.max(base.bounds.reference_decay[1], referenceDecay);
+  const isAutoAnchored = referenceDecayMode === "auto" && Boolean(usableAutoReferencePoint);
+  const referenceHint = referenceDecayMode === "manual"
+    ? "当前为手动衰减；市场隐含点来自这条 k 线与等股权价值曲线的交点。"
+    : isAutoAnchored
+      ? `自动锚定：市场隐含 g2 = 目前模型 g2（${formatPercent(modelCagr.g2, 1)}）。`
+      : "未能在当前图域内匹配模型 g2，已回退到默认参考衰减。";
+  const resetReferenceAnchor = () => {
+    setManualPoint(null);
+    setReferenceDecayMode("auto");
+  };
 
   return (
     <div className="reverse-shell">
@@ -3463,7 +3499,7 @@ function ReverseDcfTool({ base }: { base: ReverseDcfBase }) {
 
       <section className="reverse-context-strip">
         <div><span>当前市值</span><strong>{formatYiFromMillion(base.market.market_cap)} 亿元</strong></div>
-        <div><span>目标 EV</span><strong>{formatYiFromMillion(base.market.target_enterprise_value)} 亿元</strong></div>
+        <div><span>目标股权价值</span><strong>{formatYiFromMillion(base.market.market_cap)} 亿元</strong></div>
         <div><span>当前股价</span><strong>{base.market.close != null ? formatNumber(base.market.close, 2) : "-"}</strong></div>
         <div><span>目前模型利润假设</span><strong>{modelPoint ? `${formatPercent(modelPoint.g1, 1)} / ${formatPercent(modelPoint.g2, 1)}` : "-"}</strong></div>
       </section>
@@ -3475,21 +3511,23 @@ function ReverseDcfTool({ base }: { base: ReverseDcfBase }) {
         <div className="reverse-chart-stack">
           <div className="reverse-chart-toolbar">
             <div>
-              <div className="eyebrow">等市值曲线</div>
+              <div className="eyebrow">等股权价值曲线</div>
               <h2>当前市值约束</h2>
             </div>
             <div className="reverse-decay-control">
               <div className="reverse-decay-slider-block">
-                <ReverseSlider label="参考衰减 k = g2/g1" value={inputs.referenceDecay} min={base.bounds.reference_decay[0]} max={base.bounds.reference_decay[1]} step={0.01} format={(value) => value.toFixed(2)} onChange={(referenceDecay) => updateInputs({ referenceDecay })} />
-                <p>中期利润增速 = k × 显式期利润增速；当前 {inputs.referenceDecay.toFixed(2)} 表示中期约为显式期的 {formatPercent(inputs.referenceDecay, 0)}。</p>
+                <ReverseSlider label="参考衰减 k = g2/g1" value={referenceDecay} min={referenceDecayMin} max={referenceDecayMax} step={0.01} format={(value) => value.toFixed(2)} onChange={updateReferenceDecay} />
+                <p>{referenceHint}</p>
               </div>
-              <button className="reverse-anchor-button" disabled={!manualPoint} onClick={() => setManualPoint(null)} type="button">回到参考交点</button>
+              <button className="reverse-anchor-button" disabled={!manualPoint && referenceDecayMode === "auto"} onClick={resetReferenceAnchor} type="button">
+                {referenceDecayMode === "manual" ? "回到模型 g2 锚点" : "回到参考交点"}
+              </button>
             </div>
           </div>
           <ReverseDcfChart
             base={base}
             curve={curve}
-            inputs={inputs}
+            inputs={effectiveInputs}
             onSelect={(point) => setManualPoint({ g1: point.g1, g2: point.g2 })}
             referencePoint={referencePoint}
             selected={selectedPoint}

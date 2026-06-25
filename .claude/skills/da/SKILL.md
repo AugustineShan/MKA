@@ -71,10 +71,13 @@ Glob **非递归**检查 `companies\{公司}\Agent\da_schedule.yaml`:
 2. **商议协议** → `Agent\da_schedule.yaml`(假设层,先押再问拍板才落盘)。
 3. **落盘与收口** → 提示用户重跑 `py -m src.forecast --ticker {代码}` 触发重资产 DCF。
 
+人机商议必须用会议 memo 风格：先输出你对重资产历史事实、capex/DA 结构、默认排程和关键不确定性的理解，再逐项等分析师确认。不要把 `da_facts_latest.json`、完整 YAML schema 或资产明细机械倾倒给用户；完整审计写入 `da_schedule.yaml`。
+
 ## 关键纪律(不可妥协)
 
 - **与 A/B 的关系**:本 skill 不写 `核心假设.md`(`核心纪律` A / `核心假设源语言` B 管 `核心假设.md` 写作,不直接适用);产物是 `da_schedule.yaml`,纪律见本执行细则 + `CLAUDE.md` 开发总原则 + 事实↔假设分离。
 - **先押再问拍板才落盘**:控制器先押(da_facts + 公司判断 → 推荐选型 + 预测值 + 理由 + 来源),再问用户"你认吗"。用户拍板每一项后才写 `Agent\da_schedule.yaml`。**禁止未经拍板就落盘**。
+- **排程讨论会口吻**:先给一页 memo:历史 capex/DA 基线、存量折旧、扩张 capex、转固时滞、终值 capex/DA、存量净增率 g 的建议。每项只问一个自然问题,如"这个 capex 排程你认吗?认了我写入 schedule,再看转固。"
 - **事实↔假设分离**:`da_facts.json`(事实,LLM 扒,只填表不推算,抽不到留 null 不补零)vs `da_schedule.yaml`(假设,商议后落盘)。两层不混。
 - **产物落 `companies\{公司}\Agent\da_schedule.yaml`**(用 `da_schedule_path`)。`enabled: true` 才被 `src.forecast` 消费；一旦 `enabled: true`，`da_roll` 失败、未执行或被忽略都必须阻断 official forecast，**不得自动回退轻资产路径**。只有 `enabled: false` 或文件缺失时，才允许使用轻资产默认路径。若分析师明确要临时忽略 DA，只能输出/运行 `reference·DA未生效`，不得覆盖正式 DCF。
 - **落盘后提示用户重跑** `py -m src.forecast --ticker {代码}`:`forecast.py` 的 `_maybe_roll_da_series` 会加载 da_schedule → `roll_da_series` 产 da_series → gpm→ex-dep 覆盖 → 注入 forecast_params → `calc.py` 重资产分支(BS 的 `fix_assets`/`cip` 从 da_series、CF/FCFF 的 capex/da 从 da_series)。`DaAlignError`(base_year ≠ defaults.base_period)硬抛；其他 `da_roll` 异常在 `enabled: true` 下同样阻断 official forecast，只能出 `reference·DA未生效`，不能 warning 后静默回退轻资产。

@@ -695,6 +695,9 @@ def clean_yaml1_data(
     expanded = _expand_overlay(overlay, terminal, fold.explicit_horizon, full_horizon, report)
     forecast_params, yearly_paths = _resolve_yaml2_yearly(yaml2, expanded, len(full_horizon))
     forecast_params.setdefault("meta", {})["horizon"] = full_horizon
+    # terminal.perpetual_growth 必须覆盖 model.terminal_growth，否则 calc.py Gordon 终值
+    # 用 defaults 0.025 而 fade 末端用 perpetual_growth，永续增速双源分裂。
+    _apply_terminal_growth_override(yaml1, forecast_params, report)
     report["yearly_paths"] = yearly_paths
 
     if defaults_only:
@@ -858,6 +861,15 @@ def _expand_overlay(
     if fade.get("kind") != "linear":
         raise Yaml1CleanError(f"Unsupported fade kind: {fade.get('kind')}")
     terminal_growth = _to_float(terminal.get("perpetual_growth"))
+    fade_target_growth = _to_float(fade.get("target_growth", terminal_growth))
+    if fade_target_growth + 1e-12 < terminal_growth:
+        raise Yaml1CleanError("terminal.fade.target_growth must be greater than or equal to terminal.perpetual_growth")
+    report.setdefault("terminal_fade", {})["target_growth"] = fade_target_growth
+    report["terminal_fade"]["perpetual_growth"] = terminal_growth
+    if "target_growth" in fade:
+        report["terminal_fade"]["target_source"] = "yaml1.terminal.fade.target_growth"
+    else:
+        report["terminal_fade"]["target_source"] = "yaml1.terminal.perpetual_growth"
     fade_paths = {_canonical_fade_path(str(path), report) for path in fade.get("fade_paths", [])}
     hold_paths = {_canonical_fade_path(str(path), report) for path in fade.get("hold_paths", [])}
     extra_years = len(full_horizon) - len(explicit_horizon)
@@ -870,7 +882,7 @@ def _expand_overlay(
         last = _to_float(values[-1])
         if path in fade_paths:
             tail = [
-                last + (terminal_growth - last) * step / extra_years
+                last + (fade_target_growth - last) * step / extra_years
                 for step in range(1, extra_years + 1)
             ]
         else:
@@ -881,6 +893,33 @@ def _expand_overlay(
         if path not in expanded:
             raise Yaml1CleanError(f"terminal fade/hold path does not exist in overlay: {path}")
     return expanded
+
+
+def _apply_terminal_growth_override(
+    yaml1: dict[str, Any], forecast_params: dict[str, Any], report: dict[str, Any]
+) -> None:
+    """yaml1 ``terminal.perpetual_growth`` → ``model.terminal_growth`` 覆盖。
+
+    ``calc.py`` 的 Gordon 终值读 ``model.terminal_growth``（defaults 纪律默认 0.025）；
+    cleaner 的 fade 末端可以用 ``terminal.fade.target_growth`` 表示中期交接增速；
+    Gordon 终值仍必须只读分析师拍板的 ``terminal.perpetual_growth``。这里把
+    ``perpetual_growth`` 灌进 ``model.terminal_growth``，让终值 g 单源化。
+    仅当 yaml1 显式声明 ``perpetual_growth`` 时覆盖；defaults-only 时 yaml1 为空，跳过
+    （其 terminal 由 ``_empty_terminal_from_yaml2`` 构造，pg 已 = model.terminal_growth，自洽）。
+    """
+    if not yaml1:
+        return
+    terminal = yaml1.get("terminal")
+    if not isinstance(terminal, dict) or "perpetual_growth" not in terminal:
+        return
+    pg = _to_float(terminal.get("perpetual_growth"))
+    node = _path_get(forecast_params, "model.terminal_growth")
+    if isinstance(node, dict) and "value" in node:
+        node["value"] = pg
+        node["source"] = "yaml1.terminal.perpetual_growth"
+    else:
+        _set_path(forecast_params, "model.terminal_growth", pg)
+    report.setdefault("terminal_growth_override", {})["perpetual_growth"] = pg
 
 
 def _resolve_yaml2_yearly(
@@ -1060,31 +1099,40 @@ def _collect_sign_warnings(clean_annual: dict[int, dict[str, float]], report: di
 
 
 def _add_growth_diagnostics(fold: FoldResult, yaml1: dict[str, Any], report: dict[str, Any]) -> None:
-    terminal_growth = _to_float(yaml1.get("terminal", {}).get("perpetual_growth"))
+    terminal_raw = yaml1.get("terminal", {})
+    terminal = terminal_raw if isinstance(terminal_raw, dict) else {}
+    terminal_growth = _to_float(terminal.get("perpetual_growth"))
+    fade_raw = terminal.get("fade")
+    fade = fade_raw if isinstance(fade_raw, dict) else {}
+    has_fade_target = "target_growth" in fade
+    diagnostic_growth = _to_float(fade.get("target_growth", terminal_growth))
+    diagnostic_name = "衰减交接增速" if has_fade_target else "永续"
     first = fold.revenue_by_year[fold.explicit_horizon[0]]
     last = fold.revenue_by_year[fold.explicit_horizon[-1]]
     years = len(fold.explicit_horizon) - 1
     if first > 0 and years > 0:
         cagr = (last / first) ** (1.0 / years) - 1.0
         report["fold"]["explicit_revenue_cagr"] = cagr
-        if cagr + 1e-12 < terminal_growth:
+        if cagr + 1e-12 < diagnostic_growth:
             report["warnings"].append(
                 {
                     "stage": "diagnostic",
                     "path": "model.revenue_yoy",
-                    "message": "总增速低于永续,与成长假设张力大,请核对收缩线(常温)假设",
+                    "message": f"总增速低于{diagnostic_name},与成长假设张力大,请核对收缩线(常温)假设",
                     "value": cagr,
                     "terminal_growth": terminal_growth,
+                    "fade_target_growth": diagnostic_growth if has_fade_target else None,
                 }
             )
-    if fold.revenue_yoy[-1] + 1e-12 < terminal_growth:
+    if fold.revenue_yoy[-1] + 1e-12 < diagnostic_growth:
         report["warnings"].append(
             {
                 "stage": "diagnostic",
                 "path": "model.revenue_yoy",
-                "message": "末年增速<永续,fade 段反向,意义弱化",
+                "message": f"末年增速<{diagnostic_name},fade 段反向,意义弱化",
                 "value": fold.revenue_yoy[-1],
                 "terminal_growth": terminal_growth,
+                "fade_target_growth": diagnostic_growth if has_fade_target else None,
             }
         )
 

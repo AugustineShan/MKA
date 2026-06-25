@@ -294,6 +294,63 @@ def test_failure_candidate_fields_exclude_subtotal_targets():
         assert not leak, f"{code} candidate 集泄漏 subtotal: {leak}"
 
 
+def test_is12_candidates_exclude_revenue_item():
+    """IS 1.2 营业利润 = revenue_base - total_cogs + Σ(operating_adjustment)。
+    revenue_base/total_cogs 已被 IS 1.6/1.1 钉死，IS 1.2 残差只能由
+    operating_adjustment 解释。revenue_item（int_income 等）不在 operate_profit
+    公式里——纳入 candidate 会让 LLM 提议对 IS 1.2 calc 零影响的字段，联合闭合
+    用 Σ(值) 批准后却制造 IS 1.6 失败（会稽山 2022 int_income 脏 override）。
+    IS 1.2 candidate 集必须 = operating_adjustment，排除 revenue_item/cost_item。"""
+    from src import clean
+
+    operating = {f for f, c in clean.IS_FIELD_CATEGORIES.items() if c == "operating_adjustment"}
+    revenue_items = {f for f, c in clean.IS_FIELD_CATEGORIES.items() if c == "revenue_item"}
+    assert "int_income" in revenue_items  # 守卫：测试前提成立
+    assert "oth_income" in operating
+
+    failure = _failure_from_message(
+        "IS 1.2 2022 营业利润: operate_profit=199.4805 calc=181.9809 residual=17.4996"
+    )
+    _bucket, fields = ar.failure_candidate_fields(failure)
+
+    # 必须全部是 operating_adjustment
+    non_op = [f for f in fields if f not in operating]
+    assert not non_op, f"IS 1.2 candidate 含非 operating_adjustment 字段: {non_op}"
+    # 关键：int_income（revenue_item）绝不能进 IS 1.2 candidate
+    assert "int_income" not in fields, "int_income 不在 IS 1.2 公式，泄漏进 candidate 会脏配平"
+    # operating_adjustment 全员到齐（oth_income/credit_impa_loss/asset_disp_income 等）
+    assert operating.issubset(set(fields)), f"IS 1.2 candidate 缺 operating_adjustment: {operating - set(fields)}"
+
+
+def test_is_candidates_narrowed_to_formula_category():
+    """每个 IS check 的候选必须窄化到其公式实际用到的 category，排除非公式字段
+    （会稽山 int_income 脏 override 同类防御：非公式字段进候选→联合闭合 Σ≈残差
+    批准→对 calc 零影响→制造下游 check 失败）。"""
+    from src import clean
+
+    cat = clean.IS_FIELD_CATEGORIES
+    cases = {
+        # code: (message, expected_category_subset, must_exclude_example)
+        "IS 1.3": ("IS 1.3 2024 利润总额: total_profit=100.0 calc=95.0 residual=5.0",
+                   "below_line", "oth_income"),
+        "IS 1.4": ("IS 1.4 2024 净利润: n_income=100.0 calc=95.0 residual=5.0",
+                   "tax", "oth_income"),
+        "IS 1.5": ("IS 1.5 2024 净利润归属: n_income=100.0 attr_p=80.0 minority=15.0 residual=5.0",
+                   "attribution", "oth_income"),
+        "IS 1.6": ("IS 1.6 2024 营业总收入≠收入项之和: total_revenue=100.0 revenue_items=95.0 residual=5.0",
+                   "revenue_item", "oth_income"),
+    }
+    for code, (msg, expected_cat, exclude_example) in cases.items():
+        failure = _failure_from_message(msg)
+        _bucket, fields = ar.failure_candidate_fields(failure)
+        expected_fields = {f for f, c in cat.items() if c == expected_cat}
+        # 全部候选必须在 expected category
+        non_cat = [f for f in fields if f not in expected_fields]
+        assert not non_cat, f"{code} candidate 含非 {expected_cat} 字段: {non_cat}"
+        # 排除非公式字段（如 oth_income 不在 IS 1.3/1.4/1.5/1.6 公式）
+        assert exclude_example not in fields, f"{code} candidate 不应含 {exclude_example}"
+
+
 def test_llm_propose_fallback_rejects_nonzero_old_value(monkeypatch):
     """add_override 语义只补 TuShare 漏录/为 0 字段，不得覆盖已有非 0 值。
     贵州茅台 IS 1.1 的脏 override 就是 LLM 把"信用减值损失 -5.31 百万"写进
@@ -397,4 +454,80 @@ def test_llm_propose_fallback_approves_joint_residual_closure(monkeypatch):
     fields = {a.get("field") for a in adjustments}
     assert fields == {"oth_income", "credit_impa_loss", "asset_disp_income"}
     # 联合闭合 + 每字段 old_value=0 → 全部 approved
+    assert all(a.get("status") == "approved" for a in adjustments)
+
+
+def test_llm_propose_rejects_value_not_in_consolidated_statement(monkeypatch):
+    """抓错列防御：LLM 把附注/母公司表的同名字段值当合并主表值（会稽山 2022
+    oth_income 抓成 7.88 而非合并主表 10.54）。用合并利润表 statement snippet
+    确定性重抽验证：LLM 值与主表重抽值均不匹配→拒绝该提议，不得生成 override。"""
+    analysis = {
+        "failure": {
+            "period": "2022", "code": "IS 1.2", "statement": "income", "title": "营业利润",
+            "message": "IS 1.2 2022 ...", "residual": 7.88,
+            "target_value": 199.48, "calc_value": 191.60, "direction": "target_gt_calc",
+        },
+        "annual_report_context": {
+            "markdown_path": "fake.md",
+            # 合并利润表 statement snippet（numbered 格式）：其他收益主表 = 10,537,937.53 元
+            "snippets": [{"kind": "statement", "text":
+                "1: 合并利润表\n2: 加：其他收益\n3: \n4: 10,537,937.53\n5: 8,327,975.56"}],
+        },
+        "candidate_tushare_fields": [
+            {"field": "oth_income", "description": "其他收益", "value_million_cny": 0.0, "clean_category": None},
+        ],
+    }
+
+    def fake_call_llm(messages):
+        return {
+            "suspected_tushare_issue": True, "confidence": "high",
+            "recommended_action": "add_override",
+            "missing_or_suspicious_items": [
+                # LLM 自报闭合(7.88≈残差 7.88)，但 7.88 不在合并主表（主表 10.54）→抓错表
+                {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益",
+                 "value_million_cny": 7.88, "residual_difference_million_cny": 0.0},
+            ],
+            "_provider": "glm",
+        }
+    monkeypatch.setattr(ar, "call_llm", fake_call_llm)
+    adjustments = ar._llm_propose_fallback("601579.SH", None, None, [analysis], approve_high_confidence=True)
+    # 7.88 与合并主表重抽值(10.5379/8.3280)均不匹配→拒绝，不得生成 override
+    assert adjustments == []
+    # 拒绝理由落盘 evidence JSON
+    assert any(r.get("stage") == "value_not_in_consolidated_statement"
+               for r in analysis.get("override_rejections", []))
+
+
+def test_llm_propose_accepts_value_matching_consolidated_statement(monkeypatch):
+    """对照：LLM 值与合并主表重抽值匹配→放行，正常生成 override（不误杀）。"""
+    analysis = {
+        "failure": {
+            "period": "2022", "code": "IS 1.2", "statement": "income", "title": "营业利润",
+            "message": "IS 1.2 2022 ...", "residual": 10.5379,
+            "target_value": 200.0, "calc_value": 189.4621, "direction": "target_gt_calc",
+        },
+        "annual_report_context": {
+            "markdown_path": "fake.md",
+            "snippets": [{"kind": "statement", "text":
+                "1: 合并利润表\n2: 加：其他收益\n3: \n4: 10,537,937.53\n5: 8,327,975.56"}],
+        },
+        "candidate_tushare_fields": [
+            {"field": "oth_income", "description": "其他收益", "value_million_cny": 0.0, "clean_category": None},
+        ],
+    }
+
+    def fake_call_llm(messages):
+        return {
+            "suspected_tushare_issue": True, "confidence": "high",
+            "recommended_action": "add_override",
+            "missing_or_suspicious_items": [
+                {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益",
+                 "value_million_cny": 10.5379, "residual_difference_million_cny": 0.0},
+            ],
+            "_provider": "glm",
+        }
+    monkeypatch.setattr(ar, "call_llm", fake_call_llm)
+    adjustments = ar._llm_propose_fallback("601579.SH", None, None, [analysis], approve_high_confidence=True)
+    fields = {a.get("field") for a in adjustments}
+    assert fields == {"oth_income"}
     assert all(a.get("status") == "approved" for a in adjustments)

@@ -105,13 +105,13 @@ function solveG2(
   base: ReverseDcfBase,
   inputs: ReverseDcfInputs,
   g1: number,
-  targetEv: number,
+  targetEquityValue: number,
   low: number,
   high: number,
 ): ReverseDcfPoint | null {
   const gap = (g2: number): number | null => {
     const point = evaluateReverseDcf(base, inputs, g1, g2);
-    return point ? point.ev - targetEv : null;
+    return point ? point.equityValue - targetEquityValue : null;
   };
 
   let lo = low;
@@ -151,7 +151,7 @@ export function generateIsoCurve(
   const points: ReverseDcfPoint[] = [];
   for (let i = 0; i < samples; i += 1) {
     const g1 = visibleDomain[0] + ((visibleDomain[1] - visibleDomain[0]) * i) / Math.max(1, samples - 1);
-    const point = solveG2(base, inputs, g1, base.market.target_enterprise_value, solveDomain[0], solveDomain[1]);
+    const point = solveG2(base, inputs, g1, base.market.market_cap, solveDomain[0], solveDomain[1]);
     if (point && point.g2 >= visibleDomain[0] - EPS && point.g2 <= visibleDomain[1] + EPS) {
       points.push(point);
     }
@@ -193,6 +193,72 @@ export function referenceIntersection(
     }
   }
   return curve.reduce((best, point) => (Math.abs(residual(point)) < Math.abs(residual(best)) ? point : best), curve[0]);
+}
+
+export function referencePointForTargetG2(
+  base: ReverseDcfBase,
+  inputs: ReverseDcfInputs,
+  targetG2: number | null | undefined,
+  options: { samples?: number; solveDomain?: [number, number] } = {},
+): ReverseDcfPoint | null {
+  if (typeof targetG2 !== "number" || !Number.isFinite(targetG2)) return null;
+  if (targetG2 <= -1) return null;
+  if (inputs.wacc <= inputs.terminalGrowth + EPS) return null;
+
+  const solveDomain = options.solveDomain ?? base.bounds.growth;
+  if (targetG2 < solveDomain[0] - EPS || targetG2 > solveDomain[1] + EPS) return null;
+
+  const gap = (g1: number): number | null => {
+    const point = evaluateReverseDcf(base, inputs, g1, targetG2);
+    return point ? point.equityValue - base.market.market_cap : null;
+  };
+
+  const solveBracket = (low: number, high: number): ReverseDcfPoint | null => {
+    let lo = low;
+    let hi = high;
+    let fLo = gap(lo);
+    let fHi = gap(hi);
+    if (fLo == null || fHi == null) return null;
+    if (Math.abs(fLo) < EPS) return evaluateReverseDcf(base, inputs, lo, targetG2);
+    if (Math.abs(fHi) < EPS) return evaluateReverseDcf(base, inputs, hi, targetG2);
+    if (Math.sign(fLo) === Math.sign(fHi)) return null;
+
+    for (let i = 0; i < 70; i += 1) {
+      const mid = (lo + hi) / 2;
+      const fMid = gap(mid);
+      if (fMid == null) return null;
+      if (Math.abs(fMid) < 1e-6) return evaluateReverseDcf(base, inputs, mid, targetG2);
+      if (Math.sign(fMid) === Math.sign(fLo)) {
+        lo = mid;
+        fLo = fMid;
+      } else {
+        hi = mid;
+        fHi = fMid;
+      }
+    }
+    return evaluateReverseDcf(base, inputs, (lo + hi) / 2, targetG2);
+  };
+
+  const samples = options.samples ?? 181;
+  let prevG1 = solveDomain[0];
+  let prevGap = gap(prevG1);
+  if (prevGap != null && Math.abs(prevGap) < EPS) {
+    return evaluateReverseDcf(base, inputs, prevG1, targetG2);
+  }
+
+  for (let i = 1; i < samples; i += 1) {
+    const g1 = solveDomain[0] + ((solveDomain[1] - solveDomain[0]) * i) / Math.max(1, samples - 1);
+    const currentGap = gap(g1);
+    if (currentGap == null) continue;
+    if (Math.abs(currentGap) < EPS) return evaluateReverseDcf(base, inputs, g1, targetG2);
+    if (prevGap != null && Math.sign(prevGap) !== Math.sign(currentGap)) {
+      return solveBracket(prevG1, g1);
+    }
+    prevG1 = g1;
+    prevGap = currentGap;
+  }
+
+  return null;
 }
 
 function compoundCagr(rates: number[], start: number, length: number): number | null {
