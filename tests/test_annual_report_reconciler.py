@@ -531,3 +531,15 @@ def test_llm_propose_accepts_value_matching_consolidated_statement(monkeypatch):
     fields = {a.get("field") for a in adjustments}
     assert fields == {"oth_income"}
     assert all(a.get("status") == "approved" for a in adjustments)
+
+
+def test_empty_override_hint_nudges_only_when_relevant():
+    """Opt 5: hint fires iff failures found AND overrides won't be persisted."""
+    # failures + no --write-overrides → nudge
+    assert ar.empty_override_hint(3, write_overrides=False) is not None
+    assert "write-overrides" in ar.empty_override_hint(3, write_overrides=False)
+    # failures + --write-overrides → no nudge (overrides will be cached)
+    assert ar.empty_override_hint(3, write_overrides=True) is None
+    # no failures → no nudge regardless
+    assert ar.empty_override_hint(0, write_overrides=False) is None
+    assert ar.empty_override_hint(0, write_overrides=True) is None

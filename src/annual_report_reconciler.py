@@ -1895,6 +1895,24 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def empty_override_hint(total_failures: int, write_overrides: bool) -> str | None:
+    """Opt 5: nudge shown when failures are found but overrides won't be persisted.
+
+    Without --write-overrides, a later data.db wipe (--force / rebuild) forces the
+    next init to re-run the full LLM reconcile from scratch (slow). Surfacing this
+    at the CLI steers exploratory runs toward caching overrides for reuse. Returns
+    None when there is nothing to nudge about.
+    """
+    if total_failures <= 0 or write_overrides:
+        return None
+    return (
+        "hint: failures found but --write-overrides not set — no overrides persisted. "
+        "If data.db is later wiped (--force / rebuild), the next init re-runs the full "
+        "LLM reconcile from scratch (slow). Re-run with --write-overrides "
+        "--approve-high-confidence to cache overrides for reuse."
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     if args.no_kimi:
@@ -2068,6 +2086,9 @@ def main(argv: list[str] | None = None) -> int:
         approved = sum(1 for item in overrides["adjustments"] if item.get("status") == "approved")
         print(f"Wrote {override_path} ({approved}/{len(overrides['adjustments'])} approved adjustment(s)).")
     print(f"Found {total_failures} failure(s), analyzed {len(analyses)}.")
+    hint = empty_override_hint(total_failures, args.write_overrides)
+    if hint:
+        print(hint, file=sys.stderr)
     if args.fail_on_findings and total_failures:
         return 1
     return 0

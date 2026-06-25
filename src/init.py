@@ -430,6 +430,13 @@ def stage_clean(
 
     # 仍有 post-IPO 年度硬失败 → reconciler 用年报 MD 核对（MD 现已可用）。
     # 第 1 轮强触发 reconciler（直接调，免 clean 重跑——reconciler 内部自行重算失败）。
+    if approved_before == 0:
+        # Opt 5: override 空仓 → 首次年报核对，reconciler 从零跑 LLM 闭合（慢）。
+        # override 一旦写入，后续 init（即使 data.db 被 --force 清空）可复用、秒级通过。
+        LOGGER.info(
+            "⚠️ override 文件为空——首次年报核对，reconciler 将从零跑 LLM 闭合（约 1-3 分钟）。"
+            "override 写入后，后续 init 即使 data.db 被 --force 清空也可复用、不再触发 reconciler。"
+        )
     auto_reconcile_annual_failure(db_path, ticker, max_failures=AUTO_RECONCILE_MAX_FAILURES)
 
     # 两轮 apply + 必要时第 2 轮强触发
