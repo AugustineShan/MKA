@@ -345,6 +345,30 @@ def _parse_hard_failures(stderr_text: str) -> list[tuple[str, str, float]]:
     return fails
 
 
+def _round2_residuals_unchanged(
+    after_fails: list[tuple[str, str, float]],
+    before_map: dict[tuple[str, str], float],
+) -> bool:
+    """Opt 2: decide whether round-2 reconciler is worth running.
+
+    Round 1's approved overrides close some failures. Round 2 only helps if those
+    overrides also CHANGED the residual of a still-failing check (e.g. a shared
+    candidate field) — otherwise round 2 re-attempts identical failures with the
+    same LLM context and fails the same way (wasted LLM round). Common case: round
+    1 closes BS buckets, IS 1.2 residuals are untouched → round 2 on IS 1.2 is
+    pointless.
+
+    Returns True (skip round 2) when every remaining failure was already attempted
+    by round 1 with the same residual. Returns False (run round 2) when any
+    remaining failure is new or has a changed residual.
+    """
+    for code, period, residual in after_fails:
+        prev = before_map.get((code, period))
+        if prev is None or abs(prev - residual) > 1e-6:
+            return False
+    return True
+
+
 CORE_VIEW_TEMPLATE = """# 公司判断和最新观点
 
 请在此文件填写对这家公司的核心投资观点。
@@ -428,6 +452,9 @@ def stage_clean(
             return True, f"✅ 通过（含 {approved_before} 项既有年报补数 + pre-IPO 闸门降级，详见下方科目）"
         return True, "✅ 通过（pre-IPO 闸门降级后纯 TuShare 数据已配平）"
 
+    # Opt 2: 记录 round-1 前的失败残差，用于判断 round-2 reconciler 是否值得跑。
+    fails_before_round1 = {(code, period): residual for code, period, residual in fails}
+
     # 仍有 post-IPO 年度硬失败 → reconciler 用年报 MD 核对（MD 现已可用）。
     # 第 1 轮强触发 reconciler（直接调，免 clean 重跑——reconciler 内部自行重算失败）。
     if approved_before == 0:
@@ -455,6 +482,14 @@ def stage_clean(
         if not is_annual:
             break  # 转为季度失败，reconciler 无效，走 plug
         if cycle < MAX_BACKFILL_CYCLES - 1:
+            if _round2_residuals_unchanged(fails, fails_before_round1):
+                # Opt 2: round-1 的 override 未触及任何仍失败 check 的残差 → round-2
+                # 会用同样上下文重试同样失败、必同样失败。跳过省一个 LLM 轮。
+                LOGGER.info(
+                    "第 %d 轮应用后硬失败残差未变（round-1 override 未触及），跳过 round-2 reconciler。",
+                    cycle + 1,
+                )
+                break
             LOGGER.info("第 %d 轮应用后仍有硬失败，强触发 reconciler 核对残差 ...", cycle + 1)
             auto_reconcile_annual_failure(db_path, ticker, max_failures=AUTO_RECONCILE_MAX_FAILURES)
 
