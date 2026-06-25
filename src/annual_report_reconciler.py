@@ -644,6 +644,50 @@ def extract_markdown_context(
     }
 
 
+def _locate_consolidated_statement_section(md_path: Path, statement: str) -> dict[str, Any] | None:
+    """Opt 1: 定位合并利润表/合并资产负债表的连续行段（截至母公司对应表之前）。
+
+    LLM-propose fallback 仿 subagent 读法喂连续合并报表整段，让 GLM 基于有序表格
+    做多字段联合闭合（oth_income + asset_disp + credit_impa 之类），而非依赖
+    extract_markdown_context 的散乱 snippet。定位失败不阻塞——fallback 仍走原 snippet。
+
+    镜像 recon_subagent_bridge._locate_consolidated_cf_cash_lines 的写法：合并表在
+    母公司对应表之前，取该块起点到母公司分界。返回 {start, end, text} 或 None。
+    """
+    if statement not in ("income", "balancesheet"):
+        return None
+    try:
+        lines = md_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    cons = "合并利润表" if statement == "income" else "合并资产负债表"
+    parent = "母公司利润表" if statement == "income" else "母公司资产负债表"
+    # 表头是短行（"3、合并利润表" / "1、合并资产负债表"，≤15 字）；年报里"合并利润表"
+    # 还大量出现在会计政策调整附注、审计报告、目录的长散文句中（如"⑤ 2017年受影响的
+    # 合并利润表和母公司利润表项目："），首中即取会落在附注而非主表。用短行筛选只认表头。
+    HEADER_MAX_LEN = 15
+
+    def _is_header(line: str, marker: str) -> bool:
+        stripped = line.strip()
+        return marker in stripped and len(stripped) <= HEADER_MAX_LEN
+
+    parent_idx = None
+    for i, line in enumerate(lines):
+        if _is_header(line, parent):
+            parent_idx = i
+            break
+    scan_end = parent_idx if parent_idx is not None else len(lines)
+    start = None
+    for i in range(scan_end):
+        if _is_header(lines[i], cons):
+            start = i
+            break
+    if start is None:
+        return None
+    section_lines = lines[start:scan_end]
+    return {"start": start + 1, "end": scan_end, "text": "\n".join(section_lines)}
+
+
 def llm_prompt(
     ticker: str,
     company_dir: Path,
@@ -1320,6 +1364,26 @@ def _llm_propose_fallback(
             return analysis
         field_context = analysis.get("candidate_tushare_fields", []) or []
         markdown_context = analysis.get("annual_report_context", {}) or {}
+        # Opt 1: 仿 subagent 读法，喂连续合并报表整段，让 LLM 基于有序表格做多字段
+        # 联合闭合（散乱 snippet 常漏掉合并利润表/资产负债表主表，致单字段提议闭合不了
+        # IS 1.2 NULL-optional / BS bucket 残差）。section 定位失败则退回原 snippet。
+        md_path_str = markdown_context.get("markdown_path")
+        md_path_obj = Path(md_path_str) if md_path_str else None
+        if (
+            md_path_obj
+            and md_path_obj.exists()
+            and failure.statement in ("income", "balancesheet")
+        ):
+            section = _locate_consolidated_statement_section(md_path_obj, failure.statement)
+            if section:
+                snippets = list(markdown_context.get("snippets") or [])
+                snippets.insert(0, {
+                    "kind": "consolidated_section",
+                    "start_line": section["start"],
+                    "end_line": section["end"],
+                    "text": section["text"],
+                })
+                markdown_context = {**markdown_context, "snippets": snippets}
         if markdown_context.get("error") or not markdown_context.get("snippets"):
             analysis["llm"] = {"error": markdown_context.get("error", "no annual-report snippet")}
             return analysis

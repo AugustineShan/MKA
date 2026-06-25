@@ -543,3 +543,50 @@ def test_empty_override_hint_nudges_only_when_relevant():
     # no failures → no nudge regardless
     assert ar.empty_override_hint(0, write_overrides=False) is None
     assert ar.empty_override_hint(0, write_overrides=True) is None
+
+
+def test_locate_consolidated_statement_skips_prose_mentions(tmp_path):
+    """Opt 1: locator must land on the numbered table header, not prose mentions.
+
+    年报里"合并利润表"/"合并资产负债表"也出现在会计政策附注、审计报告的长散文句中。
+    短表头筛选（≤15 字）只认"3、合并利润表"这类真表头，跳过散文。
+    """
+    from pathlib import Path
+    md = tmp_path / "2020_年度报告.md"
+    md.write_text(
+        "目录\n合并利润表......................................80\n"  # TOC (long, skip)
+        "⑤ 2017年受影响的合并利润表和母公司利润表项目：\n"  # note prose (long, skip)
+        "一些附注文字\n"
+        "1、合并资产负债表\n"  # real BS header (short)
+        "单位：元\n资产负债\n100,200.00\n"
+        "2、母公司资产负债表\n"  # parent BS header (short) → BS section end
+        "母公司数据\n"
+        "3、合并利润表\n"  # real IS header (short)
+        "单位：元\n一、营业总收入\n1,000,000.00\n营业利润\n50,000.00\n"
+        "4、母公司利润表\n"  # parent IS header (short) → IS section end
+        "母公司利润数据\n",
+        encoding="utf-8",
+    )
+    bs = ar._locate_consolidated_statement_section(md, "balancesheet")
+    assert bs is not None
+    assert bs["start"] >= 1
+    assert "1、合并资产负债表" in bs["text"]
+    assert "母公司资产负债表" not in bs["text"].splitlines()[0]  # ends before parent
+    # must NOT include the TOC line or the note prose
+    assert "目录" not in bs["text"]
+    assert "2017年受影响" not in bs["text"]
+
+    inc = ar._locate_consolidated_statement_section(md, "income")
+    assert inc is not None
+    assert "3、合并利润表" in inc["text"]
+    assert "1,000,000.00" in inc["text"]
+    # IS section must not bleed into the parent IS table
+    assert "母公司利润数据" not in inc["text"]
+
+
+def test_locate_consolidated_statement_returns_none_for_cashflow(tmp_path):
+    """Locator only handles IS/BS; CF returns None (CF has its own bridge locator)."""
+    from pathlib import Path
+    md = tmp_path / "x.md"
+    md.write_text("合并现金流量表\n", encoding="utf-8")
+    assert ar._locate_consolidated_statement_section(md, "cashflow") is None
