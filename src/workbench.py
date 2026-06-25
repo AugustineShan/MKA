@@ -186,25 +186,33 @@ def _da_view(company_dir: Path, base_period: str) -> dict[str, Any] | None:
     if base_year_str != str(base_period)[:4]:
         align_warning = f"da_schedule.base_year={base_year} ≠ defaults.base_period={base_period}"
 
-    cats_in = sched.get("ppe", {}).get("categories", []) or []
-    cats: list[dict[str, Any]] = []
-    for c in cats_in:
-        gross = float(c.get("base_gross") or 0.0)
-        salv = float(c.get("salvage_rate") or 0.0)
-        life = float(c.get("life_years") or 0.0)
-        accum = float(c.get("base_accum_dep") or 0.0)
-        policy_dep = gross * (1 - salv) / life if life else 0.0
-        cats.append({
-            "name": c.get("name"),
-            "life_years": c.get("life_years"),
-            "salvage_rate": salv,
-            "base_gross": gross,
-            "base_accum_dep": accum,
-            "base_net": gross - accum,
-            "base_cip": float(c.get("base_cip") or 0.0),
-            "policy_dep": policy_dep,
-        })
-    policy_dep_total = sum(c["policy_dep"] for c in cats)
+    def _da_categories(section: dict[str, Any]) -> list[dict[str, Any]]:
+        """装配类别列表(含 policy_dep / base_net),PP&E 与 other_depreciating_assets 共用。"""
+        out: list[dict[str, Any]] = []
+        for c in section.get("categories", []) or []:
+            gross = float(c.get("base_gross") or 0.0)
+            salv = float(c.get("salvage_rate") or 0.0)
+            life = float(c.get("life_years") or 0.0)
+            accum = float(c.get("base_accum_dep") or 0.0)
+            policy_dep = gross * (1 - salv) / life if life else 0.0
+            out.append({
+                "name": c.get("name"),
+                "life_years": c.get("life_years"),
+                "salvage_rate": salv,
+                "base_gross": gross,
+                "base_accum_dep": accum,
+                "base_net": gross - accum,
+                "base_cip": float(c.get("base_cip") or 0.0),
+                "policy_dep": policy_dep,
+            })
+        return out
+
+    ppe_section = sched.get("ppe", {}) or {}
+    cats = _da_categories(ppe_section)
+    # other_depreciating_assets(生物/油气):同结构类别,参与 scale 分母(全口径对齐 depr_fa_coga_dpba)
+    other_section = sched.get("other_depreciating_assets", {}) or {}
+    other_cats = _da_categories(other_section)
+    policy_dep_total = sum(c["policy_dep"] for c in cats) + sum(c["policy_dep"] for c in other_cats)
     reported = _da_base_reported_dep(company_dir, base_year_str)
     scale = (reported / policy_dep_total) if (reported is not None and policy_dep_total > 0) else None
 
@@ -225,8 +233,12 @@ def _da_view(company_dir: Path, base_period: str) -> dict[str, Any] | None:
         "enabled": True,
         "base_year": base_year,
         "align_warning": align_warning,
-        "stock_strategy": sched.get("ppe", {}).get("存量策略", {}) or {},
+        "stock_strategy": ppe_section.get("存量策略", {}) or {},
         "categories": cats,
+        "other_depreciating_assets": {
+            "stock_strategy": other_section.get("存量策略", {}) or {},
+            "categories": other_cats,
+        } if other_cats else None,
         "scale": scale,
         "base_reported_dep": reported,
         "base_cip_to_fixed": sched.get("base_cip_to_fixed", {}) or {},

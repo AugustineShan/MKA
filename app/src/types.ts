@@ -401,6 +401,7 @@ export interface DaSeriesPoint {
   cip_balance: number;
   ppe_capex: number;
   ppe_capex_split: { maintenance: number; expansion: number; organic: number };
+  other_depreciation?: number;
 }
 export interface DaView {
   enabled: boolean;
@@ -408,6 +409,7 @@ export interface DaView {
   align_warning: string | null;
   stock_strategy: { mode?: string; net_growth_rate?: number };
   categories: DaCategory[];
+  other_depreciating_assets: { stock_strategy: { mode?: string; net_growth_rate?: number }; categories: DaCategory[] } | null;
   scale: number | null;
   base_reported_dep: number | null;
   base_cip_to_fixed: Record<string, Record<string, number>>;

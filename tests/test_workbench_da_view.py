@@ -109,3 +109,30 @@ def test_da_view_align_warning_when_base_year_mismatch(tmp_path):
     view = _da_view(company, base_period="2025")   # defaults base_period=2025, schedule base_year=2024
     assert view is not None
     assert view.get("align_warning")
+
+
+def test_da_view_other_depreciating_assets_in_scale_and_payload(tmp_path):
+    """生物资产类别参与 scale 分母 + 出现在 payload(无 other 时 payload 字段为 None)。"""
+    sched = _minimal_schedule()
+    sched["other_depreciating_assets"] = {
+        "存量策略": {"net_growth_rate": 0.0},
+        "categories": [{"name": "生产性生物资产", "life_years": 5, "salvage_rate": 0.20,
+                        "base_gross": 1360.099, "base_accum_dep": 290.367, "base_cip": 0.0}],
+    }
+    company = _make_company(tmp_path, da_schedule=sched, da_series=None, da_facts=None, with_db=True)
+    view = _da_view(company, base_period="2025")
+    # other 出现在 payload
+    assert view["other_depreciating_assets"] is not None
+    other_cats = view["other_depreciating_assets"]["categories"]
+    assert len(other_cats) == 1
+    assert other_cats[0]["name"] == "生产性生物资产"
+    assert other_cats[0]["policy_dep"] == pytest.approx(1360.099 * 0.80 / 5, rel=1e-4)
+    # scale 分母含 other:ppe policy_dep=333.099 + other 217.616 = 550.715;reported 424.708
+    assert view["scale"] == pytest.approx(424.708 / 550.715, rel=1e-3)
+
+    # 无 other_depreciating_assets → payload 字段 None
+    company2 = _make_company(tmp_path / "b", da_schedule=_minimal_schedule(),
+                             da_series=None, da_facts=None, with_db=True)
+    view2 = _da_view(company2, base_period="2025")
+    assert view2["other_depreciating_assets"] is None
+

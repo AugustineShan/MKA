@@ -24,7 +24,7 @@ py -m src.da_facts --ticker {代码} --base-year {base_year} --years 5
 
 ### 编排规则(已实现,这里说明边界)
 
-- **并行维度**:按"附注类型 × 年份"铺 subagent,每个窄上下文单一目标——固定资产明细表 × 近 5 年、在建工程明细表 × 近 5 年、无形资产明细表 × 近 5 年、会计政策年限残值率表 × 最新年。生产性生物资产明细表对乳业/农业公司按需扩(声明式,不写死"乳业必加")。
+- **并行维度**:按"附注类型 × 年份"铺 subagent,每个窄上下文单一目标——固定资产明细表 × 近 5 年、在建工程明细表 × 近 5 年、无形资产明细表 × 近 5 年、会计政策年限残值率表 × 最新年。**生产性生物资产 / 油气资产明细表 + 政策段为可选维度**:年报披露了就抽(`depr_fa_coga_dpba` = 固定资产折旧 + 油气资产折耗 + 生产性生物资产折旧,三类同源,缺一类就让 scale 偶然、每类归因错),没披露(非乳业/非油气公司)→ `not_disclosed` 静默跳过,不触发理智闸门。声明式驱动披露有无,不写死"乳业必加"。
 - **抽取契约**:给定 schema,**只填表不推算**。抽不到 → 留 `null` 标 `missing`,**绝不补零**(补零 = 静默造假,与项目第一原则同构:reconciler 不静默吞错,da_facts 不静默凑数)。
 - **schema 守卫**:`extract_note` 的 `allowed_fields` 白名单剥掉 LLM 编造的 schema 外字段(借鉴 reconciler 三层防脏)。`validate_da_facts` 校验 `0` 值必须配 `missing_flag`,否则报错。
 - **roll-forward 闭合自校验**:`check_rollforward` 逐年逐类验 `期初净值 + 本期增加 − 本期折旧 − 本期减少 − 减值 = 期末净值`,残差 < 1(百万元,与 clean.py 硬校验容差对齐)才 `closed: true`。不闭合写进 `da_facts.json.roll_forward_checks`,**不静默放行**。
@@ -97,6 +97,18 @@ base_cip_to_fixed:                 # base 年既有在建工程的转固排程(d
   2026: {房屋及建筑物: 60000}
   # 不变量:累计 base_cip_to_fixed ≤ base 年 cip 余额(da_facts);da_roll.CipInvariantError 强制
 
+# other_depreciating_assets(可选):也折旧但非 PP&E 的资产类——生产性生物资产(奶牛)/油气资产。
+# depr_fa_coga_dpba 是三类折旧同源;只建模 PP&E 会让生物/油气折旧被吸进 PP&E scale(偶然对齐、
+# 每类归因错、轨迹耦合)。披露了就声明,让 da_roll 把它们纳入折旧流量 + 稳态再投资(=其折旧,
+# 堵 FCFF 陷阱),净值不进 fix_assets(BS held flat = 稳态,reinvest=折旧,自洽)。
+# v1 稳态(g=0,无扩张 cohort);生物资产扩张(牛群扩大)是未来可加项(走 cohort + BS 路由)。
+other_depreciating_assets:
+  存量策略:
+    net_growth_rate: 0.0           # 默认 0 稳态(净值平推);>0 则存量折旧按 g 涨
+  categories:                      # 从 da_facts.prod_bio_detail / oil_gas_detail + policy 取
+    - {name: 生产性生物资产, life_years: 5, salvage_rate: 0.20, base_gross: 1360.099, base_accum_dep: 290.367}
+    # base_gross/life/salvage 驱动 policy_dep(参与 scale 分母);base_accum_dep 仅记录,不进 fix_assets_net
+
 expansion_plan:                    # 分析师商议的新增扩张 capex 排程(§4.3 第三点)
   2025:
     capex_by_cat: {机器设备: 50000, 房屋及建筑物: 200000}
@@ -136,7 +148,7 @@ py -m src.forecast --ticker {代码}
 `forecast.py` 的 `_maybe_roll_da_series` 执行:
 1. `load_da_schedule`(base_year 对齐校验,`DaAlignError` 硬抛)。
 2. `roll_da_series`(存量稳态折旧 scale 校准 + 扩张 cohort 直线折旧 + cip 转固队列)→ 产 `da_series`(逐年 `ppe_depreciation`/`fix_assets_net`/`cip_balance`/`ppe_capex`/`ppe_capex_split`)。
-3. **gpm→ex-dep 覆盖(仅 PP&E 拆分)**:base 年 PP&E 折旧从现金流量表 `depr_fa_coga_dpba` 取(**仅 PP&E**;三类摊销仍嵌在 gpm 内,与轻资产一致——da_roll 只建模 PP&E),加回 gpm 得 `gpm_ex_dep = gpm + base_ppe_dep/revenue`。IS 用 `gpm_ex_dep` 算 oper_cost、以 `ppe_depreciation` 作**单一显式 PP&E 折旧行**扣 ebit(三类不显式,仍嵌 oper_cost)。base 年 da_roll 校准使 ppe_dep≈base_ppe_dep,故 EBIT_heavy(base)=EBIT_light(base)(会计中性)。保留 /ka 常规 gpm(loaded)输入语义。
+3. **gpm→ex-dep 覆盖(仅 PP&E 拆分)**:base 年 PP&E 折旧从现金流量表 `depr_fa_coga_dpba` 取(该行 = 固定资产折旧 + 油气资产折耗 + 生产性生物资产折旧,三类同源;da_roll 建模 PP&E + other_depreciating_assets,总量校准到它;三类摊销仍嵌在 gpm 内,与轻资产一致),加回 gpm 得 `gpm_ex_dep = gpm + base_ppe_dep/revenue`。IS 用 `gpm_ex_dep` 算 oper_cost、以 `ppe_depreciation` 作**单一显式 PP&E 折旧行**扣 ebit(三类不显式,仍嵌 oper_cost)。base 年 da_roll 校准使 ppe_dep≈base_ppe_dep,故 EBIT_heavy(base)=EBIT_light(base)(会计中性)。保留 /ka 常规 gpm(loaded)输入语义。
 4. 注入 forecast_params → `calc.py` 重资产分支:BS 的 `fix_assets`/`cip` 从 da_series、CF/FCFF 的 capex/da 从 da_series、yaml1 的 `capex_pct` **禁用并告警**。
 
 若 da_roll 异常(非 `DaAlignError`)→ 自动 warning 回退轻资产 + 不阻塞 forecast。
