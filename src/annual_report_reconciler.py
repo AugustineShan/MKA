@@ -1169,7 +1169,7 @@ def _verify_llm_value_in_consolidated_statement(
     statement_texts = [
         s.get("text", "")
         for s in snippets
-        if isinstance(s, dict) and s.get("kind") == "statement"
+        if isinstance(s, dict) and s.get("kind") in ("statement", "consolidated_section")
     ]
     # 裁到合并口径：合并利润表在"母公司利润表"之前
     consolidated_texts = []
@@ -1325,6 +1325,71 @@ def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def llm_prompt_batch(
+    ticker: str,
+    company_dir: Path,
+    failures_payload: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Opt 3: batched multi-failure propose prompt.
+
+    Packs up to K residue failures into one LLM call. Each entry carries the
+    failure (period/code/residual/direction), slim candidate fields, and the
+    contiguous consolidated-statement section (Opt 1). The LLM returns one result
+    per failure, attributed by (period, code); each result is written to its
+    analysis["llm"] so the existing per-failure llm_override_suggestions
+    validation runs unchanged.
+    """
+    payload = {
+        "ticker": ticker,
+        "company_dir": str(company_dir),
+        "tushare_unit": "百万元人民币",
+        "annual_report_unit": "通常为千元人民币；如片段另有说明，以片段为准。换算到 TuShare 口径需除以 1000。",
+        "failures": failures_payload,
+    }
+    system = (
+        "你是A股财报勾稽核对专家。下面是 clean.py 的多个硬校验失败，每个失败带自己的年报合并报表整段、"
+        "candidate TuShare 字段和净残差。对每个失败独立判断：年报哪个明细科目（或哪几个科目的组合）"
+        "能解释残差。只基于每个失败自己的合并报表段作判断，不要跨失败混用数据，不要编造段外数据。"
+    )
+    user = (
+        "请对下面每个失败输出一个结果。输出必须是一个 JSON object，不要输出 Markdown。\n"
+        "JSON schema:\n"
+        "{\n"
+        '  "results": [\n'
+        "    {\n"
+        '      "period": string,\n'
+        '      "code": string,\n'
+        '      "suspected_tushare_issue": boolean,\n'
+        '      "confidence": "high|medium|low",\n'
+        '      "recommended_action": "none|manual_review|add_override|fix_classification|fix_combo_resolve|rerun_clean",\n'
+        '      "missing_or_suspicious_items": [\n'
+        "        {\n"
+        '          "annual_report_item": string,\n'
+        '          "annual_report_value_raw": number|null,\n'
+        '          "annual_report_unit": string,\n'
+        '          "value_million_cny": number|null,\n'
+        '          "candidate_tushare_field": string|null,\n'
+        '          "tushare_value_million_cny": number|null,\n'
+        '          "explains_residual": boolean,\n'
+        '          "residual_difference_million_cny": number|null,\n'
+        '          "evidence_lines": string\n'
+        "        }\n"
+        "      ],\n"
+        '      "notes": string\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "判断要求：\n"
+        "1. 每个失败的结果 period+code 必须与输入对应，不要遗漏也不要新增。\n"
+        "2. 优先用年报合并报表段内的明细科目解释残差；candidate_tushare_fields 的 annual_report_alias 可用于映射。\n"
+        "3. 单字段闭合不了但 2-3 字段之和能精确闭合残差时，返回多个 item（每个带独立 evidence_lines）。\n"
+        "4. 年报金额若为千元，换算成百万元时除以 1000；符号按年报填列（损失以负号填列的，负值即减项）。\n"
+        "5. 找不到能解释残差的科目时，suspected_tushare_issue=false 或 recommended_action=manual_review。\n\n"
+        f"输入数据：\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
 def _llm_propose_fallback(
     ticker: str,
     company_dir: Path,
@@ -1355,53 +1420,99 @@ def _llm_propose_fallback(
     relaxing the 脏配平 discipline — the LLM proposing is fine, but the value must
     still cite an annual-report number that matches the residual.
     """
-    def _one(analysis: dict[str, Any]) -> dict[str, Any]:
-        failure_dict = analysis.get("failure", {}) or {}
-        try:
-            failure = Failure(**failure_dict)
-        except Exception as exc:  # reconstruct failure for prompt building
-            analysis["llm"] = {"error": f"cannot reconstruct Failure: {exc!r}"}
-            return analysis
-        field_context = analysis.get("candidate_tushare_fields", []) or []
-        markdown_context = analysis.get("annual_report_context", {}) or {}
-        # Opt 1: 仿 subagent 读法，喂连续合并报表整段，让 LLM 基于有序表格做多字段
-        # 联合闭合（散乱 snippet 常漏掉合并利润表/资产负债表主表，致单字段提议闭合不了
-        # IS 1.2 NULL-optional / BS bucket 残差）。section 定位失败则退回原 snippet。
-        md_path_str = markdown_context.get("markdown_path")
-        md_path_obj = Path(md_path_str) if md_path_str else None
-        if (
-            md_path_obj
-            and md_path_obj.exists()
-            and failure.statement in ("income", "balancesheet")
-        ):
-            section = _locate_consolidated_statement_section(md_path_obj, failure.statement)
-            if section:
-                snippets = list(markdown_context.get("snippets") or [])
-                snippets.insert(0, {
-                    "kind": "consolidated_section",
-                    "start_line": section["start"],
-                    "end_line": section["end"],
-                    "text": section["text"],
-                })
-                markdown_context = {**markdown_context, "snippets": snippets}
-        if markdown_context.get("error") or not markdown_context.get("snippets"):
-            analysis["llm"] = {"error": markdown_context.get("error", "no annual-report snippet")}
-            return analysis
-        known_hints = analysis.get("known_tushare_defect_hints", []) or []
-        messages = llm_prompt(
-            ticker, company_dir, failure, field_context, markdown_context, known_hints,
-            full_context=True,
-        )
-        analysis["llm"] = call_llm(messages)
-        analysis["llm_propose_source"] = "fallback"
-        return analysis
+    def _augment_section(analysis: dict[str, Any]) -> None:
+        """Opt 1: 把合并报表整段塞进 annual_report_context.snippets（就地 augment）。
 
-    # Full-context propose calls are heavy (uncapped statement snippet) and the
-    # residue batch can be large (every IS 1.1 + BS gap failure that rule didn't
-    # close). Default LLM_MAX_WORKERS (10) tripped GLM's per-minute rate cap and
-    # silently degraded 3 of 4 hard failures into empty "no proposal" via 429.
-    # Cap to 3 so the long 429 backoff in call_llm actually has room to recover.
-    parallel_map(_one, residue_analyses, max_workers=3)  # mutates each in place
+        LLM-propose 与后续 _verify_llm_value_in_consolidated_statement 都从 snippets 读，
+        故在这里统一 augment；section 定位失败不阻塞（退回原 snippet）。
+        """
+        try:
+            failure = Failure(**(analysis.get("failure", {}) or {}))
+        except Exception:
+            return
+        md_ctx = analysis.get("annual_report_context") or {}
+        md_path_str = md_ctx.get("markdown_path")
+        md_path_obj = Path(md_path_str) if md_path_str else None
+        if not (md_path_obj and md_path_obj.exists() and failure.statement in ("income", "balancesheet")):
+            return
+        section = _locate_consolidated_statement_section(md_path_obj, failure.statement)
+        if not section:
+            return
+        snippets = list(md_ctx.get("snippets") or [])
+        snippets.insert(0, {
+            "kind": "consolidated_section",
+            "start_line": section["start"],
+            "end_line": section["end"],
+            "text": section["text"],
+        })
+        analysis["annual_report_context"] = {**md_ctx, "snippets": snippets}
+
+    def _build_payload(analysis: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            failure = Failure(**(analysis.get("failure", {}) or {}))
+        except Exception:
+            return None
+        _augment_section(analysis)
+        md_ctx = analysis.get("annual_report_context") or {}
+        section_text = ""
+        for s in md_ctx.get("snippets") or []:
+            if isinstance(s, dict) and s.get("kind") == "consolidated_section":
+                section_text = str(s.get("text", ""))
+                break
+        payload = asdict(failure)
+        payload["candidate_tushare_fields"] = slim_field_context_for_llm(
+            analysis.get("candidate_tushare_fields") or []
+        )
+        payload["consolidated_statement_section"] = section_text or None
+        payload["annual_report_markdown_path"] = md_ctx.get("markdown_path")
+        return payload
+
+    def _propose_chunk(chunk: list[dict[str, Any]]) -> None:
+        """Opt 3: 一个 LLM 调用处理 up-to-K 个残差失败（批处理）。"""
+        keyed: list[tuple[dict[str, Any], tuple[str, str], dict[str, Any]]] = []
+        for analysis in chunk:
+            payload = _build_payload(analysis)
+            if payload is None:
+                analysis["llm"] = {"error": "cannot reconstruct Failure for batched propose"}
+                analysis["llm_propose_source"] = "fallback"
+                continue
+            key = (str(payload.get("period")), str(payload.get("code")))
+            keyed.append((analysis, key, payload))
+        if not keyed:
+            return
+        messages = llm_prompt_batch(ticker, company_dir, [p for _, _, p in keyed])
+        response = call_llm(messages)
+        if not isinstance(response, dict):
+            response = {"error": f"non-dict LLM response: {type(response).__name__}"}
+        provider = response.get("_provider")
+        if response.get("error"):
+            # 整批调用失败（超时/429/解析错）→ 该批每个 analysis 记 error，其余批不受影响。
+            for analysis, _key, _payload in keyed:
+                analysis["llm"] = dict(response)
+                analysis["llm_propose_source"] = "fallback"
+            return
+        by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for r in response.get("results") or []:
+            if isinstance(r, dict):
+                by_key[(str(r.get("period")), str(r.get("code")))] = r
+        for analysis, key, _payload in keyed:
+            r = by_key.get(key)
+            if r is not None:
+                r = dict(r)
+                if provider:
+                    r["_provider"] = provider
+                analysis["llm"] = r
+            else:
+                analysis["llm"] = {"error": "no result for this failure in batched response"}
+            analysis["llm_propose_source"] = "fallback"
+
+    # Opt 3: 批处理残差失败——每 up-to-K 个一次 LLM 调用，替代逐失败调用。
+    # 残差常是 IS 1.2 跨多年（各自年报），打包到一个 prompt 让 GLM 一次性提议；
+    # 调用数从 N 降到 ceil(N/K)，429 风险同步下降。chunk 间低并发(2)避开 GLM 按分钟限流
+    # （原逐失败 max_workers=3 实测会 429 静默降级；批处理 + 2 并发调用数更少更稳）。
+    CHUNK_SIZE = 3
+    chunks = [residue_analyses[i:i + CHUNK_SIZE] for i in range(0, len(residue_analyses), CHUNK_SIZE)]
+    parallel_map(_propose_chunk, chunks, max_workers=2)  # mutates each analysis in place
 
     provider = llm_provider()
     adjustments: list[dict[str, Any]] = []

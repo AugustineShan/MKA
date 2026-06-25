@@ -437,14 +437,18 @@ def test_llm_propose_fallback_approves_joint_residual_closure(monkeypatch):
     def fake_call_llm(messages):
         # 单字段 diff 都大（29.10/16.22/62.45），但 53.88+8.57-87.24 = -24.79 = signed_residual
         return {
-            "suspected_tushare_issue": True,
-            "confidence": "high",
-            "recommended_action": "add_override",
-            "missing_or_suspicious_items": [
-                {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益", "value_million_cny": 53.8838, "residual_difference_million_cny": 29.0971},
-                {"candidate_tushare_field": "credit_impa_loss", "annual_report_item": "信用减值损失", "value_million_cny": 8.5675, "residual_difference_million_cny": 16.2192},
-                {"candidate_tushare_field": "asset_disp_income", "annual_report_item": "资产处置收益", "value_million_cny": -87.2379, "residual_difference_million_cny": 62.4512},
-            ],
+            "results": [{
+                "period": "2024",
+                "code": "IS 1.2",
+                "suspected_tushare_issue": True,
+                "confidence": "high",
+                "recommended_action": "add_override",
+                "missing_or_suspicious_items": [
+                    {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益", "value_million_cny": 53.8838, "residual_difference_million_cny": 29.0971},
+                    {"candidate_tushare_field": "credit_impa_loss", "annual_report_item": "信用减值损失", "value_million_cny": 8.5675, "residual_difference_million_cny": 16.2192},
+                    {"candidate_tushare_field": "asset_disp_income", "annual_report_item": "资产处置收益", "value_million_cny": -87.2379, "residual_difference_million_cny": 62.4512},
+                ],
+            }],
             "_provider": "glm",
         }
 
@@ -480,13 +484,16 @@ def test_llm_propose_rejects_value_not_in_consolidated_statement(monkeypatch):
 
     def fake_call_llm(messages):
         return {
-            "suspected_tushare_issue": True, "confidence": "high",
-            "recommended_action": "add_override",
-            "missing_or_suspicious_items": [
-                # LLM 自报闭合(7.88≈残差 7.88)，但 7.88 不在合并主表（主表 10.54）→抓错表
-                {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益",
-                 "value_million_cny": 7.88, "residual_difference_million_cny": 0.0},
-            ],
+            "results": [{
+                "period": "2022", "code": "IS 1.2",
+                "suspected_tushare_issue": True, "confidence": "high",
+                "recommended_action": "add_override",
+                "missing_or_suspicious_items": [
+                    # LLM 自报闭合(7.88≈残差 7.88)，但 7.88 不在合并主表（主表 10.54）→抓错表
+                    {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益",
+                     "value_million_cny": 7.88, "residual_difference_million_cny": 0.0},
+                ],
+            }],
             "_provider": "glm",
         }
     monkeypatch.setattr(ar, "call_llm", fake_call_llm)
@@ -518,12 +525,15 @@ def test_llm_propose_accepts_value_matching_consolidated_statement(monkeypatch):
 
     def fake_call_llm(messages):
         return {
-            "suspected_tushare_issue": True, "confidence": "high",
-            "recommended_action": "add_override",
-            "missing_or_suspicious_items": [
-                {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益",
-                 "value_million_cny": 10.5379, "residual_difference_million_cny": 0.0},
-            ],
+            "results": [{
+                "period": "2022", "code": "IS 1.2",
+                "suspected_tushare_issue": True, "confidence": "high",
+                "recommended_action": "add_override",
+                "missing_or_suspicious_items": [
+                    {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益",
+                     "value_million_cny": 10.5379, "residual_difference_million_cny": 0.0},
+                ],
+            }],
             "_provider": "glm",
         }
     monkeypatch.setattr(ar, "call_llm", fake_call_llm)
@@ -590,3 +600,80 @@ def test_locate_consolidated_statement_returns_none_for_cashflow(tmp_path):
     md = tmp_path / "x.md"
     md.write_text("合并现金流量表\n", encoding="utf-8")
     assert ar._locate_consolidated_statement_section(md, "cashflow") is None
+
+
+def test_llm_propose_fallback_batches_multiple_failures(monkeypatch):
+    """Opt 3: residue failures are packed into one LLM call per chunk, not one
+    call per failure. Two failures → one call_llm; each result attributed by
+    (period, code) so per-failure validation runs unchanged."""
+    analysis_a = {
+        "failure": {"period": "2023", "code": "IS 1.2", "statement": "income",
+                    "title": "营业利润", "message": "IS 1.2 2023 ...",
+                    "residual": 55.14, "target_value": 507.90, "calc_value": 452.76,
+                    "direction": "target_gt_calc"},
+        "annual_report_context": {"markdown_path": "fake.md",
+                                  "snippets": [{"kind": "statement", "text": "加：其他收益 64,183,306.74\n信用减值损失 -9,038,921.19"}]},
+        "candidate_tushare_fields": [
+            {"field": "oth_income", "description": "其他收益", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "credit_impa_loss", "description": "信用减值损失", "value_million_cny": 0.0, "clean_category": None},
+        ],
+    }
+    analysis_b = {
+        "failure": {"period": "2025", "code": "IS 1.2", "statement": "income",
+                    "title": "营业利润", "message": "IS 1.2 2025 ...",
+                    "residual": 55.79, "target_value": 852.55, "calc_value": 796.76,
+                    "direction": "target_gt_calc"},
+        "annual_report_context": {"markdown_path": "fake.md",
+                                  "snippets": [{"kind": "statement", "text": "加：其他收益 53,836,748.22\n信用减值损失 1,955,919.34"}]},
+        "candidate_tushare_fields": [
+            {"field": "oth_income", "description": "其他收益", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "credit_impa_loss", "description": "信用减值损失", "value_million_cny": 0.0, "clean_category": None},
+        ],
+    }
+    call_count = {"n": 0}
+
+    def fake_call_llm(messages):
+        call_count["n"] += 1
+        # both failures answered in ONE batched response, attributed by period+code
+        return {
+            "results": [
+                {"period": "2023", "code": "IS 1.2", "suspected_tushare_issue": True,
+                 "confidence": "high", "recommended_action": "add_override",
+                 "missing_or_suspicious_items": [
+                     {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益", "value_million_cny": 64.1833, "residual_difference_million_cny": 0.0},
+                     {"candidate_tushare_field": "credit_impa_loss", "annual_report_item": "信用减值损失", "value_million_cny": -9.0389, "residual_difference_million_cny": 0.0},
+                 ]},
+                {"period": "2025", "code": "IS 1.2", "suspected_tushare_issue": True,
+                 "confidence": "high", "recommended_action": "add_override",
+                 "missing_or_suspicious_items": [
+                     {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益", "value_million_cny": 53.8367, "residual_difference_million_cny": 0.0},
+                     {"candidate_tushare_field": "credit_impa_loss", "annual_report_item": "信用减值损失", "value_million_cny": 1.9559, "residual_difference_million_cny": 0.0},
+                 ]},
+            ],
+            "_provider": "glm",
+        }
+
+    monkeypatch.setattr(ar, "call_llm", fake_call_llm)
+    adjustments = ar._llm_propose_fallback(
+        "002946.SZ", None, None, [analysis_a, analysis_b], approve_high_confidence=True
+    )
+    # two failures in one chunk → exactly ONE LLM call (not two)
+    assert call_count["n"] == 1
+    fields = {a.get("field") for a in adjustments}
+    assert fields == {"oth_income", "credit_impa_loss"}
+    periods = {a.get("period") for a in adjustments}
+    assert periods == {"2023", "2025"}
+
+
+def test_llm_prompt_batch_schema():
+    """Opt 3: batched prompt carries each failure's section + candidates and
+    asks for a results array attributed by period+code."""
+    msgs = ar.llm_prompt_batch("002946.SZ", None, [
+        {"period": "2024", "code": "IS 1.2", "residual": 24.79, "direction": "target_lt_calc",
+         "candidate_tushare_fields": [{"field": "oth_income", "value_million_cny": 0.0}],
+         "consolidated_statement_section": "3、合并利润表\n加：其他收益 53,883,758.84"},
+    ])
+    assert msgs[0]["role"] == "system"
+    assert "results" in msgs[1]["content"]
+    assert "每个失败" in msgs[1]["content"]
+    assert "53,883,758.84" in msgs[1]["content"]
