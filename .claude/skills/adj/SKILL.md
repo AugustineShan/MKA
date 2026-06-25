@@ -60,6 +60,7 @@ quick 只能做已有 knobs 的数值小改。
 - 修改 `核心假设.md` 正文预测行 + 末尾 `knobs` 块。
 - 定点 patch 最新 yaml1 中对应已有 path / values。
 - 跑 `py -m src.forecast --yaml1 "<今日yaml1>"`。
+  - **(audit R6/H2a)** official forecast 现在会自动跑 yaml1 结构/路径保真闸门:若 quick patch 不慎越界(改了 family/结构/path、偏离 defaults 命名空间),Gate A/B 会 FAIL 并阻断 forecast(exit 4),逼你回 `/comp`——quick 不再能静默把结构性改动送进 DCF。确需临时放行设 `MKA_FIDELITY_GATE=warn`。
 
 禁止：
 

@@ -75,7 +75,7 @@ STANDARD_LINES: list[tuple[str, str, str | None, str, bool]] = [
     ("total_profit_obs",    "direct", "total_profit",             "million_cny", False),
     ("income_tax_obs",      "direct", "income_tax",               "million_cny", False),
     ("n_income_obs",        "direct", "n_income",                 "million_cny", False),
-    ("n_income_attr_p_obs", "direct", "n_income_attr_p",          "million_cny", False),
+    ("n_income_attr_p_obs", "direct", "n_income_attr_p",          "million_cny", True),   # audit R2:归母净利是 headline,clean.py 已硬保证其存在,设 core 关闭"NULL净利静默放行"的洞
     ("nincome_margin",      "nincome_margin", None,               "ratio",       False),  # 归母净利率 = n_income_attr_p/revenue
 ]
 

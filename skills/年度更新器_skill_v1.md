@@ -54,7 +54,7 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> --forecast-m
 3. 计算 N = A - H。若 N <= 0，报告无需更新并停。
 4. 守门：`(H, A]` 任何一年缺 clean_annual 或年报 Markdown，停止并精确报告缺口。
 5. 建总账：旧稿所有需要被处理的线、历史、stash、旋钮、时间轴四数都进入清单。
-6. 识别按需扩展字段：旧稿有历史序列但 fetcher 默认 19 条未覆盖的行，查 `src/field_registry.yaml` 或 `数据格式参考.md`，传给 fetcher。
+6. 识别按需扩展字段：旧稿有历史序列但 fetcher 默认 24 条未覆盖的行，查 `src/field_registry.yaml` 或 `数据格式参考.md`，传给 fetcher。
 
 总账是完整性的地基：后面每项要么填，要么旗，要么平移，要么转 `/adj incremental`。
 

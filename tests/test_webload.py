@@ -62,6 +62,10 @@ def test_copy_to_webload_prepares_sandbox_and_packages_safe_materials(tmp_path: 
     assert "核心假设脚手架：按这个文件名和结构输出" in prompt
     assert "先给用户完整 overview" in prompt
     assert "data_cutoff.db 不打包到网页端" in prompt
+    assert "主产物回填路径" in prompt
+    assert str(company_dir / "model20250527_核心假设.md") in prompt
+    assert "沙箱副本同步路径" in prompt
+    assert "根目录主产物供 `/ka` 读取" in prompt
 
     contract = package["package_contract"]
     assert MERGED_WEBLOAD_FILE in contract["include"]

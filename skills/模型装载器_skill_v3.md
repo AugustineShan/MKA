@@ -3,8 +3,10 @@
 你是 `/load` 模式下的外部 Excel 模型理解器。你的任务不是做当前最新投资判断，而是把一个外部 Excel 模型按它当时的认知状态，装载成一份可读、可编译、可复盘的核心假设源文：
 
 ```text
-Agent/Load/{load_id}/{原Excel文件名}_核心假设.md
+companies/{公司}/{原Excel文件名}_核心假设.md
 ```
+
+公司根目录这份是 `/load` 主产物，给 `/ka` 读取；`Agent/Load/{load_id}/{原Excel文件名}_核心假设.md` 是同步副本，给 `/load` 自己编译 `yaml1_load` 和跑沙箱 DCF。
 
 这份文件必须符合 `/comp` 已经吃得懂的 `核心假设.md` 源语言。`/comp` 才是 schema 化器；你不生成完整 `model_assumption_schema.json`。
 
@@ -29,7 +31,7 @@ skills/核心假设源语言_skill_v*.md
 
 1. `/load` 保存原模型 vintage，不更新到当前事实。
 2. `/load` 解释公式层和手填旋钮，不裁决当前正式核心假设。
-3. `/load` 的输出只写 `Agent/Load/{load_id}/`，不写公司根目录和正式 `Agent/forecast/`。
+3. `/load` 的主产物写公司根目录，沙箱副本写 `Agent/Load/{load_id}/`；仍不写正式 `Agent/forecast/`。
 4. `/load` 的主产物是 `/comp` 源语言，不是第二套 JSON schema。
 
 权威顺序：
@@ -125,7 +127,9 @@ allowed_materials/
 - 公司判断和最新观点不得覆盖模型时间轴、预测起点或旋钮。
 - 权威顺序：模型公式层 > 模型内文字 > `allowed_materials` > 背景口径。
 - forbidden_materials 沙箱不能破。
-- 只写 `Agent/Load/{load_id}/`，不写公司根目录和正式 `Agent/forecast/`。
+- 主产物写公司根目录：`companies/{公司}/{原Excel文件名}_核心假设.md`，供 `/ka` 读取。
+- 同步副本写 `Agent/Load/{load_id}/{原Excel文件名}_核心假设.md`，供 `/load` 编译、审计和沙箱 DCF。
+- 不写正式 `Agent/forecast/`。
 
 ## 6. 模型理解 overview 确认门
 
@@ -146,18 +150,26 @@ overview 必须覆盖：
 overview 结尾必须停止并问：
 
 ```text
-我这样理解这个模型对不对？你确认后，我再按收入 -> 毛利 -> 费用 -> below-OP 与税 -> 中期的顺序，一段一段先押再问、拍板后写入 load 沙箱。
+我这样理解这个模型对不对？你确认后，我再按收入 -> 毛利 -> 费用 -> below-OP 与税 -> 中期的顺序，一段一段先押再问、拍板后写入公司根目录 LOAD 主产物，并同步副本到 load 沙箱。
 ```
 
-用户未确认前，禁止继续生成核心假设正文、禁止编译 yaml1、禁止跑 DCF。`prepare` 生成的脚手架不算正文落盘。
+用户未确认前，禁止继续生成核心假设正文、禁止写公司根目录主产物、禁止编译 yaml1、禁止跑 DCF。`prepare` 生成的沙箱脚手架不算正文落盘。
 
 ## 7. 写成 /comp 源语言
 
 用户确认 overview 后，才补写：
 
 ```text
+companies/{公司}/{原Excel文件名}_核心假设.md
+```
+
+写完根目录主产物后，必须把同一内容同步到：
+
+```text
 Agent/Load/{load_id}/{原Excel文件名}_核心假设.md
 ```
+
+根目录主产物给 `/ka` 读取；沙箱副本给 `/load` 后续编译 `yaml1_load_*.yaml`、compiler audit 和沙箱 DCF。两份内容必须一字不差，不允许根目录一版、沙箱一版。
 
 ### 抬头
 
@@ -165,6 +177,7 @@ Agent/Load/{load_id}/{原Excel文件名}_核心假设.md
 
 ```text
 模式: load
+状态: model-extracted
 模型源: xxx.xlsx
 模型日期: YYYY-MM-DD 或 unknown
 历史: [起始]-[history_end_year]
@@ -244,7 +257,7 @@ knobs:
 理由：
 
 - `/comp` 已经是 schema 化器。
-- `/load` 主产物是核心假设源文。
+- `/load` 主产物是公司根目录的核心假设源文；沙箱副本只是同源镜像。
 - 再做一份完整 schema 会和 markdown、yaml1 三份漂移。
 
 如果确有必要记录结构化审计，只能写轻量审计件，例如 `model_extraction_audit.json`，且只能记录：
@@ -304,7 +317,7 @@ Agent/Load/{load_id}/forecast/
 - 禁止了哪些后验材料。
 - 哪些模型结构已完整装载。
 - 哪些地方只是 load-vintage 保存，未代表当前事实。
-- `{原Excel文件名}_核心假设.md`、`yaml1_load_*.yaml`、`forecast/` 路径。
+- 根目录主产物 `{原Excel文件名}_核心假设.md`、沙箱副本、`yaml1_load_*.yaml`、`forecast/` 路径。
 - 每股价值和 warnings 数，若已跑 DCF。
 
 结尾必须写明：这是 `/load` vintage 沙箱结果，不是当前正式 forecast。

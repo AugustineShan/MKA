@@ -61,7 +61,7 @@ from src.company_paths import (
     recon_dir,
     research_reports_dir,
 )
-from src.forecast import run_company_forecast
+from src.forecast import FidelityGateError, run_company_forecast
 from src.derived_metrics import DERIVED_METRICS_FILENAME, build_derived_metrics_from_frames
 from src.quarterly_tracker import (
     clear_override,
@@ -2137,6 +2137,15 @@ def regenerate_forecast(company_id: str) -> dict[str, Any]:
                 "code": "stale_assumption_requires_annual_update",
                 "message": str(exc),
                 "status": exc.status.as_dict(),
+            },
+        ) from exc
+    except FidelityGateError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "yaml1_fidelity_gate_block",
+                "message": str(exc),
+                "findings": exc.findings,
             },
         ) from exc
     return {

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import sys
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -56,12 +57,23 @@ def research_pdf_to_md(pdf_path: Path, *, force: bool = False) -> Path:
 
 
 def convert_research_pdfs(folder: Path, *, force: bool = False) -> list[Path]:
-    """扫 folder 下所有 *.pdf，逐个转 .md。返回生成的 .md 路径列表（含已存在的）。"""
+    """扫 folder 下所有 *.pdf，逐个转 .md。返回生成的 .md 路径列表（含已存在的）。
+
+    audit R5:每个 PDF 独立成败。单个损坏/加密 PDF 只跳过它并告警(stderr 留痕),
+    不再让一个坏文件 abort 整批、静默吞掉其余可转文件。
+    """
     if not folder.exists():
         return []
     md_paths: list[Path] = []
     for pdf in sorted(folder.glob("*.pdf")):
-        md_paths.append(research_pdf_to_md(pdf, force=force))
+        try:
+            md_paths.append(research_pdf_to_md(pdf, force=force))
+        except Exception as exc:  # noqa: BLE001 - 单文件隔离:坏 PDF 不连累整批
+            print(
+                f"research_pdf2md: 跳过无法转换的 PDF {pdf.name}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
     return md_paths
 
 

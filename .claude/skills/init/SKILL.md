@@ -224,6 +224,7 @@ exit 3 的失败里若混有 `跨表 7.4`（上期CF期末 ≠ 本期CF期初）
 - **raw_tushare 永不被修改**。年报补数只进 clean 年度宽表，并写入 `clean_adjustments`/`clean_warnings` 审计。
 - 失败的那次 clean 运行不会被改判；override 只在重跑时应用——这套两段式已由 `init.py` 自动完成，你无需手工敲 `annual_report_reconciler.py`。
 - **2010 闸门**：年报核对（reconciler）只对 **2010 年及以后**的年度硬校验失败触发。2010 之前的年度硬校验失败被 `clean.py` 降级为 warning **直接入库**（写进 `clean_annual`，不阻塞、不核对）。所以老公司（含 2010 前数据）的早期年份不会卡在 reconciler 上，汇报时要说清"2010 前为直接入库、未经年报核对"。闸门常量 `clean.RECONCILE_MIN_YEAR=2010`。
+- **pre-IPO 闸门**：上市公司上市前年份（早于本地最早年报 Markdown 的年份，由 `clean.earliest_annual_md_year` 扫描 `公告/年报/*_年度报告.md` 判定）的年度硬校验失败同样**降级为 warning 直接入库**——上市前 TuShare 数据源自招股说明书、cninfo 无该年年报 MD，reconciler 无 MD 可核对，对不上属正常。`init.py` 在年报下载完成后重跑 clean 让闸门生效，pre-IPO 年由此通过、不触发 reconciler。汇报时要说清"pre-IPO 年（如新上市公司 2017-2020）为直接入库、未经年报核对"。无年报 MD 时闸门关闭。
 - 汇报用事实，不用营销词。补全过的科目要讲清来源是年报、可追溯。
 
 ## 性能与耗时预期（通用，排查"慢"先看这里）

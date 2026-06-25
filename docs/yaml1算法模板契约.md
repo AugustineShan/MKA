@@ -4,7 +4,7 @@
 
 请把它当成三方契约：
 
-- `核心假设生成修改器` 负责把公司真实骨架讲清楚，但不直接产 YAML。
+- `核心假设源语言` 与 `核心假设编辑器` 负责把公司真实骨架讲清楚，但不直接产 YAML。
 - `yaml1compiler` 负责把 markdown 翻成 `yaml1`，只能使用本文列出的可执行模板。
 - `yaml1_cleaner.py` 负责把 `yaml1` 折成 `calc.py` 能吃的标准参数。
 
@@ -417,7 +417,7 @@ formula/DAG 层必须同时满足：
 - 新模板最终是否只落到 YAML2 已有路径。
 - 是否需要更新 `docs/数据流水线.md`。
 - 是否需要更新本文件。
-- 是否需要更新 `skills/yaml1compiler_v4 (2).md` 和生成器 skill。
+- 是否需要更新 `skills/yaml1compiler_v5.md`、`skills/核心假设源语言_skill_v1.md` 和 `skills/核心假设编辑器_skill_v1.md`。
 - 是否需要更新 `src/workbench.py` 的 YAML1 breakdown 展示。
 
 ## 变更纪律
@@ -426,8 +426,9 @@ formula/DAG 层必须同时满足：
 
 - `src/yaml1_cleaner.py`
 - `tests/test_yaml1_cleaner.py`
-- `skills/yaml1compiler_v4 (2).md`
-- `skills/核心假设生成修改器_skill_v17.md`
+- `skills/yaml1compiler_v5.md`
+- `skills/核心假设源语言_skill_v1.md`
+- `skills/核心假设编辑器_skill_v1.md`
 - `docs/数据流水线.md`
 - `src/workbench.py`，如果前端展示会受影响
 

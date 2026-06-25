@@ -19,7 +19,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.company_paths import company_dir_from_db_path, find_db_path as find_agent_db_path, recon_dir
+from src.company_paths import (
+    company_dir_from_db_path,
+    find_db_path as find_agent_db_path,
+    recon_dir,
+    annual_reports_dir,
+)
 
 from .field_registry import (
     IS_FIELD_CATEGORIES, BS_FIELD_CATEGORIES, CF_FIELD_CATEGORIES,
@@ -37,6 +42,26 @@ QUARTERLY_TOLERANCE = 1.0
 # 2010 之前的年度披露稀疏、格式早期，不值得对年报核对，clean 直接入库
 # （硬错误降级为 warning，不阻塞、不触发 reconciler）。
 RECONCILE_MIN_YEAR = 2010
+
+
+def earliest_annual_md_year(db_path: str | Path) -> int | None:
+    """Earliest fiscal year for which a cninfo annual-report Markdown exists locally.
+
+    IPO-boundary proxy: a公司上市前年份的 TuShare 数据来自招股说明书，cninfo 上
+    没有该年年度报告 PDF/Markdown，reconciler 无 MD 可核对。本函数扫描
+    ``companies/{公司}/公告/年报/*_年度报告.md`` 取最小年份作为"IPO 后首份年报"。
+    clean 的 pre-IPO 闸门据此把早于该年的年度硬校验失败降级为 warning（不阻塞、
+    不触发 reconciler）；reconciler 的 collect_failures 也据此跳过这些年，避免
+    在无 MD 的 pre-IPO 年上空跑 LLM / 造脏 override。无年报 MD 时返回 None（闸门
+    关闭，退回原行为）。
+    """
+    reports_dir = annual_reports_dir(company_dir_from_db_path(Path(db_path)))
+    years: list[int] = []
+    for md in reports_dir.glob("*_年度报告.md"):
+        m = re.match(r"(\d{4})", md.stem)
+        if m:
+            years.append(int(m.group(1)))
+    return min(years) if years else None
 
 
 def period_year(period) -> int:
@@ -114,6 +139,11 @@ QA_BS_PLUG_FIELDS: dict[str, str] = {
 QA_CF_CASH_PLUG_FIELD = "qa_cf_cash_reconcile_plug"
 QA_FIELDS = sorted([*QA_BS_PLUG_FIELDS.values(), QA_CF_CASH_PLUG_FIELD])
 APPROVED_OVERRIDE_SOURCES = {"glm", "kimi", "claude"}
+# audit H4:override 文件跨运行 merge-append,同一 (period, 解析后列名) 可能累积多条
+# approved 记录(不同 source / 不同 new_value)。旧实现按列表序 last-write-wins=非确定。
+# 这里按显式 source 优先级裁决,保证可复现:claude(subagent bridge 逐数字证据闭合)
+# > glm(rule+LLM) > kimi(旧)。同 cell 不同值的冲突显式 LOG.warning,不静默。
+OVERRIDE_SOURCE_PRECEDENCE = ("claude", "glm", "kimi")
 # "claude" 来源的 override 由 init skill 的 subagent 升级通道产出（见
 # src/recon_subagent_bridge.py）：subagent 读年报干净 Markdown 定位科目金额，
 # bridge 服务端按净残差验闭合后才标 approved。与 glm/kimi 同等审计可追溯。
@@ -1664,6 +1694,7 @@ def validate_wide(
     *,
     label: str,
     restatement_exemptions: list[dict[str, object]] | None = None,
+    pre_ipo_year: int | None = None,
 ) -> list[str]:
     """Run hard and soft checks on a wide table."""
     all_errors: list[str] = []
@@ -1696,6 +1727,15 @@ def validate_wide(
         present = present_by_period.get(period, set())
         null_fields = wide.attrs.get("null_fields_by_period", {}).get(period, set())
         reclass = bs_reclass_by_period.get(period)
+
+        # pre-IPO 闸门：年度早于最早可用年报 Markdown 的，TuShare 数据源自招股书、
+        # 无 cninfo 年报 MD 可核对，硬校验失败降级为 warning 不阻塞（与 2010 闸门
+        # 同性质：有据可审计，非静默改判）。季度不启用。
+        pre_ipo = (
+            label == "annual"
+            and pre_ipo_year is not None
+            and period_year(period) < pre_ipo_year
+        )
 
         period_errors: list[str] = []
         period_warnings: list[str] = []
@@ -1748,9 +1788,40 @@ def validate_wide(
         period_warnings.extend(check_soft(row, present, period, null_fields=null_fields))
 
         if period_errors:
-            all_errors.extend(period_errors)
-            for e in period_errors:
-                LOGGER.error("❌ %s", e)
+            if pre_ipo:
+                # pre-IPO 年度：无年报 MD 可核对，硬失败降级为 warning 直接入库，
+                # 不阻塞 clean、不触发 reconciler。明确标注原因，下游可见可审计。
+                for e in period_errors:
+                    msg = (
+                        f"pre-IPO年度 {period}（早于最早可用年报MD {pre_ipo_year}，"
+                        f"TuShare源自招股书、无年报MD可核对，硬失败降级为warning不阻塞）: {e}"
+                    )
+                    all_warnings.append(msg)
+                    LOGGER.warning("⚠️  %s", msg)
+                LOGGER.info(
+                    "⏭️  %s annual %s pre-IPO年度，%d 个硬失败降级为 warning",
+                    label, period, len(period_errors),
+                )
+            elif label == "annual" and period_year(period) < RECONCILE_MIN_YEAR:
+                # 2010 闸门(audit C5):A 股 2010 前披露稀疏、格式早期,年报核对得不偿失。
+                # 年度早于 RECONCILE_MIN_YEAR 的硬失败降级为 warning 直接入库,不阻塞、
+                # 不触发 reconciler(与 pre-IPO 闸门同性质:有据可审计,非静默改判;
+                # reconciler.collect_failures 与年报下载也以同一常量跳过 2010 前)。季度不启用。
+                for e in period_errors:
+                    msg = (
+                        f"2010前年度 {period}（早于 RECONCILE_MIN_YEAR={RECONCILE_MIN_YEAR}，"
+                        f"A股早期披露稀疏、年报核对得不偿失，硬失败降级为warning不阻塞）: {e}"
+                    )
+                    all_warnings.append(msg)
+                    LOGGER.warning("⚠️  %s", msg)
+                LOGGER.info(
+                    "⏭️  %s annual %s 2010前年度，%d 个硬失败降级为 warning",
+                    label, period, len(period_errors),
+                )
+            else:
+                all_errors.extend(period_errors)
+                for e in period_errors:
+                    LOGGER.error("❌ %s", e)
         else:
             LOGGER.info("✅ %s %s all hard checks passed", label, period)
 
@@ -1827,7 +1898,12 @@ def load_approved_overrides(path: Path | None, ticker: str) -> list[dict[str, ob
     if data.get("ticker") not in {ticker, None}:
         raise ValueError(f"Override ticker mismatch: {data.get('ticker')} != {ticker}")
 
-    adjustments = []
+    def _rank(src: object) -> int:
+        s = str(src)
+        return OVERRIDE_SOURCE_PRECEDENCE.index(s) if s in OVERRIDE_SOURCE_PRECEDENCE else len(OVERRIDE_SOURCE_PRECEDENCE)
+
+    # audit H4:按 (period, 解析后列名) 去重,source 优先级裁决冲突(确定性,不靠列表序)。
+    by_cell: dict[tuple[str, str], dict[str, object]] = {}
     for item in data.get("adjustments", []):
         if item.get("status") != "approved":
             continue
@@ -1840,8 +1916,25 @@ def load_approved_overrides(path: Path | None, ticker: str) -> list[dict[str, ob
                 item.get("source"),
             )
             continue
-        else:
-            adjustments.append(item)
+        period = str(item.get("period") or "")
+        column = override_column_name(str(item.get("endpoint") or ""), str(item.get("field") or ""))
+        key = (period, column)
+        prev = by_cell.get(key)
+        if prev is None:
+            by_cell[key] = item
+            continue
+        # 同 cell 冲突:按 source 优先级取胜者(rank 小者赢),记录可见、可审计。
+        winner, loser = (item, prev) if _rank(item.get("source")) < _rank(prev.get("source")) else (prev, item)
+        if prev.get("new_value_million_cny") != item.get("new_value_million_cny"):
+            LOGGER.warning(
+                "Override conflict at %s %s: source=%s val=%s vs source=%s val=%s -> 取 source=%s val=%s",
+                period, column,
+                prev.get("source"), prev.get("new_value_million_cny"),
+                item.get("source"), item.get("new_value_million_cny"),
+                winner.get("source"), winner.get("new_value_million_cny"),
+            )
+        by_cell[key] = winner
+    adjustments = list(by_cell.values())
     LOGGER.info("Loaded %d approved annual-report override(s) from %s", len(adjustments), path)
     return adjustments
 
@@ -2164,6 +2257,7 @@ def clean_dataset(
     annual_plugs: list[dict[str, object]] | None = None,
     restatement_exemptions: list[dict[str, object]] | None = None,
     max_quarters: int = 48,
+    pre_ipo_year: int | None = None,
 ) -> pd.DataFrame:
     """Clean one report_type/mode pair and write its wide table."""
     global TOLERANCE
@@ -2209,6 +2303,7 @@ def clean_dataset(
         validation_warnings = validate_wide(
             wide, present_by_period, label=mode,
             restatement_exemptions=restatement_exemptions if mode == "annual" else None,
+            pre_ipo_year=pre_ipo_year if mode == "annual" else None,
         )
     finally:
         TOLERANCE = old_tolerance
@@ -2276,6 +2371,11 @@ def clean_all(
         if allow_annual_plug and mode in {"annual", "all"}
         else []
     )
+    # pre-IPO 闸门：按最早可用年报 Markdown 判定 IPO 边界，早于该年的年度硬失败
+    # 降级为 warning 不阻塞。无年报 MD 时返回 None（闸门关闭）。
+    pre_ipo_year = earliest_annual_md_year(db_path)
+    if pre_ipo_year is not None:
+        LOGGER.info("pre-IPO 闸门：最早可用年报MD=%d，早于该年的年度硬失败将降级为 warning", pre_ipo_year)
     applied_adjustments: list[dict[str, object]] = []
     warning_records: list[dict[str, object]] = []
     outputs: dict[str, pd.DataFrame] = {}
@@ -2294,6 +2394,7 @@ def clean_all(
                     warning_records=warning_records,
                     annual_plugs=annual_plugs,
                     restatement_exemptions=restatement_exemptions,
+                    pre_ipo_year=pre_ipo_year,
                 )
             except CheckError as exc:
                 wrapper = CheckError(f"annual validation failed: {exc}")

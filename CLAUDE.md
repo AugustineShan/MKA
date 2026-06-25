@@ -268,6 +268,8 @@ python -m src.annual_report_reconciler --ticker 000333.SZ --write-overrides --ap
 
 > **2010 闸门**：强触发与年报核对只对 **2010 年及以后**的年度硬校验失败生效。`clean.py` 把 2010 之前年度的硬校验失败**降级为 warning 直接入库**（写进 `clean_annual`，不阻塞、不触发 reconciler）；`annual_report_reconciler.py` 的 `collect_failures` 也跳过 2010 之前的年度。原因：A 股 2010 前披露稀疏、格式早期，对年报核对得不偿失。`RECONCILE_MIN_YEAR=2010` 是 clean.py 的唯一闸门常量。
 
+> **pre-IPO 闸门（2026-06-25，匠心家居 301061 驱动）**：上市公司上市前年份的 TuShare 数据来自招股说明书，cninfo 上没有该年年度报告 PDF/Markdown，reconciler 无 MD 可核对。`clean.earliest_annual_md_year(db_path)` 扫描 `companies/{公司}/公告/年报/*_年度报告.md` 取最小年份作为"IPO 后首份年报"边界。`clean.validate_wide` 据此把**早于该年的年度硬校验失败降级为 warning 直接入库**（不阻塞、不触发 reconciler，与 2010 闸门同性质：有据可审计，非静默改判）；`annual_report_reconciler.collect_failures` 也据此跳过 pre-IPO 年度，避免在无 MD 的年份上空跑 LLM / 造脏 override。`init.py stage_clean` 在 ② 年报下载完成后重跑一次 clean——此时年报 MD 已可用、pre-IPO 闸门生效——若由此通过则直接成功，不再触发 reconciler（pre-IPO 年本就无 MD 可核对，reconciler 空跑）。无年报 MD 时返回 None，闸门关闭、退回原行为。匠心家居 301061（2021 年 9 月上市）实测：2017/2018 IS 1.2 营业利润残差（TuShare 全 NULL optional 调整项）经 pre-IPO 闘门降级，2019-2025 经 reconciler 25 条 override 补全后全过，init exit 0。
+
 ```bash
 python -m src.annual_report_reconciler --ticker {ticker} --db {data.db} --max-failures 20 --write-overrides --approve-high-confidence
 ```

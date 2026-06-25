@@ -158,6 +158,7 @@ def collect_failures(
     *,
     only_period: str | None = None,
     only_code: str | None = None,
+    pre_ipo_year: int | None = None,
 ) -> list[Failure]:
     """Run hard-check failures across periods.
 
@@ -187,9 +188,12 @@ def collect_failures(
         # pre-RECONCILE_MIN_YEAR period: 2010 之前的年度披露稀疏、不对年报核对，
         # clean 已把它们直接入库，reconciler 也不分析。仍携带期末现金，保证目标
         # 年/2010+ 的跨表 7.4（上期期末 vs 本期期初）能解析。
+        # 同理跳过 pre-IPO 年度（早于最早可用年报 MD）：无 MD 可核对，clean 的
+        # pre-IPO 闸门已把它们的硬失败降级为 warning，reconciler 不再分析、避免空跑 LLM。
         skip_period = (
             (only_period and period != only_period)
             or clean.period_year(period) < clean.RECONCILE_MIN_YEAR
+            or (pre_ipo_year is not None and clean.period_year(period) < pre_ipo_year)
         )
         if skip_period:
             prev_period_end_cash = clean.get_cashflow_value(row, "c_cash_equ_end_period")
@@ -1075,6 +1079,11 @@ def rule_based_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, 
 
 
 def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    # audit R3:守卫拒绝一个本可闭合的提议时,旧实现 continue/return [] 静默丢掉理由,
+    # 残差仍未闭合却查不到"为什么没补"。这里把每条拒绝理由记进 analysis(随 evidence
+    # JSON 落盘),不改任何控制流。
+    rej = analysis.setdefault("override_rejections", [])
+    rej.clear()  # 本函数对该 analysis 重新评估,清掉上轮记录
     llm = analysis.get("llm")
     if not isinstance(llm, dict) or llm.get("error"):
         return []
@@ -1089,6 +1098,11 @@ def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     # data gaps, and overriding them is 脏配平 (e.g. 资产减值损失's value written
     # to the rd_exp field). Only accept an explicit add_override recommendation.
     if llm.get("recommended_action") != "add_override":
+        rej.append({
+            "stage": "action_gate",
+            "reason": f"recommended_action={llm.get('recommended_action')} != add_override"
+                      "(LLM 自判为分类/公式/人工问题,非 TuShare 缺口,不补 override)",
+        })
         return []
 
     provider = str(llm.get("_provider") or llm_provider())
@@ -1106,6 +1120,14 @@ def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
         )
         value = item.get("value_million_cny")
         if not field or value is None:
+            rej.append({
+                "stage": "field_map",
+                "annual_report_item": item.get("annual_report_item"),
+                "candidate_tushare_field_raw": item.get("candidate_tushare_field"),
+                "value_million_cny": value,
+                "reason": "LLM 字段名映射不到 candidate 集(可能是 null/拼错/编造别名)或 value 缺失,"
+                          "拒绝(防集外字段脏配平);需人工补正确字段",
+            })
             continue
         mapped_items.append({**item, "candidate_tushare_field": field})
 
@@ -1137,6 +1159,13 @@ def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
                 {"source": provider, "confidence": llm.get("confidence"), **it}
                 for it in mapped_items
             ]
+        rej.append({
+            "stage": "closure",
+            "reason": "单字段均不闭合(各 diff>=TOLERANCE)且联合闭合也不成立",
+            "signed_residual": signed_residual,
+            "group_sum": group_sum,
+            "n_items": len(mapped_items),
+        })
     return []
 
 
@@ -1224,6 +1253,13 @@ def _llm_propose_fallback(
             # the bucket sum can actually close a bucket residual, so a proposal
             # outside the set cannot fix the failure even if applied.
             if field not in field_value_by:
+                analysis.setdefault("override_rejections", []).append({
+                    "stage": "fallback_field_set",
+                    "field": field,
+                    "value_million_cny": value,
+                    "reason": "提议字段不在该失败 bucket 的 candidate 字段集"
+                              "(防编造字段;集外字段也无法闭合 bucket 残差)",
+                })
                 continue
             new_value = float(value)
             old_value = field_value_by.get(field, float(sug.get("tushare_value_million_cny") or 0.0))
@@ -1233,6 +1269,13 @@ def _llm_propose_fallback(
             # IS 1.1：把"信用减值损失 -5.31 百万"写入 total_cogs，old=29817≠0），那是
             # 用 override 改写被校验目标本身，永远脏配平。old_value 非 0 一律拒绝。
             if abs(old_value) >= clean.TOLERANCE:
+                analysis.setdefault("override_rejections", []).append({
+                    "stage": "fallback_old_value",
+                    "field": field,
+                    "old_value": old_value,
+                    "new_value": new_value,
+                    "reason": "add_override 只补漏录/为0的明细,old_value 非0=改写被校验目标本身(脏配平),拒绝",
+                })
                 continue
             status = "approved" if approve_high_confidence else "candidate"
             adjustments.append(
@@ -1787,6 +1830,7 @@ def main(argv: list[str] | None = None) -> int:
         present_by_period,
         only_period=args.only_year,
         only_code=args.only_code,
+        pre_ipo_year=clean.earliest_annual_md_year(db_path) if db_path else None,
     )
 
     total_failures = len(failures)

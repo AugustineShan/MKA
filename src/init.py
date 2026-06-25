@@ -417,6 +417,16 @@ def stage_clean(
     LOGGER.info("首轮 clean 有年度硬失败，等年报下载完成后触发年报核对 ...")
     ensure_reports_done()
 
+    # ② 完成后重跑 clean：年报 MD 现已可用 → pre-IPO 闸门生效，早于最早年报 MD 的
+    # 年度硬失败降级为 warning 不阻塞；既有 approved override 也一并应用。若由此通过，
+    # 直接成功，无需再触发 reconciler（pre-IPO 年本就无 MD 可核对，reconciler 空跑）。
+    ok, fails, is_annual = _run_clean_inproc(ticker, db_path, mode=mode, allow_plug=allow_plug)
+    if ok:
+        if approved_before > 0:
+            return True, f"✅ 通过（含 {approved_before} 项既有年报补数 + pre-IPO 闸门降级，详见下方科目）"
+        return True, "✅ 通过（pre-IPO 闸门降级后纯 TuShare 数据已配平）"
+
+    # 仍有 post-IPO 年度硬失败 → reconciler 用年报 MD 核对（MD 现已可用）。
     # 第 1 轮强触发 reconciler（直接调，免 clean 重跑——reconciler 内部自行重算失败）。
     auto_reconcile_annual_failure(db_path, ticker, max_failures=AUTO_RECONCILE_MAX_FAILURES)
 

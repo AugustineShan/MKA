@@ -35,6 +35,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 
 ## 重要纪律
 
+- **与 A/B 的关系**:compiler 翻译 `核心假设.md`(用 `核心假设源语言_skill`(B) 的形状写成)到 yaml1;不写 `核心假设.md`,故不加载 A(写作纪律),但需理解 B(形状)才能忠实翻译。
 - **年份门禁是选定正式稿后的第一件事**：只要 `clean_annual` 已有 2025 实际、核心假设仍从 2025 开始预测，就不能继续 `/comp`；这不是 compiler 错误，而是应该走 `/annual-update`。
 - **`/comp` 只吃正式稿**：参考稿、草稿、`/load` 沙箱稿和 `model-extracted` 稿都不能静默成为正式 forecast 的源文。
 - **compiler audit 是 official forecast 门禁**：覆盖双射、B 类完整性、`unaligned`/路径待核、语义待核、主动覆盖回读都清干净，才叫 `audit_clean`；否则 yaml1 只能作为 reference/draft 产物保存，不跑 official forecast。

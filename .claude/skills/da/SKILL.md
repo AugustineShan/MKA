@@ -73,6 +73,7 @@ Glob **非递归**检查 `companies\{公司}\Agent\da_schedule.yaml`:
 
 ## 关键纪律(不可妥协)
 
+- **与 A/B 的关系**:本 skill 不写 `核心假设.md`(`核心纪律` A / `核心假设源语言` B 管 `核心假设.md` 写作,不直接适用);产物是 `da_schedule.yaml`,纪律见本执行细则 + `CLAUDE.md` 开发总原则 + 事实↔假设分离。
 - **先押再问拍板才落盘**:控制器先押(da_facts + 公司判断 → 推荐选型 + 预测值 + 理由 + 来源),再问用户"你认吗"。用户拍板每一项后才写 `Agent\da_schedule.yaml`。**禁止未经拍板就落盘**。
 - **事实↔假设分离**:`da_facts.json`(事实,LLM 扒,只填表不推算,抽不到留 null 不补零)vs `da_schedule.yaml`(假设,商议后落盘)。两层不混。
 - **产物落 `companies\{公司}\Agent\da_schedule.yaml`**(用 `da_schedule_path`)。`enabled: true` 才被 `src.forecast` 消费；一旦 `enabled: true`，`da_roll` 失败、未执行或被忽略都必须阻断 official forecast，**不得自动回退轻资产路径**。只有 `enabled: false` 或文件缺失时，才允许使用轻资产默认路径。若分析师明确要临时忽略 DA，只能输出/运行 `reference·DA未生效`，不得覆盖正式 DCF。

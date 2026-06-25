@@ -33,7 +33,7 @@ TuShare Pro API
 
 **边界**：仅处理 A 股一般工商业（comp_type=1）财报数据，不覆盖金融企业、港股美股或行情 K 线。`defaults.yaml` 是唯一 YAML2，表示“什么都不变会怎样”的机器平推底座；`yaml1` 是稀疏判断覆盖层，`calc.py` 永远看不到 yaml1，只吃清洗后的标准参数。
 
-**建模技能管线**：取数流水线之外，业务理解层由多个 skill 协同，而不是一个 Agent 通吃。`/load` 只读 `Skills素材包/LOAD外部EXCEL模型理解器（一次最多一个）/` 的唯一 Excel，产出 `Agent/Load/{load_id}/{原Excel文件名}_核心假设.md`；`/brkd` 只读 `Skills素材包/BRKD业务理解器（研报和纪要放在这里）/markdown存储区/`，产出 `Agent业务讨论.md`；`/ka` 裁决最高权重材料、BRKD、LOAD 和 `/init` 校验层，生成正式 `核心假设.md`；`/comp` 忠实翻译为 `yaml1` 并跑 forecast。已有正式稿的调整交给 `/adj` 或 `/annual-update`。
+**建模技能管线**：取数流水线之外，业务理解层由多个 skill 协同，而不是一个 Agent 通吃。`/load` 只读 `Skills素材包/LOAD外部EXCEL模型理解器（一次最多一个）/` 的唯一 Excel，建立 load-vintage 时间沙箱，主产物写公司根目录 `{原Excel文件名}_核心假设.md`，并同步副本到 `Agent/Load/{load_id}/`；`/brkd` 先把 `Skills素材包/BRKD业务理解器（研报和纪要放在这里）/` 幂等转为 `markdown存储区/`，再结合 `/init` 历史事实和年报生成 `Agent业务讨论.md`；`/ka` 不读原始 Excel/研报/纪要，只裁决最高权重材料、BRKD、LOAD 和 `/init` 校验层，生成正式 `核心假设.md`；`/comp` 忠实翻译为 `yaml1` 并跑 forecast。已有正式稿的调整交给 `/adj`、`/frontend-edit` 或 `/annual-update`。
 
 ---
 
@@ -199,7 +199,7 @@ D:\MKA\deprecatedlogs\webka\SKILL.md
 | `03_model_boundary.json` | `Agent/Load/{load_id}/model_boundary.json` | 机器可读时间边界 |
 | `04_forbidden_materials.md` | `Agent/Load/{load_id}/forbidden_materials.md` | 禁读清单，只可看清单 |
 | `05_{原Excel文件名}_核心假设_脚手架.md` | `Agent/Load/{load_id}/{原Excel文件名}_核心假设.md` | 网页端补写目标 |
-| `06_核心假设生成修改器_skill_vN.md` | `D:\MKA\skills\` 最新版 | 继承 `/ka` 会议流程 |
+| `06_核心假设源语言_skill_vN.md` | `D:\MKA\skills\` 最新版 | `/comp` 可编译的核心假设源语言契约 |
 | `07_模型装载器_skill_vN.md` | `D:\MKA\skills\` 最新版 | load 时间沙箱覆盖层 |
 | `08_load_manifest.json` | `Agent/Load/{load_id}/load_manifest.json` | 沙箱路径和材料清单 |
 | `09_defaults.yaml` | `Agent/Load/{load_id}/defaults.yaml` | 沙箱 base_period 和平推底座，可缺省 |
@@ -490,7 +490,7 @@ companies/{公司名}_{代码}/
 
 沙盘预览调用 `POST /api/companies/{id}/assumption-preview`：后端复制 yaml1，在内存中按 JSON pointer 应用 patch，走 `clean_yaml1_data()` → `build_forecast_statements()` → `value_from_statements()`，返回临时 DCF、临时 forecast 三表和可展示的 result rows。该接口不写 `核心假设.md`、不写 `yaml1*.yaml`、不写 `.modelking/`，因此不会污染正式输出。
 
-正式落盘仍通过语义源头闭环：前端调用 `POST /api/companies/{id}/assumption-brief` 生成 `/ka` prompt，提示核心假设生成修改器更新 `核心假设.md`；随后 `/comp` 重新编译 yaml1，最后 `forecast.py` 正式重算。禁止前端直接把 patch 写回 yaml1，因为 yaml1 是 compiler 产物，不是人工编辑源。
+正式落盘仍通过语义源头闭环：前端调用 `POST /api/companies/{id}/assumption-brief` 生成 `/frontend-edit` 指令，携带当前 `核心假设.md`、当前 `yaml1` 和沙盘 patch。`/frontend-edit` 只做前端已拍板的小范围定点回写：同步更新核心假设正文和 `knobs` 块，再走 `/comp` 重新编译并由 `forecast.py` 正式重算。普通自然语言小改优先走 `/adj quick`；结构性改动或新增材料走 `/adj incremental -> /comp`。禁止前端直接把 patch 写回 yaml1 当源头，因为 yaml1 是 compiler 产物，不是人工编辑源。
 
 DCF tab 额外提供三个实时 sensitivity 滑块（WACC、terminal growth、terminal CAPEX / D&A ratio），调用 `POST /api/companies/{id}/dcf-sensitivity` 即时刷新每股价值，无需重跑三表。视觉遵循 Apple HIG / SF Pro：白/灰系统底色、单一 #0071E3 交互蓝、轻边框和轻阴影；金融表格数字右对齐、SF Mono、负数红色、轻 zebra；YAML 面板是唯一允许多语法色的区域。
 
@@ -981,8 +981,10 @@ python -m src.financial_expense_analyzer --ticker 002946.SZ --latest-only  # 只
 
 | 契约 | 拥有者 | 消费者 | 状态 | 路径 |
 |---|---|---|---|---|
-| 核心假设.md | `skills/核心假设生成修改器_skill_v17.md` | compiler skill | v17 | `skills/...` |
-| YAML1 (drivers) | `skills/yaml1compiler_v4 (2).md` | `src/yaml1_cleaner.py` | 定稿 | `companies/{公司}/Agent/yaml1*.yaml` |
+| 核心假设源语言 | `skills/核心假设源语言_skill_v1.md` | `/ka`、`/load`、`/adj`、`/annual-update`、`/comp` | 稳定 | `skills/核心假设源语言_skill_v*.md` |
+| KA 编辑流程 | `skills/核心假设编辑器_skill_v1.md` | `/ka` | 稳定 | `skills/核心假设编辑器_skill_v*.md` |
+| 核心假设调整流程 | `skills/核心假设调整器_skill_v1.md` | `/adj`、`/frontend-edit` | 稳定 | `skills/核心假设调整器_skill_v*.md` |
+| YAML1 (drivers) | `skills/yaml1compiler_v5.md` | `src/yaml1_cleaner.py` | 定稿 | `companies/{公司}/Agent/yaml1*.yaml` |
 | YAML1 formula/DAG 开发契约 | `docs/formula_DAG开发文档.md` | `src/yaml1_cleaner.py`, compiler/core-assumption skills, tests | 实验性·受限（仅合成 fixture 验证） | `docs/formula_DAG开发文档.md` |
 | YAML2 / defaults.yaml | `src/yaml2_schema.py` | `src/yaml1_cleaner.py`, `src/defaults_gen.py` | 稳定 | `companies/{公司}/Agent/defaults.yaml` |
 | 逐年标准参数表 | `src/yaml1_cleaner.py` | `src/calc.py` | 稳定 | `companies/{公司}/Agent/.modelking/forecast_params.yaml` |
@@ -1179,8 +1181,10 @@ MKA/
 |---|---|---|
 | 清洗yaml1.py | `src/yaml1_cleaner.py` | 理解层的 clean.py |
 | 逐年标准参数表 | `Agent/.modelking/forecast_params.yaml` | yaml1_cleaner 输出，calc.py 唯一输入 |
-| 核心假设.md | `skills/核心假设生成修改器_skill_v17.md` | 由 skill 拥有；设计文档版本号需同步 |
-| compiler / yaml1compiler | `skills/yaml1compiler_v4 (2).md` | 设计文档版本号需与磁盘一致 |
+| 核心假设源语言 | `skills/核心假设源语言_skill_v1.md` | `/ka`、`/load`、`/adj`、`/annual-update`、`/comp` 共享的人话判断契约 |
+| KA 编辑器 | `skills/核心假设编辑器_skill_v1.md` | `/ka` 全量裁决流程；不读原始 Excel/研报/纪要，不做 modify |
+| 核心假设调整器 | `skills/核心假设调整器_skill_v1.md` | `/adj` quick/incremental 与 `/frontend-edit` 的回写纪律 |
+| compiler / yaml1compiler | `skills/yaml1compiler_v5.md` | 设计文档版本号需与磁盘一致 |
 | YAML2 | `defaults.yaml` | 同物两名 |
 | 三棒 pipeline | `src/forecast.py` 编排 `yaml1_cleaner.py` + `src/calc.py` | `forecast.py` 是实际编排器 |
 | 年报清洗器 | `src/report_downloader.py` + `src/annual_report_extractor.py` | 设计文档未精确对应，以代码为准 |

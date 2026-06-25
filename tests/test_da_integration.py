@@ -102,8 +102,10 @@ def test_da_series_injected_when_enabled(tmp_path, monkeypatch):
     assert isinstance(gpm, list) and gpm[0] > 0
 
 
-def test_falls_back_when_da_roll_fails(tmp_path, monkeypatch):
-    """roll_da_series 抛非对齐异常 → 回退轻资产,不阻塞,无 da_series,gpm 未被覆盖。"""
+def test_blocks_when_da_roll_fails(tmp_path, monkeypatch):
+    """enabled:true 下 roll_da_series 抛非对齐异常 → 阻断 official forecast(DaRollFailedError),
+    写 DA_NOT_EFFECTIVE marker,不静默回退轻资产(见 da SKILL 铁律 + audit H1)。"""
+    from src.da_roll import DaRollFailedError
     company_dir = copy_fixture_company(tmp_path)
     monkeypatch.setattr(yaml1_cleaner, "COMPANIES_DIR", tmp_path / "companies")
     (company_dir / "Agent" / "da_schedule.yaml").write_text(_DA_SCHEDULE, encoding="utf-8")
@@ -112,7 +114,7 @@ def test_falls_back_when_da_roll_fails(tmp_path, monkeypatch):
         raise ValueError("roll exploded")
     monkeypatch.setattr("src.da_roll.roll_da_series", boom)
 
-    # spy:gpm 覆盖在回退路径上绝不应被触发
+    # spy:gpm 覆盖在阻断路径上绝不应被触发(da_roll 在覆盖前失败)
     override_called = {"v": False}
     orig_override = forecast_mod._apply_gpm_ex_dep
 
@@ -122,10 +124,12 @@ def test_falls_back_when_da_roll_fails(tmp_path, monkeypatch):
 
     monkeypatch.setattr(forecast_mod, "_apply_gpm_ex_dep", spy)
 
-    # 不抛 — 回退轻资产
-    forecast_mod.run_company_forecast(ticker="002946.SZ")
-    params = _read_params(company_dir)
-    assert "da_series" not in params
+    # 阻断:抛 DaRollFailedError,不静默回退轻资产
+    with pytest.raises(DaRollFailedError):
+        forecast_mod.run_company_forecast(ticker="002946.SZ")
+    # marker 写入 Agent/forecast/ 让下游感知 reference·DA未生效
+    marker = company_dir / "Agent" / "forecast" / "DA_NOT_EFFECTIVE.json"
+    assert marker.exists()
     assert override_called["v"] is False  # gpm 未被覆盖为 ex-dep
 
 

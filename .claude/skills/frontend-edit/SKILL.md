@@ -11,7 +11,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 
 **旋钮值小改不跑 compiler**：compiler 产物 = 旧 yaml1 + 该旋钮值变化，定点 patch yaml1 等价且保留格式/注释，无需全量重译。结构性变更（新增/删旋钮、改参数化、改 terminal 长度）不在本 skill 范围，走 /adj incremental + /comp。
 
-direct yaml1 patch 的完整边界见 `skills/核心纪律_skill_v1.md` A4：白名单不可加宽；`核心假设.md` 是 canonical，yaml1 是派生缓存；三处不同源时 md 赢，停止并回到 `/comp`，不得继续手 patch yaml1 去凑一致。
+本 skill 是定点手术刀(不写核心假设.md 业务判断),不加载完整 A/B;仅适用 `核心纪律` A4(direct yaml1 patch 边界 + 三处同源 tie-break),纪律以此为准。direct yaml1 patch 的完整边界见 `skills/核心纪律_skill_v*.md`（版本号最大的那份，与其它启动器同约定，勿钉死 v1）A4：白名单不可加宽；`核心假设.md` 是 canonical，yaml1 是派生缓存；三处不同源时 md 赢，停止并回到 `/comp`，不得继续手 patch yaml1 去凑一致。
 
 ## 触发
 
@@ -67,6 +67,7 @@ prompt 文本形如：
    a. **复制 prompt yaml1**：以 prompt 给出的 `当前 yaml1 路径` 为唯一 base。若文件名日期 < 今日 → cp 到 `yaml1_{公司名}_{今日YYYYMMDD}.yaml`；今日 yaml1 已存在且就是 prompt yaml1 → 直接改；今日 yaml1 已存在但不是 prompt yaml1 → 停止,要求刷新工作台。
    b. **逐条 patch yaml1**：按下方「yaml1 旋钮定位规则」用 Grep（`src: "#{线}"` 或 anchor/path）定位旋钮 values 行，Edit `values[year_index]`。**yaml1 用小数（prompt new_value 不 ×100）**。terminal.perpetual_growth 改 `terminal.perpetual_growth` 标量。
    c. **三处同源核对**：yaml1 `values[i]`（小数）== prompt `new_value` == md knobs `values[i]`/100。不一致 → 报错停止。
+   d. **确定性三源校验（A4 强制闸门）**：跑 `py -m src.yaml1_fidelity_check "<今日yaml1>" "Agent\defaults.yaml" "<今日核心假设.md>"`。exit 1（BLOCK:md↔knobs↔yaml1 双射 FAIL）→ 报错停止,**md 赢,回 `/comp` 重编译,不跑 forecast**;exit 0（PASS）才进第10步。详情读 `Agent\.modelking\yaml1_fidelity_report.json`。
 10. **跑 forecast**：`py -m src.forecast --yaml1 "companies/{公司名}_{代码}/Agent/yaml1_{公司名}_{今日YYYYMMDD}.yaml"`，覆盖 `Agent/forecast/`。
 11. **汇报**：每条变更（旋钮 / 年份 / 旧值→新值 / md正文&knobs&yaml1 三处是否同源）、forecast 每股价值与 `Agent/forecast/` 路径；任何报错原样摆出。
 
@@ -113,10 +114,10 @@ yaml1 侧改 `terminal.perpetual_growth` 标量（小数，不×100）。
 |---|---|
 | `income.revenue.{线}.volume` | `income.revenue.segments.{线}.factors[key=volume].projection.values`（Grep `src: "#{线}"` 定位 segment） |
 | `income.revenue.{线}.price` | `segments.{线}.factors[key=price].projection.values` |
-| `income.revenue.{线}.revenue_yoy` | `segments.{线}.projection.values`（growth 族，segment 级） |
+| `income.revenue.{线}.revenue_yoy` | `segments.{线}.knobs.revenue_yoy`（growth 族，segment 级；非 projection.values） |
 | `income.gpm` | `income.gpm.values` |
 | `expense.{项}.rate` | `income.cost_rates.{key}.values`（销售费用→sell_exp / 管理费用→admin_exp / 研发费用→rd_exp / 营业税金及附加→biz_tax_surchg；以实际 yaml1 为准） |
-| `below_op.{科目}.abs` | `income.{field}_abs.values`（Grep 科目名/anchor 定位对应 `_abs` 节点；以实际 yaml1 为准） |
+| `below_op.{科目}.abs` | `income.operating_adjustments_abs.{field}.values` 或 `income.below_line_abs.{field}.values`（Grep 科目名/anchor 定位对应 `_abs` 容器；以实际 yaml1 为准） |
 | `tax.rate` | `income.effective_tax_rate.values` |
 | `minority.rate` | `income.minority_ratio.values` |
 | `terminal.perpetual_growth` | `terminal.perpetual_growth`（标量，非 values 数组） |
@@ -131,6 +132,7 @@ yaml1 侧改 `terminal.perpetual_growth` 标量（小数，不×100）。
 - prompt `old_value` 与当前 yaml1 或 md 旧值不一致 → 停,要求刷新工作台。
 - md 正文与 knobs 不同源 → 停。
 - yaml1 与 prompt/md 三处不同源 → 停；md 赢，回到 `/comp`。
+- `yaml1_fidelity_check` exit 1（BLOCK）→ 停；md 赢，回 `/comp`，**不跑 forecast**。
 - 不读投研材料（定调/活跃素材/年报/业务讨论）。
 - 不改历史段（历史照搬，一个不动）。
 - yaml1 只做旋钮值定点 patch，不做结构/会计化变更（那走 /ka+/comp）。

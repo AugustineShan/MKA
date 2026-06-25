@@ -496,3 +496,80 @@ class TestPivotToWideQuarterly:
         assert "2023Q1" not in output_periods
         assert "2024Q1" in output_periods
         assert len(output_periods) == 4
+
+
+class TestPreIPOGate:
+    """pre-IPO 闸门：早于最早可用年报 Markdown 的年度硬失败降级为 warning 不阻塞。
+
+    IPO 边界 = 本地最早年报 MD 年份（上市公司上市前年份无 cninfo 年报，TuShare
+    源自招股书，reconciler 无 MD 可核对）。与 2010 闸门同性质：有据可审计，非静默改判。
+    """
+
+    def _failing_wide(self, period="2017"):
+        # 单年度，IS 1.2 硬失败：official operate_profit=410，calc=350
+        # (total_revenue 1000 - total_cogs 700 + invest_income 50)，oth_income raw-NULL
+        # 被 fillna(0) → 放行闸门不生效 → IS 1.2 残差 60。BS/CF 置 0 仅留 IS/跨表失败。
+        row = {
+            "revenue": 1000.0, "total_revenue": 1000.0,
+            "oper_cost": 600.0, "total_cogs": 700.0, "total_opcost": 660.0,
+            "biz_tax_surchg": 10.0, "sell_exp": 20.0, "admin_exp": 30.0,
+            "fin_exp": 40.0, "rd_exp": 0.0,
+            "assets_impair_loss": 0.0, "credit_impa_loss": 0.0,
+            "oth_income": 0.0, "invest_income": 50.0, "fv_value_chg_gain": 0.0,
+            "asset_disp_income": 0.0, "net_expo_hedging_benefits": 0.0, "forex_gain": 0.0,
+            "operate_profit": 410.0,
+            "non_oper_income": 10.0, "non_oper_exp": 5.0,
+            "total_profit": 355.0, "income_tax": 88.75,
+            "n_income": 266.25, "n_income_attr_p": 250.0, "minority_gain": 16.25,
+            "total_assets": 0.0, "total_liab": 0.0, "total_hldr_eqy_inc_min_int": 0.0,
+            "n_cashflow_act": 0.0,
+        }
+        wide = pd.DataFrame([row], index=[period])
+        wide.attrs["null_fields_by_period"] = {period: {"oth_income"}}
+        wide.attrs["bs_reclass"] = {}
+        present = {k for k, v in row.items() if v != 0.0}
+        present.add("oth_income")  # raw NULL 记录存在 → present
+        return wide, {period: present}
+
+    def test_raises_without_gate(self):
+        wide, present = self._failing_wide()
+        with pytest.raises(clean.CheckError):
+            clean.validate_wide(wide, present, label="annual")
+
+    def test_downgrades_to_warning_with_gate(self):
+        wide, present = self._failing_wide("2017")
+        warnings = clean.validate_wide(wide, present, label="annual", pre_ipo_year=2021)
+        assert any("pre-IPO年度 2017" in w for w in warnings)
+        assert any("IS 1.2" in w for w in warnings)
+
+    def test_gate_does_not_apply_at_boundary_year(self):
+        # period == 边界年（2021）→ 非 pre-IPO → 仍抛 CheckError
+        wide, present = self._failing_wide("2021")
+        with pytest.raises(clean.CheckError):
+            clean.validate_wide(wide, present, label="annual", pre_ipo_year=2021)
+
+    def test_gate_only_applies_to_annual(self):
+        # quarterly label 不启用 pre-IPO 闸门：季度 IS 失败本就是 warning（非硬错误），
+        # 不应出现 pre-IPO 降级标记。
+        wide, present = self._failing_wide("2017")
+        warnings = clean.validate_wide(wide, present, label="quarterly", pre_ipo_year=2021)
+        assert not any("pre-IPO年度" in w for w in warnings)
+        assert any("IS 1.2" in w for w in warnings)
+
+    def test_earliest_annual_md_year_scans_dir(self, tmp_path: Path):
+        company_dir = tmp_path / "公司_300000"
+        reports = company_dir / "公告" / "年报"
+        reports.mkdir(parents=True)
+        for y in ["2023", "2021", "2025"]:
+            (reports / f"{y}_年度报告.md").write_text("x", encoding="utf-8")
+        db_path = company_dir / "Agent" / "data.db"
+        db_path.parent.mkdir(parents=True)
+        db_path.touch()
+        assert clean.earliest_annual_md_year(db_path) == 2021
+
+    def test_earliest_annual_md_year_none_when_empty(self, tmp_path: Path):
+        company_dir = tmp_path / "公司_300000"
+        db_path = company_dir / "Agent" / "data.db"
+        db_path.parent.mkdir(parents=True)
+        db_path.touch()
+        assert clean.earliest_annual_md_year(db_path) is None

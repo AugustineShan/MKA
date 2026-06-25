@@ -61,7 +61,7 @@ D:\MKA\skills\核心假设编辑器_skill_v*.md
 
 共享 A/B 是上位真源；编辑器 skill 只补 KA 本地裁决流程。
 
-不要再把旧 `04_核心假设生成修改器_skill_v*.md` 当 `/ka` 主工作流。旧 v19 的 Excel 阅读职责已迁给 `/load`，研报/纪要职责已迁给 `/brkd`，modify 职责已从 `/ka` 删除。
+不要再把旧 v19(已归档至 `deprecatedlogs/04_核心假设生成修改器_skill_v19.md`)当 `/ka` 主工作流。旧 v19 的 Excel 阅读职责已迁给 `/load`，研报/纪要职责已迁给 `/brkd`，modify 职责已从 `/ka` 删除。横切纪律以 `核心纪律_skill`(A1-A7) + `核心假设源语言_skill`(B) 为准。
 
 ## 4. 读取最高权重材料
 
@@ -96,10 +96,10 @@ companies\{公司}\Agent业务讨论.md
 
 ## 6. 读取 LOAD 产物并执行门禁
 
-扫描：
+扫描公司根目录：
 
 ```text
-companies\{公司}\Agent\Load\*\*_核心假设.md
+companies\{公司}\*_核心假设.md
 ```
 
 只把已完成的 LOAD 核心假设算作门禁来源。以下不算：
@@ -107,9 +107,10 @@ companies\{公司}\Agent\Load\*\*_核心假设.md
 - `/load prepare` 刚生成的空脚手架。
 - 仍包含“待模型装载器补全”的文件。
 - 没有末尾 ` ```knobs` 机器自报清单的文件。
-- `WEBCLAUDE` 打包副本或公司根目录同名文件。
+- 没有抬头声明 `模式: load` / `状态: model-extracted` / `load-vintage` 的文件。
+- `WEBCLAUDE` 打包副本、`Agent\Load\` 沙箱副本、正式 `状态: official` 核心假设。
 
-若有多个 LOAD 产物，默认读取修改时间最新的一份，并把其他可用 LOAD 产物列为“可选参考，不自动并入”。
+若有多个根目录 LOAD 产物，默认读取修改时间最新的一份，并把其他可用 LOAD 产物列为“可选参考，不自动并入”。
 
 `/ka` 不能凭空生成。继续前必须至少具备 BRKD 产物或已完成 LOAD 产物之一。若二者都没有，停止：
 

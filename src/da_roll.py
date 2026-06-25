@@ -21,6 +21,17 @@ class DaAlignError(RuntimeError):
     """da_schedule 与 defaults.base_period / da_facts 不对齐时抛出。"""
 
 
+class DaRollFailedError(RuntimeError):
+    """enabled:true 下 da_roll 执行失败(非对齐异常)时抛出。
+
+    阻断 official forecast,不允许静默回退轻资产(见 da SKILL 铁律)。
+    DaAlignError 是对齐硬错;本类覆盖 clean_annual 加载 / roll_da_series 等
+    其他失败 —— enabled:true 时这些失败意味着重资产假设未滚进 forecast,
+    出轻资产 DCF = 静默篡改,必须阻断。分析师要临时忽略 DA 须显式把
+    da_schedule.enabled 改 false(走合法轻资产),不得靠静默回退绕过。
+    """
+
+
 # ---------------------------------------------------------------------------
 # Task 2.1: da_schedule loader + base 对齐
 # ---------------------------------------------------------------------------
@@ -39,6 +50,22 @@ def load_da_schedule(path: Path, defaults_base_period: str) -> dict | None:
     if str(base_year) != str(defaults_base_period)[:4]:
         raise DaAlignError(
             f"da_schedule.base_year={base_year} != defaults.base_period={defaults_base_period}")
+    # audit R1:结构性必需字段缺失原本会在 roll 深处抛裸 KeyError(难诊断)。这里在 load 时
+    # 显式点名校验,缺/为 null 即 DaAlignError,不让畸形 schedule 滚到一半才崩。
+    # base_accum_dep / base_cip / net_growth_rate 是语义可选(新资产无累折=0、无在建=0、
+    # 无增长=0),保留默认 0,不强求声明(test_da_roll 已有合法省略用例)。
+    required_cat_fields = ("name", "base_gross", "life_years", "salvage_rate")
+    ppe_cats = (sched.get("ppe") or {}).get("categories") or []
+    other_cats = (sched.get("other_depreciating_assets") or {}).get("categories") or []
+    if not ppe_cats:
+        raise DaAlignError("da_schedule.ppe.categories 为空,enabled:true 却无 PP&E 类目可滚")
+    for section, cats in (("ppe", ppe_cats), ("other_depreciating_assets", other_cats)):
+        for i, c in enumerate(cats):
+            missing = [k for k in required_cat_fields if c.get(k) is None]
+            if missing:
+                raise DaAlignError(
+                    f"da_schedule.{section}.categories[{i}]({c.get('name', '?')}) "
+                    f"缺结构必需字段 {missing}（base_accum_dep/base_cip/net_growth_rate 才是可选默认0）")
     return sched
 
 
@@ -217,6 +244,12 @@ def roll_da_series(sched: dict, base_bs: dict, forecast_years: int,
     other_policy_dep = sum(c["base_gross"] * (1 - c["salvage_rate"]) / c["life_years"]
                            for c in other_cats)
     total_policy_dep = ppe_policy_dep + other_policy_dep
+    # audit R1:base 实报折旧>0 却无政策折旧(base_gross/life_years 配置使 policy_dep=0),
+    # 旧实现 scale=1.0 会把存量折旧静默压成≈0。base_reported_dep>0 时强制要求可校准。
+    if base_reported_dep > 0 and total_policy_dep <= 0:
+        raise DaAlignError(
+            "base 年实报 PP&E 折旧>0 但 schedule 政策折旧合计<=0(检查 base_gross/life_years),"
+            "无法校准 scale,阻断——否则存量折旧被静默压成 0")
     scale = (base_reported_dep / total_policy_dep) if total_policy_dep > 0 else 1.0
 
     # 预建每类 cip 状态(转固队列)

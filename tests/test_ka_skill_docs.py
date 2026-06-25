@@ -23,7 +23,9 @@ def test_ka_launcher_loads_shared_sources_and_editor_before_materials():
     assert "公司判断和最新观点.md" in text
     assert "至少具备 BRKD 产物或已完成 LOAD 产物之一" in text
     assert "Agent业务讨论.md" in text
-    assert r"Agent\Load" in text
+    assert r"companies\{公司}\*_核心假设.md" in text
+    assert "Agent\\Load\\` 沙箱副本" in text
+    assert "模式: load" in text
     assert "没有末尾 ` ```knobs`" in text
     assert "不要再把旧 `04_核心假设生成修改器_skill_v*.md` 当 `/ka` 主工作流" in text
 
@@ -66,6 +68,7 @@ def test_core_assumption_editor_is_slim_comp_source_editor():
     assert "`model_assumption_schema.json`" in text
     assert "`/comp`" in text
     assert "最高权重材料 + BRKD/LOAD" in text
+    assert "公司根目录 `{原Excel文件名}_核心假设.md`" in text
     assert "load-vintage" in text
     assert "```knobs" in text
 

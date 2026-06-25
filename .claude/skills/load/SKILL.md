@@ -15,7 +15,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 /load = Excel 公式层理解器 + 时间沙箱 + v19 纪律化装载 + /comp 源语言
 ```
 
-它与 `D:\04_核心假设生成修改器_skill_v19.md` 的关系是：纪律和格式对齐旧 v19，功能不回退。旧 v19 里的“读模型能力”迁移到 `/load`；旧 v19 里的“当前核心假设裁决”仍留给 `/ka`。
+它与历史 v19(已归档至 `deprecatedlogs/`)的关系是：纪律和格式对齐旧 v19，功能不回退。旧 v19 里的“读模型能力”迁移到 `/load`；旧 v19 里的“当前核心假设裁决”仍留给 `/ka`。横切纪律权威以 `核心纪律_skill`(A1-A7) + `核心假设源语言_skill`(B) 为准,不引用旧 v19。
 
 ## 0. 共享真源
 
@@ -26,7 +26,7 @@ D:\MKA\skills\核心纪律_skill_v*.md
 D:\MKA\skills\核心假设源语言_skill_v*.md
 ```
 
-`/load` 完整继承核心纪律 A1-A7；输出必须符合核心假设源语言 B。本文只保留 `/load` 独有边界：load-vintage 隔离、forbidden_materials 沙箱、模型公式层权威顺序、只写 `Agent/Load/`。
+`/load` 完整继承核心纪律 A1-A7；输出必须符合核心假设源语言 B。本文只保留 `/load` 独有边界：load-vintage 隔离、forbidden_materials 沙箱、模型公式层权威顺序、根目录主产物 + `Agent/Load/` 沙箱副本。
 
 ## 1. 解析公司目录
 
@@ -83,7 +83,8 @@ companies\{公司}\Agent\Load\{load_id}\
    - `forbidden_materials.md`
    - `data_cutoff.db`，若正式 `Agent\data.db` 存在
    - `defaults.yaml`，若 `data_cutoff.db` 可生成
-   - `{原Excel文件名}_核心假设.md` 脚手架
+   - `{原Excel文件名}_核心假设.md` 脚手架（沙箱内，仅供装载器续写/同步）
+   - `root_core_assumption_path`：最终主产物应回填到公司根目录的路径
 
 如果 prepare 报时间轴冲突、base period 冲突、Excel 数量异常或无法建立沙箱，必须停止并报告，不允许绕过。
 
@@ -97,7 +98,7 @@ D:\MKA\skills\模型装载器_skill_v*.md
 
 必须先加载模型装载器 skill，再开始 AI 阅读沙箱材料。读取纪律、确认顺序、输出格式都由该 skill 定义。
 
-不要把旧 `04_核心假设生成修改器_skill_v*.md` 当成 `/load` 主流程。旧 v19 只提供纪律参照：时间轴、历史保全、接缝、对账不是算账、押不等于落盘、knobs 自报清单。
+不要把已归档的旧 v19(`deprecatedlogs/04_核心假设生成修改器_skill_v19.md`)当主流程。纪律权威是 `核心纪律_skill_v*.md`(A1-A7) + `核心假设源语言_skill_v*.md`(B);旧 v19 只作历史复盘,不引用。
 
 ## 5. 只读 load 沙箱，不读越界材料
 
@@ -130,7 +131,9 @@ Agent\Load\{load_id}\allowed_materials\
 - 权威顺序：模型公式层 > 模型内文字 > `allowed_materials` > 背景口径。
 - 公式层读法：用 `openpyxl(data_only=False)`，硬编码首列通常是预测起点。
 - forbidden_materials 沙箱：禁读材料只能作为清单，不能打开正文。
-- 只写 `Agent/Load/{load_id}/`，不碰公司根目录和正式 `Agent/forecast/`。
+- 完成稿的**主产物写公司根目录**：`companies\{公司}\{原Excel文件名}_核心假设.md`，供 `/ka` 读取。
+- 同步副本写 `Agent/Load/{load_id}/{原Excel文件名}_核心假设.md`，供 `/load` 自己做 yaml1_load 编译、审计和沙箱 DCF。
+- 不碰正式 `Agent/forecast/`。
 - 不做完整 `model_assumption_schema.json`；结构化翻译交给 `/comp`。
 
 ## 7. 模型理解 overview 确认门
@@ -150,7 +153,7 @@ overview 至少覆盖：
 结尾必须明确问：
 
 ```text
-我这样理解这个模型对不对？你确认后，我再按收入 -> 毛利 -> 费用 -> below-OP 与税 -> 中期的顺序，一段一段先押再问、拍板后写入 load 沙箱。
+我这样理解这个模型对不对？你确认后，我再按收入 -> 毛利 -> 费用 -> below-OP 与税 -> 中期的顺序，一段一段先押再问、拍板后写入公司根目录 LOAD 主产物，并同步副本到 load 沙箱。
 ```
 
 用户未确认前：
@@ -158,17 +161,25 @@ overview 至少覆盖：
 - 不得补完 `{原Excel文件名}_核心假设.md`。
 - 不得编译 `yaml1_load_*.yaml`。
 - 不得运行 `model_load dcf`。
-- 不得把任何 load 产物写到公司根目录或正式 `Agent/forecast/`。
+- 不得把完成稿写到公司根目录或正式 `Agent/forecast/`；prepare 沙箱脚手架不算完成稿。
 
 ## 8. 生成 /comp 源语言的 load 核心假设
 
 用户确认 overview 后，才补写：
 
 ```text
+companies\{公司}\{原Excel文件名}_核心假设.md
+```
+
+这份文件是 `/load` 的主产物，也是 `/ka` 在公司根目录读取的 LOAD 产物。写完根目录主产物后，必须把同一内容同步到：
+
+```text
 companies\{公司}\Agent\Load\{load_id}\{原Excel文件名}_核心假设.md
 ```
 
-这份文件必须是 `/comp` 已经吃得懂的核心假设源语言：
+沙箱副本只供 `/load` 后续编译 `yaml1_load_*.yaml`、compiler audit 和沙箱 DCF 使用；`/ka` 只从公司根目录读主产物。
+
+主产物必须是 `/comp` 已经吃得懂的核心假设源语言：
 
 - 按收入 -> 毛利 -> 费用 -> below-OP 与税 -> 中期组织。
 - 收入线写清上挂科目、compiler family、旋钮、派生、历史原子、来源。
@@ -177,6 +188,7 @@ companies\{公司}\Agent\Load\{load_id}\{原Excel文件名}_核心假设.md
 - 预测从 `forecast_start_year` 开始，即使该年现在已经成为实际年，也按原模型预测处理。
 - 副拆分、算了不用的历史、口径说明进入收纳区。
 - 末尾必须有 `knobs` 机器自报清单，值与正文一字不差。
+- 抬头必须声明 `模式: load` / `状态: model-extracted` / `说明: load-vintage`，防止 `/comp` 把它误当 `official` 正式核心假设。
 
 文件名必须保留原 Excel stem：
 
@@ -219,7 +231,8 @@ companies\{公司}\Agent\forecast\
 - 模型源文件。
 - 历史末年、预测起点、显式预测期。
 - 禁读材料摘要。
-- `{原Excel文件名}_核心假设.md` 路径。
+- 根目录主产物 `{原Excel文件名}_核心假设.md` 路径。
+- 沙箱副本 `{原Excel文件名}_核心假设.md` 路径。
 - `yaml1_load_*.yaml` 路径，若已编译。
 - 沙箱 DCF 路径和每股价值，若已运行。
 - 明确说明：这是 load-vintage 沙箱，不是当前正式 forecast。

@@ -95,6 +95,9 @@ class ModelBoundary:
     model_asof_date: str | None
     history_end_year: int
     forecast_start_year: int
+    # audit C1·同名异义警示:这里 forecast_years 是【预测年份列表】(如 (2025,2026,...))。
+    # 注意 calc.py / yaml2_schema.py / da_roll.py / forecast.py 里的 `forecast_years` 是【年数(int)】,
+    # 两者同名不同义、分属 LOAD 层与 DCF 层、不在同一命名空间不会运行期相撞,但读码时勿混。
     forecast_years: tuple[int, ...]
     source: HeaderCandidate
     candidates: tuple[HeaderCandidate, ...]
@@ -445,7 +448,12 @@ this vintage model.
 """
 
 
-def _forbidden_markdown(boundary: ModelBoundary, forbidden_reports: list[Path], removed_rows: dict[str, int]) -> str:
+def _forbidden_markdown(
+    boundary: ModelBoundary,
+    forbidden_reports: list[Path],
+    removed_rows: dict[str, int],
+    company_dir: Path,
+) -> str:
     lines = [
         "# /load forbidden materials",
         "",
@@ -463,6 +471,18 @@ def _forbidden_markdown(boundary: ModelBoundary, forbidden_reports: list[Path], 
         lines.extend(f"- {table}: {count}" for table, count in sorted(removed_rows.items()))
     else:
         lines.append("- none")
+    # 其余禁读类:即使已结构性隔离(run_load_dcf 只读沙箱 defaults / 只写 load forecast),
+    # 也显式列入 AI 禁读清单,给模型理解阶段完整边界(SKILL §5 承诺 6 类)。
+    agent = agent_dir(company_dir)
+    root_core = sorted(company_dir.glob("*核心假设*.md"))
+    lines.extend(["", "## Other forbidden materials (formal current-state artifacts)"])
+    lines.append(f"- formal `{agent / 'defaults.yaml'}` (use sandbox defaults.yaml only)")
+    lines.append(f"- formal `{agent / 'forecast'}` (load DCF writes only to Load forecast dir)")
+    if root_core:
+        lines.extend(f"- root core-assumption: {p}" for p in root_core)
+    else:
+        lines.append("- root core-assumption: none found")
+    lines.append(f"- `{company_dir / 'WEBCLAUDE'}` (packaged copies, not source of truth)")
     return "\n".join(lines)
 
 
@@ -535,9 +555,10 @@ def prepare_load(
         encoding="utf-8",
     )
     _write_text(load_dir / "model_boundary.md", _boundary_markdown(boundary))
-    _write_text(load_dir / "forbidden_materials.md", _forbidden_markdown(boundary, forbidden_reports, removed_rows))
+    _write_text(load_dir / "forbidden_materials.md", _forbidden_markdown(boundary, forbidden_reports, removed_rows, company_dir))
     core_filename = f"{model.stem or '模型'}_核心假设.md"
     core_path = load_dir / core_filename
+    root_core_path = company_dir / core_filename
     _write_text(core_path, _core_assumption_scaffold(company_dir, boundary))
 
     manifest = {
@@ -552,6 +573,8 @@ def prepare_load(
         "data_cutoff_db": str(cutoff_db) if cutoff_db.exists() else None,
         "defaults_path": str(defaults) if defaults.exists() else None,
         "core_assumption_path": str(core_path),
+        "core_assumption_scaffold_path": str(core_path),
+        "root_core_assumption_path": str(root_core_path),
         "core_assumption_filename": core_filename,
     }
     (load_dir / "load_manifest.json").write_text(
@@ -559,6 +582,39 @@ def prepare_load(
         encoding="utf-8",
     )
     return manifest
+
+
+def _check_load_core_consistency(load_path: Path) -> None:
+    """audit H5:/load 主产物(公司根目录)与沙箱副本是两份各自 LLM 手写的副本,无代码保同步。
+
+    DCF 是 load 出结果的关口:此处比对两份内容,漂移即 raise——避免 `/ka` 读到的根目录主产物
+    与本次 load DCF 实际依据的沙箱稿静默不一致(模型理解与估值脱节)。只有两份都存在且内容
+    不同才拦;根稿尚未回填(LLM 还没写)则跳过,不阻塞沙箱内的独立试算。
+    """
+    manifest_path = load_path / "load_manifest.json"
+    if not manifest_path.exists():
+        return
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    sandbox = manifest.get("core_assumption_path")
+    root = manifest.get("root_core_assumption_path")
+    if not sandbox or not root:
+        return
+    sp, rp = Path(sandbox), Path(root)
+    if not (sp.exists() and rp.exists()):
+        return
+
+    def _norm(p: Path) -> str:
+        return "\n".join(line.rstrip() for line in p.read_text(encoding="utf-8").splitlines()).strip()
+
+    if _norm(sp) != _norm(rp):
+        raise ModelLoadError(
+            "load 主产物(公司根目录核心假设)与沙箱副本内容已漂移——/ka 读根稿、本次 load "
+            "DCF 依据沙箱稿,两者不一致会让模型理解与估值脱节。请以一份为准同步另一份后重跑。\n"
+            f"  根目录: {rp}\n  沙箱  : {sp}"
+        )
 
 
 def run_load_dcf(load_dir: str | Path, yaml1_path: str | Path) -> ForecastRun:
@@ -569,6 +625,7 @@ def run_load_dcf(load_dir: str | Path, yaml1_path: str | Path) -> ForecastRun:
         raise ModelLoadError(f"missing load defaults.yaml: {defaults}")
     if not cutoff_db.exists():
         raise ModelLoadError(f"missing load data_cutoff.db: {cutoff_db}")
+    _check_load_core_consistency(load_path)
     return run_company_forecast(
         yaml1_path=Path(yaml1_path),
         defaults_path=defaults,
@@ -588,6 +645,7 @@ def _print_prepare_result(result: dict[str, Any]) -> None:
     print(f"History end: {boundary['history_end_year']}")
     print(f"Forecast start: {boundary['forecast_start_year']}")
     print(f"Core assumption scaffold: {result['core_assumption_path']}")
+    print(f"Root core assumption output: {result['root_core_assumption_path']}")
     if result.get("defaults_path"):
         print(f"Defaults: {result['defaults_path']}")
     else:

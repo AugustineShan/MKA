@@ -31,7 +31,7 @@ D:\MKA\skills\核心假设源语言_skill_v*.md
 
 它用**年度更新器 skill v1** 的时间轴平移 + 声明式估算 + 收口报告,不是 `/adj incremental` 的通用补丁——`annual-update` 是"数据新了 N 年,把旧稿滚过去"的特定流程。
 
-**边界一句话**:`/annual-update` 这个外层启动器会先调用 `python -m src.init <ticker>`,所以会复用 init 里的 TuShare 取数、年报/季报下载、Markdown 抽取、clean/reconciler、财务费用附注分析；init 成功后再调用 `py -m src.defaults_gen --ticker <ticker>`，把 `defaults.yaml` 的 `base_period` 滚到最新实际年。`skills/年度更新器_skill_v1.md` 只在数据刷新完成后接管"滚旧稿"阶段;它说"不拉数据"指的是滚稿阶段不再自己联网/抓公告,不是说 `/annual-update` 不跑 init。
+**边界一句话**:`/annual-update` 这个外层启动器会先调用 `python -m src.init <ticker>`,所以会复用 init 里的 TuShare 取数、年报/季报下载、Markdown 抽取、clean/reconciler、财务费用附注分析；init 成功后再调用 `py -m src.defaults_gen --ticker <ticker>`，把 `defaults.yaml` 的 `base_period` 滚到最新实际年。`skills/年度更新器_skill_v*.md`（版本号最大的那份，见第98步加载约定，勿钉死 v1）只在数据刷新完成后接管"滚旧稿"阶段;它说"不拉数据"指的是滚稿阶段不再自己联网/抓公告,不是说 `/annual-update` 不跑 init。
 
 ## 触发
 
@@ -52,7 +52,7 @@ D:\MKA\skills\核心假设源语言_skill_v*.md
    - 骨架(几条线、各什么族、毛利参数化、财务费用拆法、口径调整清单)。
 3. **读定调**:`companies\{公司}\公司判断和最新观点.md`——分析师手写的 thesis,是第4步重定未来的判断锚点。**若它的日期明显旧于 H**(如定调是 2024.3、H 已到 2024),在进第4步前提醒分析师"定调旧了,这轮真实数据与 thesis 偏离点在 X,thesis 要不要先调"——thesis 调整是分析师的脑力活,本 skill 不替他做、不覆写该文件,只提示。
 4. **建总账**:把旧稿里所有有历史序列的行列成清单(收入各线、毛利、各费用、below-OP 各项、税率、少数股东、派生观测行、收纳区副拆分、knobs 块、抬头四数)。后面逐项认领、划掉;收口时未划掉项 = 错或旗。
-5. **识别按需扩展字段**:扫旧稿,凡有历史序列、但 fetcher 默认 19 条未覆盖的行(典型 BS 科目:营运资本/资本开支/存货/应收应付/有息负债;行业特有指标),记下它们的 TuShare 字段名(映射查 `src/field_registry.yaml`,见下「按需扩展」)。把这些字段名收集起来,第3步传给 fetcher。
+5. **识别按需扩展字段**:扫旧稿,凡有历史序列、但 fetcher 默认 24 条未覆盖的行(典型 BS 科目:营运资本/资本开支/存货/应收应付/有息负债;行业特有指标),记下它们的 TuShare 字段名(映射查 `src/field_registry.yaml`,见下「按需扩展」)。把这些字段名收集起来,第3步传给 fetcher。
 
 没旧稿 → 报"无核心假设.md,这是 init 不是更新,请走 /ka",停。
 
@@ -89,7 +89,7 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> \
 - **status 处理**:
   - `ok` → 拿 `lines` 进第4步。
   - `noop` → A==H,数据没新过旧稿,告诉用户"无需更新",结束。
-  - `gap` → 守门失败(核心字段缺),把 `gaps` 给分析师指 `/init`,**不硬填、不静默用 0 顶替 NULL**,停。
+  - `gap` → 守门失败(核心字段缺,fetcher 返回 exit 2),把 `gaps` 给分析师指 `/init`,**不硬填、不静默用 0 顶替 NULL**,停。
 
 ### 第 4 步 · 年度更新器 skill v1 接管(人机交互 —— 这里开始不能全自动)
 
@@ -100,7 +100,7 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> \
 - **第2步「标准线填历史」(自动)**:用第3步的 JSON `lines` 把 (H, A] 实际值 append 进旧稿各段:
   - 费用率/税率/比率类是 ratio(0.1556)→ 写进 .md 转百分比显示(15.56%)。
   - 绝对值原样搬,符号不翻(clean_annual 已是"对利润正负贡献"口径)。
-  - fetcher 默认 19 条 + `--extra-fields` 的按需行,全覆盖。抬头时间轴四数 +N 平移;knobs 块 horizon 前移 N、values 前移(末年留空交第4步)。
+  - fetcher 默认 24 条 + `--extra-fields` 的按需行,全覆盖。抬头时间轴四数 +N 平移;knobs 块 horizon 前移 N、values 前移(末年留空交第4步)。
 - **第3步「估算拿不到的」(和你一起)**:非标业务线原子(销量/吨价/分线收入)走口径阶梯——
   - 分线收入:年报萃取 `收集\年报萃取\{年}_年报萃取.md` 分部表(若该公司没萃取文件,啃 `公告\年报\{年}_年度报告.md`)。注意旧稿分线口径可能与年报不同(如新乳业 4 线 vs 年报 3 类),按旧稿口径对齐,结构性残差推算可继续用。
   - 量价原子(销量/吨价):A 股年报不披露,外部模型 `active_vore\*.xlsm` 若未更新到 A 年 → 走**声明式估算·预测真实化**(旧稿对该年预测按比例缩放对齐真实营收)。标"估算·待校准"。
@@ -113,13 +113,13 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> \
 
 一页收口报告:滚了几年 H→A / 自动填的标准线(19+条)/ 按需扩展取到的 BS 行 / 估算了的(每条+方法+待校准)/ 挂旗待补的 / 重定了的(老值→新值)/ thesis 兑现度 / 新 DCF vs 平推 vs 旧稿 / 新稿路径+旧稿留存路径。
 
-## 按需扩展:旧稿有、默认 19 条没覆盖的行去哪找(通用逻辑)
+## 按需扩展:旧稿有、默认 24 条没覆盖的行去哪找(通用逻辑)
 
-fetcher 默认 19 条覆盖**所有公司都有的 IS 通用标准线**:revenue_headline / 4 个费用率 / 8 个 below-OP 绝对值 / 有效税率 / 其他财务费用 / gpm 历史 / 少数股东比率 / 财务费用合计 / 5 个派生观测行 + 归母净利率。
+fetcher 默认 24 条覆盖**所有公司都有的 IS 通用标准线**:revenue_headline / 4 个费用率 / 8 个 below-OP 绝对值 / 有效税率 / 其他财务费用 / gpm 历史 / 少数股东比率 / 财务费用合计 / 5 个派生观测行 + 归母净利率。
 
 但有些公司的核心假设.md 带资产负债表/现金流表科目(营运资本周转、资本开支、存货/应收应付周转、大额少数股东、有息负债结构、折旧政策)或行业特有指标(产能、门店数、用户数、ARPU)。**这些不可能每次都预输出**——按需找:
 
-1. **识别**:第1步扫旧稿,凡有历史序列、但 19 条没覆盖的行,记下它的"上挂"中文科目。
+1. **识别**:第1步扫旧稿,凡有历史序列、但 24 条没覆盖的行,记下它的"上挂"中文科目。
 2. **映射到 TuShare 字段名**:查 `src\field_registry.yaml`(全程序会计科目唯一真源,分类/会计序/标签)或 `数据格式参考.md`(中文科目 ↔ TuShare 字段名字典)。例:营运资本相关 → `total_cur_assets`/`total_cur_liab`;资本开支 → `c_pay_acq_const_fiolta`;存货 → `inventories`。
 3. **传 fetcher 取**:`--extra-fields "total_cur_assets,c_pay_acq_const_fiolta"`。fetcher 按 direct 取,core=False 不阻塞(缺值挂旗不卡流程)。输出在 `lines.extra:<字段名>`。
 4. **比率类(周转率/占比)skill 自己算**:fetcher 只取绝对值原子(搬运历史事实,非预测派生);周转率 = 字段/revenue 这种除法,skill 拿到分子分母后自己算,不算"算账"(和费用率同性质,历史实际比率)。
@@ -143,6 +143,6 @@ fetcher 默认 19 条覆盖**所有公司都有的 IS 通用标准线**:revenue_
 | 阶段 | 失败 | 动作 |
 |---|---|---|
 | 第2步 init | exit 3 | 走 init subagent 升级通道;未闭合停,不滚 |
-| 第3步 fetcher | status=gap | 把 gaps 给分析师指 /init,停 |
+| 第3步 fetcher | status=gap(exit 2) | 把 gaps 给分析师指 /init,停 |
 | 第3步 fetcher | status=noop | A==H 无需更新,正常结束 |
 | 第4步 | 任何"填或旗"外的静默留空 | 总账未划掉项 = 错或旗,收口终检拦截 |

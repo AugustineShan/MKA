@@ -251,8 +251,11 @@ D:\MKA\.claude\skills\ka\SKILL.md
 动态细则：
 
 ```text
-D:\MKA\skills\04_核心假设生成修改器_skill_v*.md
+D:\MKA\skills\核心纪律_skill_v*.md
+D:\MKA\skills\核心假设源语言_skill_v*.md
+D:\MKA\skills\核心假设编辑器_skill_v*.md
 ```
+（旧 v19 `04_核心假设生成修改器_skill_v19.md` 已归档至 `deprecatedlogs/`,不再加载。）
 
 用途：
 
@@ -493,16 +496,23 @@ forecast 接入：
 当前 `D:\MKA\skills` 里通常有：
 
 ```text
-04_核心假设生成修改器_skill_v19.md
-yaml1compiler_v5.md
+核心纪律_skill_v1.md
+核心假设源语言_skill_v1.md
+核心假设编辑器_skill_v1.md
+核心假设调整器_skill_v1.md
 年度更新器_skill_v1.md
-业务预理解器_skill_v1.md
+业务预理解器_skill_v3.md
+模型装载器_skill_v3.md
 da_折旧摊销排程_skill_v1.md
+yaml1compiler_v5.md
 ```
+（旧 `04_核心假设生成修改器_skill_v19.md` 已归档至 `deprecatedlogs/`。）
 
 使用规则：
 
-- `/ka` 动态加载最新版 `核心假设生成修改器`。
+- `/ka` 先加载 `核心纪律`+`核心假设源语言`,再动态加载最新版 `核心假设编辑器`。
+- `/load` 先加载 `核心纪律`+`核心假设源语言`,再动态加载最新版 `模型装载器`。
+- `/adj` 先加载 `核心纪律`+`核心假设源语言`,再动态加载最新版 `核心假设调整器`。
 - `/comp` 动态加载最新版 `yaml1compiler`。
 - `/annual-update` 动态加载最新版 `年度更新器`。
 - `/brkd` 动态加载最新版 `业务预理解器`。

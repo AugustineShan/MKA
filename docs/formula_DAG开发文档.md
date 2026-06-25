@@ -3,7 +3,7 @@
 状态：**实验性 · 受限可执行**。代码闭环已达成（`src/yaml1_formula.py` 求值器 + cleaner 接入 + 7 个 formula 单元测试绿），但**仅在合成 fixture 上验证过，尚无真实异构公司跑通**。在第二家异构公司（如茅台基酒链/产能滞后类）实跑通过前，不应视为"稳定/生产可用"。  
 日期：2026-06-16  
 拥有者：`src/yaml1_cleaner.py`  
-相关契约：`docs/yaml1算法模板契约.md`、`skills/yaml1compiler_v4 (2).md`
+相关契约：`docs/yaml1算法模板契约.md`、`skills/yaml1compiler_v5.md`、`skills/核心假设源语言_skill_v1.md`
 
 > **收口标准（升"稳定"的硬条件）**：① 全套测试绿（已达成，83 passed）；② 至少一家真实异构公司从 compiler 生成 `formulas` → cleaner 求值 → calc 跑通 → 回测过（**未达成**）。达成 ② 之前，本文与 ARCHITECTURE/设计文档一律以"实验性·受限"口径记录。
 
@@ -423,8 +423,8 @@ Warning：
 - `docs/yaml1算法模板契约.md`：formula 从“禁止生成”改为“可执行，但受限”。
 - `docs/数据流水线.md`：第六层 yaml1 cleaner 增加 formula 求值步骤。
 - `docs/ARCHITECTURE.md`：状态记为"实验性/受限"，变更日志记录代码闭环。
-- `skills/yaml1compiler_v4 (2).md`：允许 compiler 在触发条件下生成 `formulas`，并写清优先级：模板优先，formula 只接长尾。
-- `skills/核心假设生成修改器_skill_v17.md`：formula 可用但需停下与分析师共探算法，不能把能用模板表达的线升级成 formula。
+- `skills/yaml1compiler_v5.md`：允许 compiler 在触发条件下生成 `formulas`，并写清优先级：模板优先，formula 只接长尾。
+- `skills/核心假设源语言_skill_v1.md` + `skills/核心假设编辑器_skill_v1.md`：formula 可用但需停下与分析师共探算法，不能把能用模板表达的线升级成 formula。
 
 ## compiler 触发纪律
 

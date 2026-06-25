@@ -7,6 +7,8 @@ import {
   pipelineAux,
   pipelineStages,
   quickstartRoutes,
+  skillArtifactContracts,
+  skillSystemInvariants,
   skillPrincipleFlow,
   skillPrincipleStack,
   skillPrinciples,
@@ -88,6 +90,8 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
     }
     return [...groups.entries()];
   }, [settings]);
+
+  const skillCardsByKey = useMemo(() => new Map(skills.map((skill) => [skill.key, skill])), []);
 
   const dataConfigured = settings?.fields.some((field) => field.key === "TUSHARE_TOKEN" && field.configured) ?? false;
   const llmConfigured = settings?.fields.some((field) => ["GLM_API_KEY", "KIMI_API_KEY", "LLM_API_KEY"].includes(field.key) && field.configured) ?? false;
@@ -298,8 +302,36 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
           </>
         ) : activeTab === "guide" ? (
           <div className="tutorial-guide">
+            <section className="tutorial-section tutorial-user-hero">
+              <div className="tutorial-user-hero-copy">
+                <span>普通用户教程</span>
+                <h2>从材料到 DCF，按手头资料选择路线。</h2>
+                <p>
+                  先判断你手上是 Excel 模型、研报纪要，还是只想更新已有模型。系统会把取数、阅读、假设确认和估值输出拆成几步；
+                  你只需要准备材料、确认判断、查看结果。
+                </p>
+              </div>
+              <div className="tutorial-promise-grid">
+                <div>
+                  <strong>1</strong>
+                  <span>准备历史财务底稿</span>
+                </div>
+                <div>
+                  <strong>2</strong>
+                  <span>整理模型和材料线索</span>
+                </div>
+                <div>
+                  <strong>3</strong>
+                  <span>确认假设，输出估值</span>
+                </div>
+              </div>
+            </section>
+
             <section className="tutorial-section">
-              <h2>从哪开始</h2>
+              <div className="tutorial-section-intro">
+                <h2>我现在该从哪开始</h2>
+                <p>先选最像当前工作的卡片，按卡片下方命令往下跑。</p>
+              </div>
               <div className="entry-routes">
                 {entryRoutes.map((r) => (
                   <div className="entry-route" key={r.n}>
@@ -317,10 +349,12 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
             <section className="tutorial-section">
               <div className="analyst-map-head">
                 <div>
-                  <h2>分析师工作流全景</h2>
-                  <p>把传统投研动作拆成事实底座、材料理解、假设拍板和机器估值四块；每一步都有明确的智能增强和落盘产物。</p>
+                  <h2>每个功能在替你完成哪一步投研工作</h2>
+                  <p>这张图用分析师工作语言描述日常流程；底层文件和工程链路放在“技能原理”。</p>
                 </div>
-                <code>{"raw -> clean -> defaults -> 核心假设 -> yaml1 -> forecast_params -> calc"}</code>
+                <button className="text-link-button" onClick={() => setActiveTab("principles")} type="button">
+                  查看技能原理
+                </button>
               </div>
               <div className="analyst-map" aria-label="分析师工作流全景">
                 <div className="analyst-map-grid">
@@ -341,18 +375,18 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
                   ))}
                 </div>
                 <div className="analyst-system-line">
-                  <span>机器底层链路</span>
-                  <strong>TuShare 原始数据</strong>
+                  <span>记住这条就够</span>
+                  <strong>历史底稿</strong>
                   <b>→</b>
-                  <strong>raw_tushare 镜像</strong>
+                  <strong>材料阅读</strong>
                   <b>→</b>
-                  <strong>clean 宽表</strong>
+                  <strong>假设确认</strong>
                   <b>→</b>
-                  <strong>defaults.yaml</strong>
-                  <b>→</b>
-                  <strong>yaml1 覆盖</strong>
-                  <b>→</b>
-                  <strong>Agent/forecast</strong>
+                  <strong>估值输出</strong>
+                </div>
+                <div className="tutorial-plain-note">
+                  <strong>普通用户不用处理底层文件。</strong>
+                  <span>你负责材料、判断和结果复核；文件转换和模型运行会在后台完成。</span>
                 </div>
                 {pipelineAux.map((group) => (
                   <div className="analyst-support" key={group.title}>
@@ -376,7 +410,10 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
             </section>
 
             <section className="tutorial-section">
-              <h2>新手路线</h2>
+              <div className="tutorial-section-intro">
+                <h2>照着做</h2>
+                <p>三条最常见路线。第一次用的时候，照顺序走就行。</p>
+              </div>
               <div className="quickstart-routes">
                 {quickstartRoutes.map((route) => (
                   <div className="quickstart-route" key={route.key}>
@@ -394,49 +431,6 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
                       ))}
                     </ol>
                   </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="tutorial-section">
-              <h2>Skills 速查</h2>
-              <div className="skill-grid skill-grid-expanded">
-                {skills.map((skill) => (
-                  <article className={`skill-card skill-tag-${skill.tag}`} key={skill.key}>
-                    <header className="skill-card-head">
-                      <div>
-                        <code className="skill-name">{skill.name}</code>
-                        <p className="skill-headline">{skill.headline}</p>
-                      </div>
-                      <span className="skill-tag">{skill.tag}</span>
-                    </header>
-                    <dl className="skill-fields skill-fields-expanded">
-                      <dt>何时用</dt><dd>{skill.when}</dd>
-                      <dt>命令</dt><dd><code>{skill.command}</code></dd>
-                      <dt>会读取</dt>
-                      <dd>
-                        <ul className="skill-list">
-                          {skill.reads.map((item) => <li key={item}>{item}</li>)}
-                        </ul>
-                      </dd>
-                      <dt>会产出</dt>
-                      <dd>
-                        <ul className="skill-list">
-                          {skill.writes.map((item) => <li key={item}>{item}</li>)}
-                        </ul>
-                      </dd>
-                      <dt>下一步</dt><dd>{skill.next}</dd>
-                      <dt>边界</dt>
-                      <dd>
-                        <ul className="skill-list">
-                          {skill.guardrails.map((item) => <li key={item}>{item}</li>)}
-                        </ul>
-                      </dd>
-                      <dt>理解</dt><dd>{skill.mentalModel}</dd>
-                      {skill.notFor ? <dt>不是</dt> : null}
-                      {skill.notFor ? <dd>{skill.notFor}</dd> : null}
-                    </dl>
-                  </article>
                 ))}
               </div>
             </section>
@@ -497,21 +491,59 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
         ) : (
           <div className="tutorial-guide skill-principles">
             <section className="tutorial-section">
-              <h2>技能原理</h2>
+              <h2>技能原理：运行时契约</h2>
               <div className="principle-hero">
                 <div>
-                  <strong>这些 skill 不是一组命令，是一套分层编排系统。</strong>
+                  <strong>这里不是使用教程，是 MKA 的 source-of-truth 架构图。</strong>
                   <p>
-                    启动器负责定位和守门，动态 skill 负责复杂判断的 runbook，Python 负责确定性校验和计算，
-                    人类拍板永远回到 核心假设.md。理解这四层，才知道什么时候该自动跑，什么时候必须停下来问。
+                    每个 skill 都必须回答三件事：读什么、写什么、在哪些门禁前必须停。
+                    启动器负责定位和守门，动态 skill 负责复杂判断的 runbook，Python 负责确定性校验和计算，核心假设.md 负责承载人的判断。
                   </p>
+                  <div className="principle-hero-meta">
+                    <span>source: 核心假设.md</span>
+                    <span>compiler: yaml1 -&gt; forecast_params</span>
+                    <span>runtime: calc.py -&gt; Agent/forecast</span>
+                  </div>
                 </div>
                 <code>{".claude/skills -> D:\\MKA\\skills -> src/* -> Agent/forecast"}</code>
               </div>
             </section>
 
             <section className="tutorial-section">
-              <h2>四层机制</h2>
+              <h2>系统不变量</h2>
+              <div className="principle-invariant-grid">
+                {skillSystemInvariants.map((item) => (
+                  <article className="principle-invariant-card" key={item.code}>
+                    <code>{item.code}</code>
+                    <h3>{item.title}</h3>
+                    <p>{item.body}</p>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="tutorial-section">
+              <h2>产物契约</h2>
+              <div className="artifact-contract-table">
+                <div className="artifact-contract-row artifact-contract-head">
+                  <span>Artifact</span>
+                  <span>Owner</span>
+                  <span>Write Boundary</span>
+                  <span>Contract</span>
+                </div>
+                {skillArtifactContracts.map((item) => (
+                  <div className="artifact-contract-row" key={item.artifact}>
+                    <code>{item.artifact}</code>
+                    <strong>{item.owner}</strong>
+                    <span>{item.writeBoundary}</span>
+                    <p>{item.contract}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="tutorial-section">
+              <h2>Runtime 四层</h2>
               <div className="principle-stack">
                 {skillPrincipleStack.map((item) => (
                   <article className="principle-stack-card" key={item.title}>
@@ -523,7 +555,7 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
             </section>
 
             <section className="tutorial-section">
-              <h2>主线编排</h2>
+              <h2>Canonical Artifact Chain</h2>
               <ol className="principle-flow">
                 {skillPrincipleFlow.map((item, index) => (
                   <li key={item}>
@@ -535,43 +567,66 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
             </section>
 
             <section className="tutorial-section">
-              <h2>每个技能怎么工作</h2>
+              <h2>Skill Runbook Contracts</h2>
               <div className="principle-skill-list">
-                {skillPrinciples.map((skill) => (
-                  <article className="principle-skill-card" key={skill.key}>
-                    <header>
-                      <div>
-                        <code>{skill.name}</code>
-                        <h3>{skill.role}</h3>
+                {skillPrinciples.map((skill) => {
+                  const skillCard = skillCardsByKey.get(skill.key);
+                  return (
+                    <article className="principle-skill-card" key={skill.key}>
+                      <header>
+                        <div>
+                          <code>{skill.name}</code>
+                          <h3>{skill.role}</h3>
+                        </div>
+                        <span>{skill.key}</span>
+                      </header>
+                      <div className="principle-skill-body">
+                        <div className="principle-skill-summary">
+                          <h4>核心原理</h4>
+                          <p>{skill.principle}</p>
+                          <h4>为什么存在</h4>
+                          <p>{skill.why}</p>
+                          <h4>交给谁</h4>
+                          <p>{skill.handoff}</p>
+                        </div>
+                        <div className="principle-skill-steps">
+                          {skillCard ? (
+                            <div className="principle-skill-io">
+                              <div>
+                                <h4>读取</h4>
+                                <ul>
+                                  {skillCard.reads.map((item) => (
+                                    <li key={item}>{item}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                              <div>
+                                <h4>写入</h4>
+                                <ul>
+                                  {skillCard.writes.map((item) => (
+                                    <li key={item}>{item}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            </div>
+                          ) : null}
+                          <h4>编排</h4>
+                          <ol>
+                            {skill.orchestration.map((item) => (
+                              <li key={item}>{item}</li>
+                            ))}
+                          </ol>
+                          <h4>硬停</h4>
+                          <ul>
+                            {skill.stops.map((item) => (
+                              <li key={item}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
                       </div>
-                      <span>{skill.key}</span>
-                    </header>
-                    <div className="principle-skill-body">
-                      <div className="principle-skill-summary">
-                        <h4>核心原理</h4>
-                        <p>{skill.principle}</p>
-                        <h4>为什么存在</h4>
-                        <p>{skill.why}</p>
-                        <h4>交给谁</h4>
-                        <p>{skill.handoff}</p>
-                      </div>
-                      <div className="principle-skill-steps">
-                        <h4>编排</h4>
-                        <ol>
-                          {skill.orchestration.map((item) => (
-                            <li key={item}>{item}</li>
-                          ))}
-                        </ol>
-                        <h4>硬停</h4>
-                        <ul>
-                          {skill.stops.map((item) => (
-                            <li key={item}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    </div>
-                  </article>
-                ))}
+                    </article>
+                  );
+                })}
               </div>
             </section>
           </div>

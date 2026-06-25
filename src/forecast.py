@@ -13,6 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +30,7 @@ from src.calc import (
     value_from_statements,
     write_outputs,
 )
-from src.assumption_staleness import ensure_assumptions_fresh
+from src.assumption_staleness import ensure_assumptions_fresh, latest_core_assumption_path
 from src.company_excel_export import export_company_excel
 from src.derived_metrics import build_and_write_derived_metrics
 from src.yaml1_cleaner import (
@@ -51,6 +54,7 @@ from src.yaml2_schema import (
     plain_value,
     write_yaml2,
 )
+from src.da_roll import DaRollFailedError
 
 
 INTERNAL_DIR_NAME = ".modelking"
@@ -101,9 +105,13 @@ def _maybe_roll_da_series(
 ) -> list[dict] | None:
     """重资产模式注入:若 Agent/da_schedule.yaml 启用则滚动 da_series。
 
-    返回 da_series(并已就地完成 gpm→ex-dep 覆盖),否则 None(轻资产,bit-exact)。
-    DaAlignError(base 对齐失败)向上抛(硬错);其余异常记 warning 回退轻资产,
-    绝不阻塞 forecast。
+    返回 da_series(并已就地完成 gpm→ex-dep 覆盖);sched=None(文件缺失或
+    enabled:false)返回 None(合法轻资产,bit-exact)。
+
+    enabled:true 下任何失败都向上抛,阻断 official forecast —— 绝不静默回退
+    轻资产(见 da SKILL 铁律):DaAlignError(base 对齐硬错)直接抛;clean_annual
+    加载或 roll_da_series 的其他异常包成 DaRollFailedError 抛。分析师要临时
+    忽略 DA 须显式把 da_schedule.enabled 改 false(则返回 None 走轻资产)。
 
     base_ppe_dep = 现金流量表 depr_fa_coga_dpba(仅 PP&E 折旧):同时给 roll_da_series
     校准存量折旧、给 gpm→ex-dep 加回。三类摊销不进 da_roll 也不进 gpm 加回。
@@ -126,19 +134,35 @@ def _maybe_roll_da_series(
     except DaAlignError:
         raise
     if sched is None:
-        return None
+        return None  # 文件缺失或 enabled:false -> 合法轻资产路径
 
+    # 以下 sched 已 enabled:true:任何 da_roll 失败都阻断 official forecast,
+    # 不静默回退轻资产(见 da SKILL 铁律)。只有 sched=None 才允许轻资产。
     base_year = int(base_period[:4])
     years = as_int(get_path(forecast_params, "model.forecast_years"))
     base_bs_dict = get_path(forecast_params, "balance_sheet.base") or {}
 
     try:
         clean_annual = load_clean_annual(clean_annual_path)
-    except Exception as exc:  # noqa: BLE001 - fall back, do not block forecast.
-        _log.warning("da_roll: clean_annual load failed, falling back to light-asset: %s", exc)
-        return None
+    except Exception as exc:
+        raise DaRollFailedError(
+            "enabled:true 但 clean_annual 加载失败,阻断 official forecast"
+            "(重资产假设无法滚进 forecast;参考 reference·DA未生效): {}".format(exc)
+        ) from exc
     base_row = clean_annual.get(base_year, {})
     base_ppe_dep = as_float(base_row.get("depr_fa_coga_dpba"))
+    # 守卫(audit H1):重资产模式 base 年 PP&E 折旧锚点必须存在且为正。
+    # depr_fa_coga_dpba 缺失/NULL/<=0 时 as_float→0,会让 roll_da_series 的
+    # scale=base_reported_dep/total_policy_dep 归零,静默把存量折旧抹平成"仅扩张"、
+    # 维持性 capex→0,一个结构完整但完全错误的 da_series 驱动正式 DCF。这正是项目
+    # 别处当 reconciler blocker 的 TuShare-NULL 类,绝不静默归零——显式阻断。
+    if base_ppe_dep <= 0.0:
+        raise DaRollFailedError(
+            "enabled:true 但 base 年({})PP&E 折旧锚点 depr_fa_coga_dpba 缺失或<=0"
+            "(={}),无法校准存量折旧,阻断 official forecast——绝不静默归零"
+            "(参考 reference·DA未生效;请核对 clean_annual 该年现金流量表折旧 depr_fa_coga_dpba,"
+            "或显式把 da_schedule.enabled 改 false 走轻资产)".format(base_year, base_ppe_dep)
+        )
 
     try:
         da_series = roll_da_series(
@@ -146,9 +170,11 @@ def _maybe_roll_da_series(
         )
     except DaAlignError:
         raise
-    except Exception as exc:  # noqa: BLE001 - fall back, do not block forecast.
-        _log.warning("da_roll failed, falling back to light-asset: %s", exc)
-        return None
+    except Exception as exc:
+        raise DaRollFailedError(
+            "enabled:true 但 da_roll 执行失败,阻断 official forecast"
+            "(重资产假设未生效;参考 reference·DA未生效): {}".format(exc)
+        ) from exc
 
     _apply_gpm_ex_dep(forecast_params, base_ppe_dep)
 
@@ -288,6 +314,96 @@ def _write_full_tables(
     full_cf.to_csv(output_dir / "full_cf.csv", index=False, encoding="utf-8-sig")
 
 
+class FidelityGateError(RuntimeError):
+    """audit H2a:yaml1 结构/路径保真闸门硬失败,阻断 official forecast。"""
+
+    def __init__(self, message: str, findings: list[dict[str, Any]]):
+        super().__init__(message)
+        self.findings = findings
+
+
+FIDELITY_GATE_ENV = "MKA_FIDELITY_GATE"  # block_structural(默认) | warn | off
+
+
+def _run_fidelity_gate(
+    yaml1: Path,
+    defaults: Path,
+    company_dir: Path,
+    internal: Path,
+    report: dict[str, Any],
+) -> None:
+    """audit H2a:把确定性保真校验器 yaml1_fidelity_check 接进控制流。
+
+    此前该校验器只由 skill prose 唤起(/frontend-edit 让 LLM 跑、/adj quick 连让都没让),
+    forecast 本身从不调用 —— 越权手 patch 的 yaml1(翻 family、加删 knob、偏离 defaults
+    命名空间)可直达 DCF。现在 official forecast 自动运行它:
+
+    - Gate A(结构:深度/family/数组长度)+ Gate B(路径存在性/符号)是确定性判定,
+      FAIL → 硬阻断(这正是结构性越权的指纹)。
+    - Gate C(值双射,正则回退脆性)→ 仅并入 warning,不因脆性误阻断。
+    - 无论结果如何,verdict + findings 始终并入 report.warnings(绝不静默)。
+    - 校验器自身不可用/无产物 → fail-open 记 warning 放行(不让闸门自身的脆弱阻断 forecast);
+      只有确凿的结构 FAIL 才 fail-closed。
+    - 逃生阀:MKA_FIDELITY_GATE=warn 全降级为 warning;=off 完全跳过。
+    """
+    mode_env = os.environ.get(FIDELITY_GATE_ENV, "block_structural").lower()
+    if mode_env == "off":
+        return
+    md = latest_core_assumption_path(company_dir)
+    if md is None or not Path(md).exists():
+        report.setdefault("warnings", []).append({
+            "code": "fidelity_skipped_no_md",
+            "severity": "warning",
+            "message": "未找到核心假设.md,跳过 yaml1 保真闸门(无法核对 yaml1↔.md 翻译忠实度)",
+        })
+        return
+    internal.mkdir(parents=True, exist_ok=True)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "src.yaml1_fidelity_check",
+             str(yaml1), str(defaults), str(md), str(internal)],
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception as exc:  # noqa: BLE001 - 闸门自身故障 fail-open,只记 warning
+        report.setdefault("warnings", []).append({
+            "code": "fidelity_check_unavailable",
+            "severity": "warning",
+            "message": f"yaml1 保真闸门无法运行,放行(fail-open):{exc}",
+        })
+        return
+    rpt_path = internal / "yaml1_fidelity_report.json"
+    if not rpt_path.exists():
+        report.setdefault("warnings", []).append({
+            "code": "fidelity_check_unavailable",
+            "severity": "warning",
+            "message": f"yaml1 保真闸门未产出报告(exit={proc.returncode}),放行(fail-open);stderr={proc.stderr[:300]}",
+        })
+        return
+    rpt = json.loads(rpt_path.read_text(encoding="utf-8"))
+    findings = rpt.get("findings", [])
+    structural_fail = [
+        f for f in findings
+        if f.get("gate") in ("A", "B") and f.get("status") == "FAIL"
+    ]
+    # 始终把 verdict + 摘要并入 report(可见、可审计,绝不静默)
+    report.setdefault("warnings", []).append({
+        "code": "fidelity_report",
+        "severity": "warning" if findings else "info",
+        "message": f"yaml1 保真闸门 verdict={rpt.get('verdict')} summary={rpt.get('summary')}",
+        "findings": findings,
+    })
+    if structural_fail and mode_env != "warn":
+        detail = "; ".join(
+            f"{f.get('gate')}:{f.get('path')}:{f.get('detail')}" for f in structural_fail[:8]
+        )
+        raise FidelityGateError(
+            "yaml1 结构/路径保真闸门 FAIL,阻断 official forecast(Gate A/B 确定性失败="
+            "yaml1 偏离算法契约或 defaults 命名空间,常见于越权手 patch yaml1;请修 yaml1 或"
+            "回 /comp 重译;确需临时放行设环境变量 MKA_FIDELITY_GATE=warn): " + detail,
+            structural_fail,
+        )
+
+
 def run_company_forecast(
     ticker: str | None = None,
     yaml1_path: str | Path | None = None,
@@ -320,9 +436,25 @@ def run_company_forecast(
             clean_annual_path=clean_annual,
         )
     cleaned = clean_yaml1(yaml1, defaults, clean_annual)
+    if mode == "official":
+        # audit H2a:official forecast 自动跑确定性保真闸门(load_vintage/sandbox 不跑)。
+        _run_fidelity_gate(yaml1, defaults, company_dir, internal, cleaned.report)
     da_warnings: list[dict[str, Any]] = []
-    da_series = _maybe_roll_da_series(
-        cleaned.forecast_params, company_dir, clean_annual, da_warnings)
+    try:
+        da_series = _maybe_roll_da_series(
+            cleaned.forecast_params, company_dir, clean_annual, da_warnings)
+    except DaRollFailedError as exc:
+        # enabled:true 但 da_roll 失败:阻断 official forecast,不覆盖 Agent/forecast/。
+        # 写 marker 让下游/工作台感知(参考 reference·DA未生效 语义);成功重跑时
+        # write_outputs 的 reset_forecast_dir 会 rmtree 清掉本 marker。
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "DA_NOT_EFFECTIVE.json").write_text(
+            json.dumps(
+                {"marker": "reference·DA未生效", "reason": str(exc),
+                 "action": "修 da_schedule 后重跑,或显式 enabled:false 走轻资产"},
+                ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8")
+        raise
     if da_series is not None:
         cleaned.forecast_params["da_series"] = da_series
     if da_warnings:
@@ -416,13 +548,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    run = run_company_forecast(
-        ticker=args.ticker,
-        yaml1_path=args.yaml1,
-        defaults_path=args.defaults,
-        clean_annual_path=args.clean_annual,
-        output_dir=args.output_dir,
-    )
+    try:
+        run = run_company_forecast(
+            ticker=args.ticker,
+            yaml1_path=args.yaml1,
+            defaults_path=args.defaults,
+            clean_annual_path=args.clean_annual,
+            output_dir=args.output_dir,
+        )
+    except FidelityGateError as exc:
+        print(f"FIDELITY GATE BLOCK: {exc}", file=sys.stderr, flush=True)
+        return 4
     print(f"Written forecast: {run.output_dir}")
     print(f"Per-share value: {run.summary['per_share_value']}")
     if run.warnings_count:

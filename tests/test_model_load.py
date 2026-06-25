@@ -135,6 +135,9 @@ def test_prepare_load_builds_cutoff_db_defaults_and_forbidden_report(tmp_path: P
     assert str(defaults["base_period"]) == "2024"
     assert (load_dir / "model20250527_核心假设.md").exists()
     assert not (company_dir / "model20250527_核心假设.md").exists()
+    assert result["core_assumption_path"] == str(load_dir / "model20250527_核心假设.md")
+    assert result["core_assumption_scaffold_path"] == str(load_dir / "model20250527_核心假设.md")
+    assert result["root_core_assumption_path"] == str(company_dir / "model20250527_核心假设.md")
     forbidden = (load_dir / "forbidden_materials.md").read_text(encoding="utf-8")
     assert "2025年度报告.md" in forbidden
     assert result["removed_rows"]["clean_annual"] >= 1

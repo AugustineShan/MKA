@@ -86,6 +86,7 @@ def _write_merged_webload_markdown(
     boundary = manifest["boundary"]
     load_dir = Path(manifest["load_dir"])
     core_assumption_path = Path(manifest["core_assumption_path"])
+    root_core_assumption_path = Path(manifest.get("root_core_assumption_path", core_assumption_path))
     load_skill = CLAUDE_SKILLS_DIR / "load" / "SKILL.md"
     boundary_md = load_dir / "model_boundary.md"
     boundary_json = load_dir / "model_boundary.json"
@@ -119,7 +120,8 @@ def _write_merged_webload_markdown(
 
 - 目标：把外部 Excel 模型保存为 load-vintage 的 `/comp` 源语言核心假设。
 - 输出文件名：`{core_assumption_path.name}`
-- 输出回填路径：`{core_assumption_path}`
+- 主产物回填路径：`{root_core_assumption_path}`
+- 沙箱副本同步路径：`{core_assumption_path}`
 - 先给用户完整 overview，讲清你对模型公式层、业务线、毛利/成本、费用、below-OP 与税、中期/terminal 的理解。
 - 用户确认前，不要补完核心假设、不要编译 yaml1、不要跑 DCF。
 - 用户确认后，按收入 -> 毛利/成本 -> 费用 -> below-OP 与税 -> 中期/terminal 逐段先押再问。
@@ -147,10 +149,16 @@ def _write_merged_webload_markdown(
 网页端生成 `{core_assumption_path.name}` 后，把它放回：
 
 ```text
+{root_core_assumption_path}
+```
+
+并同步一份完全相同的副本到：
+
+```text
 {core_assumption_path}
 ```
 
-然后本地继续编译 `yaml1_load_*.yaml` 并运行：
+根目录主产物供 `/ka` 读取；沙箱副本供本地继续编译 `yaml1_load_*.yaml` 并运行：
 
 ```bash
 py -m src.model_load dcf --load-dir "{load_dir}" --yaml1 "<yaml1_load_path>"
@@ -169,6 +177,12 @@ py -m src.model_load dcf --load-dir "{load_dir}" --yaml1 "<yaml1_load_path>"
         "核心假设源语言 B：输出语法",
         source_language,
         _read_required_text(source_language, "核心假设源语言"),
+    )
+    _append_source_section(
+        parts,
+        "load 启动器：/load 入口、overview 确认门与边界",
+        load_skill,
+        _read_required_text(load_skill, "load 启动器"),
     )
     _append_source_section(
         parts,
