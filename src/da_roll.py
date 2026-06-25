@@ -203,7 +203,21 @@ def roll_da_series(sched: dict, base_bs: dict, forecast_years: int,
     expansion = sched.get("expansion_plan", {})
     # base_cip_to_fixed schema(与 expansion_plan 同构):{year: {cat: amt}};按 cat 提取该类 {year: amt}
     base_cip_tf = sched.get("base_cip_to_fixed", {})
-    scale = _calibrate_scale(cats, base_reported_dep)
+
+    # other_depreciating_assets(生产性生物资产/油气资产):也折旧但非 PP&E。
+    # 参与折旧流量 + 稳态再投资(=其折旧,堵 FCFF 陷阱),净值不进 fix_assets(BS held flat)。
+    # v1 稳态(g=0,reinvest=折旧,净值平推,与 calc 非 PP&E 资产处理一致);无扩张 cohort。
+    other_section = sched.get("other_depreciating_assets", {}) or {}
+    other_cats = other_section.get("categories", []) or []
+    other_g = other_section.get("存量策略", {}).get("net_growth_rate", 0.0)
+
+    # scale 分母 = PP&E policy_dep + other policy_dep(全口径对齐 depr_fa_coga_dpba:
+    # 该现金流量表行 = 固定资产折旧 + 油气资产折耗 + 生产性生物资产折旧,三类同源)。
+    ppe_policy_dep = sum(c["base_gross"] * (1 - c["salvage_rate"]) / c["life_years"] for c in cats)
+    other_policy_dep = sum(c["base_gross"] * (1 - c["salvage_rate"]) / c["life_years"]
+                           for c in other_cats)
+    total_policy_dep = ppe_policy_dep + other_policy_dep
+    scale = (base_reported_dep / total_policy_dep) if total_policy_dep > 0 else 1.0
 
     # 预建每类 cip 状态(转固队列)
     cip_states: list[CipState] = []
@@ -226,6 +240,11 @@ def roll_da_series(sched: dict, base_bs: dict, forecast_years: int,
             stock_depreciation(
                 c["base_gross"] * (1 - c["salvage_rate"]) / c["life_years"] * scale, g, t)
             for c in cats)
+        # other(生物/油气)存量折旧:同 scale 校准,按 other_g 稳态;无扩张 cohort
+        other_dep = sum(
+            stock_depreciation(
+                c["base_gross"] * (1 - c["salvage_rate"]) / c["life_years"] * scale, other_g, t)
+            for c in other_cats)
         # 存量净值:每类 base_net × (1+g)^t(base_net = base_gross - base_accum_dep)
         stock_net = sum(
             (c["base_gross"] - c.get("base_accum_dep", 0.0)) * (1 + g) ** t
@@ -239,15 +258,16 @@ def roll_da_series(sched: dict, base_bs: dict, forecast_years: int,
                 exp_dep += cohort.dep_in_year(year)
                 exp_cohort_net += cohort.net_in_year(year)
             cip_bal += state.cip_balance(year)
-        total_net = stock_net + exp_cohort_net  # fix_assets_net
-        maint = stock_dep  # 维持 capex = 存量稳态折旧
+        total_net = stock_net + exp_cohort_net  # fix_assets_net(PP&E only,不含 other)
+        # 维持 capex = PP&E 存量折旧 + other 稳态再投资(=other 折旧;BS held flat 自洽)
+        maint = stock_dep + other_dep
         org = organic_capex(stock_net, g)
         # 扩张 capex_by_cat 当年合计(给 ppe_capex)
         exp_capex_year = sum(expansion.get(year, {}).get("capex_by_cat", {}).values())
         ppe_capex = compute_ppe_capex(maint, {year: exp_capex_year}, {year: org}, year)
         series.append({
             "period": str(year),
-            "ppe_depreciation": stock_dep + exp_dep,
+            "ppe_depreciation": stock_dep + exp_dep + other_dep,
             "fix_assets_net": total_net,
             "cip_balance": cip_bal,
             "ppe_capex": ppe_capex,
@@ -256,6 +276,7 @@ def roll_da_series(sched: dict, base_bs: dict, forecast_years: int,
                 "expansion": exp_capex_year,
                 "organic": org,
             },
+            "other_depreciation": other_dep,
         })
     return series
 

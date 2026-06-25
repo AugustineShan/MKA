@@ -191,3 +191,95 @@ def test_calibrate_scale_zero_reported_returns_zero():
     from src.da_roll import _calibrate_scale
     cats = [{"name": "房屋", "base_gross": 1000, "life_years": 20, "salvage_rate": 0.05}]
     assert _calibrate_scale(cats, base_reported_dep=0.0) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# other_depreciating_assets(生产性生物资产/油气资产):折旧流量 + 稳态再投资,
+# 净值不进 fix_assets(仍 PP&E only)。g=0 稳态平推(reinvest=折旧,自洽)。
+# ---------------------------------------------------------------------------
+def _sched_with_other(*, other_cats=None, reported=167.5, g=0.0):
+    return {
+        "enabled": True, "base_year": 2024,
+        "ppe": {"categories": [
+            {"name": "房屋", "base_gross": 1000.0, "base_accum_dep": 200.0,
+             "life_years": 20, "salvage_rate": 0.05, "base_cip": 0.0}],
+            "存量策略": {"net_growth_rate": g}},
+        "other_depreciating_assets": {"categories": other_cats or [
+            {"name": "生产性生物资产", "base_gross": 600.0, "base_accum_dep": 100.0,
+             "life_years": 5, "salvage_rate": 0.0}]},
+        # ppe policy_dep=47.5, other policy_dep=120 → 总 167.5 → scale=1.0(当 reported=167.5)
+    }
+
+
+def test_other_depreciating_assets_add_to_depreciation():
+    """其他折旧类(生物资产)的存量折旧并入 ppe_depreciation;scale 分母含 other policy_dep。
+
+    ppe_pol=47.5 + other_pol=120 = 167.5;reported=167.5 → scale=1.0;
+    t=1 g=0:ppe_depreciation = 47.5 + 120 = 167.5(=披露,真对齐,非偶然)。
+    """
+    from src.da_roll import roll_da_series
+    sched = _sched_with_other(reported=167.5)
+    series = roll_da_series(sched, base_bs={}, forecast_years=2,
+                            base_year=2024, base_reported_dep=167.5)
+    assert series[0]["ppe_depreciation"] == pytest.approx(167.5)
+    # other_depreciation 透明键 = other 存量折旧
+    assert series[0]["other_depreciation"] == pytest.approx(120.0)
+
+
+def test_other_assets_maintenance_folded_into_capex():
+    """其他折旧类的稳态再投资(=其折旧)并入 ppe_capex(堵 FCFF 陷阱:加回 DA 必须减 reinvest)。
+
+    ppe_capex = ppe_maint(47.5) + other_maint(120) = 167.5(无扩张/有机,g=0)。
+    maintenance split = ppe_maint + other_maint。
+    """
+    from src.da_roll import roll_da_series
+    sched = _sched_with_other(reported=167.5)
+    series = roll_da_series(sched, base_bs={}, forecast_years=1,
+                            base_year=2024, base_reported_dep=167.5)
+    row = series[0]
+    assert row["ppe_capex"] == pytest.approx(167.5)
+    assert row["ppe_capex_split"]["maintenance"] == pytest.approx(167.5)  # 47.5+120
+
+
+def test_fix_assets_net_excludes_other_assets():
+    """fix_assets_net 只含 PP&E 净值,不含生物资产净值(后者 BS held flat,由 calc 平推)。
+
+    ppe base_net=800;other base_net=500。fix_assets_net=800,不是 1300。
+    """
+    from src.da_roll import roll_da_series
+    sched = _sched_with_other(reported=167.5)
+    series = roll_da_series(sched, base_bs={}, forecast_years=1,
+                            base_year=2024, base_reported_dep=167.5)
+    assert series[0]["fix_assets_net"] == pytest.approx(800.0)  # 不含 other 的 500
+
+
+def test_scale_denominator_includes_other_policy_dep():
+    """scale = reported / (ppe_pol + other_pol);other 让 scale 偏离纯 PP&E 的值。
+
+    reported=100:纯 PP&E scale=100/47.5=2.105;含 other scale=100/167.5=0.597。
+    验证含 other 时 scale 走 0.597(ppe_depreciation=100)。
+    """
+    from src.da_roll import roll_da_series
+    sched = _sched_with_other(reported=100.0)
+    series = roll_da_series(sched, base_bs={}, forecast_years=1,
+                            base_year=2024, base_reported_dep=100.0)
+    # stock_dep_total = (47.5+120)*0.597 = 100;scale 把总折旧校准到 reported
+    assert series[0]["ppe_depreciation"] == pytest.approx(100.0)
+
+
+def test_no_other_assets_is_bit_exact_ppe_only():
+    """无 other_depreciating_assets 时,行为与纯 PP&E 一致(回归保护,other_depreciation=0)。"""
+    from src.da_roll import roll_da_series
+    sched = {
+        "enabled": True, "base_year": 2024,
+        "ppe": {"categories": [
+            {"name": "房屋", "base_gross": 1000.0, "base_accum_dep": 200.0,
+             "life_years": 20, "salvage_rate": 0.05, "base_cip": 0.0}],
+            "存量策略": {"net_growth_rate": 0.0}},
+    }
+    series = roll_da_series(sched, base_bs={}, forecast_years=1,
+                            base_year=2024, base_reported_dep=47.5)
+    assert series[0]["other_depreciation"] == 0.0
+    assert series[0]["ppe_depreciation"] == pytest.approx(47.5)  # scale=1.0, 纯 PP&E
+    assert series[0]["fix_assets_net"] == pytest.approx(800.0)
+
