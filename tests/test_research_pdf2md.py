@@ -1,6 +1,3 @@
-import sys, io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-
 from pathlib import Path
 import fitz
 from src.research_pdf2md import research_pdf_to_md, convert_research_pdfs
@@ -60,7 +57,7 @@ def test_research_pdf_to_md_force_overwrites(tmp_path: Path):
 
 
 def test_convert_research_pdfs_walks_folder(tmp_path: Path):
-    sub = tmp_path / "业务理解器（研报和纪要放在这里）"
+    sub = tmp_path / "BRKD业务理解器（研报和纪要放在这里）"
     sub.mkdir()
     _make_pdf(sub / "a.pdf", "report A")
     _make_pdf(sub / "b.pdf", "report B")

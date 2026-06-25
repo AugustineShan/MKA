@@ -484,6 +484,12 @@ income.financial_expense.other_fin_exp_abs:
 4. **主动覆盖线人话回读:** 把**主动覆盖线**(参数化翻转、逆券商、异常值常态化、查证类拐点这类——历史回测够不着、又故意不照搬券商,下游没有客观闸接得住)单独渲染成一张紧凑人话表,摆给老板扫一眼。这是那条窄缝唯一的真值裁判。
 5. **结构异常 / 歧义未决一律举旗:** 深度超 2、节点 rollup-leaf 不分、某级加总声明对不上、formula 不可执行、.md 写了 hold/fade 分组但 terminal 没承载、to_year 等语义歧义未标——举旗回人/回 skill,绝不静默放行。
 
+**official 门禁:** 只有同时满足以下条件,才允许 `/comp` 或 `/load` 把本次 yaml1 当作 official forecast 输入继续跑 DCF:
+
+- `audit_clean = true`:覆盖双射 ok + B 类完整性 ok + `unaligned`/路径待核为空 + 语义待核为空或已被分析师显式确认 + 主动覆盖回读完成。
+- 若存在 `unaligned`、路径待核、未确认语义待核、B 类缺失、结构异常、主动覆盖未回读,本次 yaml1 最多保存为 reference/draft 产物,**不得**继续跑 official forecast。
+- `/load` 的 `yaml1_load_*.yaml` 同样执行本门禁；若 audit 不干净,只能保留在 `Agent/Load/{load_id}/` 作为 load-vintage 参考,不得运行 `model_load dcf`。
+
 > 报告骨架示例:
 > ```
 > ✅ 覆盖双射:N 条旋钮全部认领,无漏无多
@@ -491,6 +497,7 @@ income.financial_expense.other_fin_exp_abs:
 > ⚠️ unaligned / 路径待核:<逐条列 + 原因>
 > ⚠️ 语义待核(如 to_year):<说明歧义本身 + 你取的自洽解,交人裁定>
 > 📋 主动覆盖回读:<紧凑人话表:逐条 谁定 / 数值 / 为什么>
+> verdict: audit_clean / reference_only
 > ```
 
 你的可信不建立在"你没出错",而建立在**可审计**:双射防漏译/幻觉,B 类完整性防信息丢失,unaligned/待核兜路径与歧义,人话回读兜主动覆盖线,结构异常硬停。

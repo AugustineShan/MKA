@@ -75,8 +75,8 @@ Glob **非递归**检查 `companies\{公司}\Agent\da_schedule.yaml`:
 
 - **先押再问拍板才落盘**:控制器先押(da_facts + 公司判断 → 推荐选型 + 预测值 + 理由 + 来源),再问用户"你认吗"。用户拍板每一项后才写 `Agent\da_schedule.yaml`。**禁止未经拍板就落盘**。
 - **事实↔假设分离**:`da_facts.json`(事实,LLM 扒,只填表不推算,抽不到留 null 不补零)vs `da_schedule.yaml`(假设,商议后落盘)。两层不混。
-- **产物落 `companies\{公司}\Agent\da_schedule.yaml`**(用 `da_schedule_path`)。`enabled: true` 才被 `src.forecast` 消费;`enabled: false` / 文件缺失 / da_roll 异常 → 自动回退轻资产路径,不阻塞现有公司。
-- **落盘后提示用户重跑** `py -m src.forecast --ticker {代码}`:`forecast.py` 的 `_maybe_roll_da_series` 会加载 da_schedule → `roll_da_series` 产 da_series → gpm→ex-dep 覆盖 → 注入 forecast_params → `calc.py` 重资产分支(BS 的 `fix_assets`/`cip` 从 da_series、CF/FCFF 的 capex/da 从 da_series)。`DaAlignError`(base_year ≠ defaults.base_period)硬抛,其余异常 warning 回退轻资产。
+- **产物落 `companies\{公司}\Agent\da_schedule.yaml`**(用 `da_schedule_path`)。`enabled: true` 才被 `src.forecast` 消费；一旦 `enabled: true`，`da_roll` 失败、未执行或被忽略都必须阻断 official forecast，**不得自动回退轻资产路径**。只有 `enabled: false` 或文件缺失时，才允许使用轻资产默认路径。若分析师明确要临时忽略 DA，只能输出/运行 `reference·DA未生效`，不得覆盖正式 DCF。
+- **落盘后提示用户重跑** `py -m src.forecast --ticker {代码}`:`forecast.py` 的 `_maybe_roll_da_series` 会加载 da_schedule → `roll_da_series` 产 da_series → gpm→ex-dep 覆盖 → 注入 forecast_params → `calc.py` 重资产分支(BS 的 `fix_assets`/`cip` 从 da_series、CF/FCFF 的 capex/da 从 da_series)。`DaAlignError`(base_year ≠ defaults.base_period)硬抛；其他 `da_roll` 异常在 `enabled: true` 下同样阻断 official forecast，只能出 `reference·DA未生效`，不能 warning 后静默回退轻资产。
 - **通用性第一原则**:不写死任何公司特征(行名/业务线数量/年限/单位/拆分层级)。见 `CLAUDE.md` 开发总原则。换任何重资产公司只要年报披露了 DA 附注就能跑。
 - **不读 PDF**:只信任已经翻译进 `.md` 的年报内容(平移 /comp、/ka 纪律)。
 - **三类摊销(无形/使用权/长摊)不进 da_schedule**,仍由 yaml1/defaults 管。`da_roll` 只产 `ppe_depreciation`(PP&E 折旧),总 DA 装配在 `calc.py` 一处显式做。

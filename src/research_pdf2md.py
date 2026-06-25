@@ -1,7 +1,7 @@
 """research_pdf2md.py — 把研报/纪要 PDF 转成 Markdown 供 /brkd 读取。
 
 /brkd 业务预理解器"不读 PDF"——只读已转成文本的 .md。外部研报几乎都是 PDF，
-本模块是 /brkd 的前置转换器：扫 `active_vore/业务理解器（研报和纪要放在这里）/`，
+本模块是 /brkd 的前置转换器：扫 `Skills素材包/BRKD业务理解器（研报和纪要放在这里）/`，
 把每个 .pdf 用 PyMuPDF 抽成同名 .md（UTF-8 + frontmatter 标来源），幂等跳过。
 
 设计:
@@ -70,7 +70,7 @@ def main() -> int:
         description="把研报/纪要 PDF 转成 Markdown（供 /brkd 读取）"
     )
     parser.add_argument("--folder", type=Path, help="直接指定含 PDF 的文件夹")
-    parser.add_argument("--ticker", type=str, help="按公司定位 active_vore/业务理解器 子文件夹")
+    parser.add_argument("--ticker", type=str, help="按公司定位 Skills素材包/BRKD业务理解器 子文件夹")
     parser.add_argument("--force", action="store_true", help="强制重新抽取（覆盖已有 .md）")
     args = parser.parse_args()
 

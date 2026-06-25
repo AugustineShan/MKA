@@ -307,6 +307,81 @@ def parse_report(item: dict, allowed_kinds: set[str]) -> Report | None:
     return None
 
 
+# 兜底 kind 识别：按优先级顺序首个命中即定 kind。
+# 顺序很关键——"半年度报告"含子串"年度报告"、"第一季度报告"含"季度"，
+# 必须把更具体的 h1/q1/q3 排在 annual 之前，否则半年报会被误判成年报。
+# 仅由 collect_reports 在 _looks_like_periodic_report 为真时调用（前置闸门），
+# 配合 EXCLUDED_TITLE_KEYWORDS 前置排除，双重防误判。
+LENIENT_KIND_PRIORITY: tuple[tuple[str, str], ...] = (
+    ("半年度", "h1"),
+    ("半年报", "h1"),
+    ("中报", "h1"),
+    ("第一季度", "q1"),
+    ("一季度", "q1"),
+    ("一季报", "q1"),
+    ("第三季度", "q3"),
+    ("三季度", "q3"),
+    ("三季报", "q3"),
+    ("年度报告", "annual"),
+    ("年报", "annual"),
+    ("年度", "annual"),
+)
+
+_YEAR_RE = re.compile(r"(?<!\d)\d{4}(?!\d)")
+
+
+def parse_report_lenient(item: dict, allowed_kinds: set[str]) -> Report | None:
+    """兜底解析：strict parse_report 漏掉、但形似定期报告本体的标题。
+
+    与 strict 的区别是不强制 ``年+{stem}{版本}$`` 严格尾锚定，而是：
+    (1) EXCLUDED_TITLE_KEYWORDS 前置排除非正文（同 strict）；
+    (2) 抽第一个 4 位年份；
+    (3) 按 LENIENT_KIND_PRIORITY 优先级首匹配 kind；
+    (4) 版本尾缀扫全文判 is_revision（不强制尾部）。
+    仍需 adjunctUrl + announcementId。collect_reports 仅在 strict 未中且
+    _looks_like_periodic_report 为真时调用本函数。
+    """
+    raw_title = clean_title(item.get("announcementTitle"))
+    if not raw_title:
+        return None
+    if any(kw in raw_title for kw in EXCLUDED_TITLE_KEYWORDS):
+        return None
+
+    year_match = _YEAR_RE.search(raw_title)
+    if not year_match:
+        return None
+    year = int(year_match.group(0))
+
+    kind: str | None = None
+    for kw, candidate_kind in LENIENT_KIND_PRIORITY:
+        if kw in raw_title:
+            kind = candidate_kind
+            break
+    # 先从标题确定 kind，再校验是否在本次 allowed_kinds 内——避免 allowed 只含
+    # annual 时，"半年度报告"（含子串"年度报告"）fall-through 被误判成 annual。
+    if kind is None or kind not in allowed_kinds:
+        return None
+
+    adjunct_url = item.get("adjunctUrl") or ""
+    ann_id = str(item.get("announcementId") or "")
+    if not adjunct_url or not ann_id:
+        return None
+
+    ann_time = int(item.get("announcementTime") or 0)
+    is_revision = any(v in raw_title for v in REVISION_VERSIONS)
+
+    return Report(
+        year=year,
+        kind=kind,
+        is_revision=is_revision,
+        ann_date=epoch_ms_to_ann_date(ann_time) if ann_time else "",
+        ann_id=ann_id,
+        title=raw_title,
+        pdf_url=adjunct_to_url(adjunct_url),
+        adjunct_size_kb=item.get("adjunctSize"),
+    )
+
+
 def _fetch_category_items(
     category: str,
     company: CompanyInfo,
@@ -392,7 +467,15 @@ def collect_reports(
             if report is None:
                 title = clean_title(item.get("announcementTitle") or "")
                 if _looks_like_periodic_report(title):
-                    unmatched_titles.append(title)
+                    # strict 没中但形似定期报告 → 走 lenient 兜底，争取不漏下载
+                    report = parse_report_lenient(item, allowed_kinds)
+                    if report is not None:
+                        print(
+                            f"lenient matched {report.year} {report.kind}: {title}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        unmatched_titles.append(title)
                 continue
 
             cat_matched += 1
@@ -527,6 +610,39 @@ def render_markdown(
     return True
 
 
+def _fetch_pdf_with_retry(
+    url: str,
+    *,
+    timeout: float,
+    session: requests.Session,
+    max_retries: int = 3,
+) -> bytes:
+    """下载 PDF 二进制，对瞬态错误退避重试。
+
+    可重试：Timeout / ConnectionError / HTTP 5xx（服务端瞬态）。
+    不可重试：HTTP 4xx（含 404/403 鉴权）——直接抛，不浪费重试。
+    退避 1s/3s/9s + 抖动，避免 cninfo 侧 thundering herd。
+    """
+    backoff = 1.0
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fetch_pdf_bytes(url, timeout=timeout, session=session)
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            # 5xx 才重试；4xx（含 404/403）不可重试
+            if status is None or status < 500:
+                raise
+            last_exc = exc
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_exc = exc
+        if attempt < max_retries:
+            time.sleep(random.uniform(backoff, backoff * 1.5))
+            backoff *= 3
+    assert last_exc is not None
+    raise last_exc
+
+
 def _download_single_report(
     report: Report,
     company: CompanyInfo,
@@ -535,6 +651,7 @@ def _download_single_report(
     timeout: float,
     generate_markdown: bool,
     force_markdown: bool,
+    h1_markdown_years: set[int] | None = None,
     min_interval: float = 1.0,
     max_interval: float = 2.0,
 ) -> tuple[int, int, int, int]:
@@ -568,14 +685,22 @@ def _download_single_report(
     else:
         print(f"down  pdf {report.year} {kind_label} {'修订版' if report.is_revision else '原始版'} {report.title}")
         sleep_between_requests(min_interval, max_interval)
-        data = fetch_pdf_bytes(report.pdf_url, timeout=timeout, session=worker_session)
+        data = _fetch_pdf_with_retry(report.pdf_url, timeout=timeout, session=worker_session)
         pdf_path.write_bytes(data)
         downloaded += 1
         print(f"save  pdf {pdf_path}")
 
-    # Markdown 抽取只对年报有意义：reconciler / financial_expense 只读年报 md，
-    # 季报 md 零消费者，PyMuPDF 抽取是纯 CPU 浪费。季报只保留 PDF 下载。
-    if generate_markdown and report.kind == "annual":
+    # Markdown 抽取：年报全量（reconciler / financial_expense 消费）；
+    # 半年报仅最近 N 年（人工备查，h1_markdown_years 为允许年份集，None=全量）；
+    # Q1/Q3 零消费者，只保留 PDF 下载，省 PyMuPDF CPU。
+    render_md = generate_markdown and (
+        report.kind == "annual"
+        or (
+            report.kind == "h1"
+            and (h1_markdown_years is None or report.year in h1_markdown_years)
+        )
+    )
+    if render_md:
         if render_markdown(
             company=company,
             report=report,
@@ -603,6 +728,7 @@ def download_reports(
     force_markdown: bool,
     max_workers: int = 6,
     quarterly_target_dir: Path | None = None,
+    h1_markdown_years: set[int] | None = None,
 ) -> tuple[int, int, int, int]:
     """Download reports concurrently with controlled parallelism.
 
@@ -623,6 +749,7 @@ def download_reports(
     total_skipped_pdf = 0
     total_written_md = 0
     total_skipped_md = 0
+    failures: list[tuple[int, str, str]] = []
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {}
@@ -640,6 +767,7 @@ def download_reports(
                 timeout=timeout,
                 generate_markdown=generate_markdown,
                 force_markdown=force_markdown,
+                h1_markdown_years=h1_markdown_years,
                 min_interval=min_interval,
                 max_interval=max_interval,
             )] = report
@@ -663,7 +791,17 @@ def download_reports(
                     f"err   {report.year} {kind_label} download failed: {exc}",
                     file=sys.stderr,
                 )
+                failures.append((report.year, kind_label, report.title))
                 total_skipped_pdf += 1
+
+    if failures:
+        print(
+            f"warn  以下 {len(failures)} 份 PDF 下载失败，重跑即可补"
+            "（幂等，已成功的会跳过）：",
+            file=sys.stderr,
+        )
+        for year, kind_label, title in failures:
+            print(f"  {year} {kind_label}: {title}", file=sys.stderr)
 
     return total_downloaded, total_skipped_pdf, total_written_md, total_skipped_md
 
@@ -692,6 +830,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-markdown", action="store_true", help="download PDFs only, without Markdown extraction")
     parser.add_argument("--force-markdown", action="store_true", help="regenerate Markdown even when .md exists")
+    parser.add_argument(
+        "--h1-md-recent-years",
+        type=int,
+        default=3,
+        help="only extract Markdown for the N most recent half-year reports (default: 3, 人工备查; "
+        "0 = all). Annual reports always extract full Markdown; Q1/Q3 never extract Markdown.",
+    )
     parser.add_argument(
         "--max-workers",
         type=int,
@@ -751,6 +896,16 @@ def main(argv: list[str] | None = None) -> int:
     if dropped:
         print(f"filter: dropped {dropped} report(s) before {min_year} (2010 闸门)")
 
+    # 半年报 Markdown 仅抽最近 N 年（人工备查，省 PyMuPDF CPU）；年报全量。
+    # 0 或负数 = 不限。取 collected h1 报告中年份最大的 N 个。
+    if args.h1_md_recent_years and args.h1_md_recent_years > 0:
+        h1_years_sorted = sorted(
+            {r.year for r in reports if r.kind == "h1"}, reverse=True
+        )
+        h1_md_years: set[int] | None = set(h1_years_sorted[: args.h1_md_recent_years])
+    else:
+        h1_md_years = None
+
     # Determine target dir based on primary kind
     company_dir_override = args.company_dir
     if args.quarterly:
@@ -797,6 +952,7 @@ def main(argv: list[str] | None = None) -> int:
             force_markdown=args.force_markdown,
             max_workers=args.max_workers,
             quarterly_target_dir=quarterly_dir,
+            h1_markdown_years=h1_md_years,
         )
 
         print(
@@ -817,6 +973,7 @@ def main(argv: list[str] | None = None) -> int:
             generate_markdown=not args.no_markdown,
             force_markdown=args.force_markdown,
             max_workers=args.max_workers,
+            h1_markdown_years=h1_md_years,
         )
         print(
             "done: "

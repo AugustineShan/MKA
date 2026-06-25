@@ -33,7 +33,7 @@ TuShare Pro API
 
 **边界**：仅处理 A 股一般工商业（comp_type=1）财报数据，不覆盖金融企业、港股美股或行情 K 线。`defaults.yaml` 是唯一 YAML2，表示“什么都不变会怎样”的机器平推底座；`yaml1` 是稀疏判断覆盖层，`calc.py` 永远看不到 yaml1，只吃清洗后的标准参数。
 
-**建模三站管线**：取数流水线之外，建模有三个串行 skill 站——`/brkd`（discernment，读懂）→ `/ka`（fidelity，记全）→ `/comp`（翻译，编译为 yaml1）。`/brkd` 读 `active_vore/业务理解器（研报和纪要放在这里）/` 下的研报和纪要，产出 `Agent业务讨论.md`（公司根目录），作为 `/ka` 生成核心假设的业务预理解参考。`/ka` 已更新为消费 `Agent业务讨论.md`，并从 `active_vore/核心假设生成（模型放在这里）/` 读取外部模型。
+**建模技能管线**：取数流水线之外，业务理解层由多个 skill 协同，而不是一个 Agent 通吃。`/load` 只读 `Skills素材包/LOAD外部EXCEL模型理解器（一次最多一个）/` 的唯一 Excel，产出 `Agent/Load/{load_id}/{原Excel文件名}_核心假设.md`；`/brkd` 只读 `Skills素材包/BRKD业务理解器（研报和纪要放在这里）/markdown存储区/`，产出 `Agent业务讨论.md`；`/ka` 裁决最高权重材料、BRKD、LOAD 和 `/init` 校验层，生成正式 `核心假设.md`；`/comp` 忠实翻译为 `yaml1` 并跑 forecast。已有正式稿的调整交给 `/adj` 或 `/annual-update`。
 
 ---
 
@@ -171,57 +171,22 @@ python -m src.init 000333.SZ 600519.SH   # 批量
 python -m src.init 美的集团 --force  # 全量重拉并重跑财务费用分析
 ```
 
-### 3.0a webka.py（旧版网页端核心假设打包器）
+### 3.0a webka.py（已废弃）
 
-`webka.py` 是旧版 `/ka` 网页端前置打包器，用于把生成 `核心假设.md` 所需的源文件一键汇总到 `companies/{公司}/WEBCLAUDE/核心假设部分/`，方便用户在 Claude.ai 网页端拖拽上传。
+`/webka` 已从 active skills 中移除，旧入口说明留档于：
 
-当前推荐的网页端重活入口是 `webload.py`：旧 Excel 模型 vintage 保存需要先锁时间沙箱，再在网页端完成模型理解 overview 和分段确认。`webka.py` 仅保留为普通 `/ka` 网页打包兼容入口。
-
-与 `/ka` 的区别：
-- `/ka` 在 Claude Code 本地执行，直接读取文件系统并调用核心假设生成修改器 skill。
-- `/webka` 只负责**复制源文件和执行 skill 到固定文件夹**，本身不做判断、不生成核心假设；生成工作交给网页端完成。
-
-**复制清单**（按阅读顺序加序号前缀）：
-
-| 序号文件 | 来源 | 是否必须 |
-|---|---|---|
-| `00_公司判断和最新观点.md` | `companies/{公司}/公司判断和最新观点.md` | **必须**，不存在则报错 |
-| `01_核心假设_现有底稿.md` | `companies/{公司}/*核心假设*.md` 最新一份 | 可选，init 模式无则跳过 |
-| `02_活跃素材_xxx` | `active_vore/` 中时间最新文件 | 可选 |
-| `03_最新年报_202X_年度报告.md` | `公告/年报/` 最新一年年报 Markdown | 可选，**永远不打包 PDF** |
-| `04_核心假设生成修改器_skill_vN.md` | `D:\MKA\skills\` 最新版 | 可选，网页端执行时需要 |
-
-**关键纪律**：
-- 每次执行先清空 `WEBCLAUDE/核心假设部分/` 再复制，防止过时文件污染。
-- 所有 skill（包括 `/ka`、`/webka` 及核心假设生成修改器）**均不读取 PDF**；年报只打包已生成的 Markdown。
-- 若仅有 PDF，报告会提示用户先运行 `python -m src.report_downloader --ticker ... --force-markdown` 生成年报 Markdown。
-
-**退出码语义**：
-
-| 码 | 含义 |
-|----|------|
-| 0 | 成功 |
-| 2 | 输入无法解析为唯一公司目录 |
-| 3 | 缺少 `公司判断和最新观点.md` |
-| 1 | 其他 IO 异常 |
-
-**CLI**：
-```bash
-python -m src.webka 新乳业
-python -m src.webka 002946
-python -m src.webka 002946.SZ
+```text
+D:\MKA\deprecatedlogs\webka\SKILL.md
 ```
 
-配套 skill 文件同时部署于：
-- `D:\MKA\.claude\skills\webka\SKILL.md`
-- `C:\Users\Sheld\.claude\skills\webka\SKILL.md`
+当前网页端重活只保留 `/webload`：旧 Excel 模型 vintage 保存必须先锁时间沙箱，再在网页端完成模型理解 overview 和分段确认。普通 `/ka` 现在是本地全量裁决器，直接读取最高权重材料、BRKD、LOAD 和 `/init` 校验层，不再提供网页端打包入口。
 
 ### 3.0b webload.py（网页端 load vintage 打包器）
 
 `webload.py` 是 `/load` 的网页端打包器。它先调用 `src.model_load.prepare` 创建 `Agent/Load/{load_id}/`，锁定外部 Excel 模型的历史末年、预测起点和显式预测期；然后把网页端执行 `/load` 需要的安全材料复制到 `companies/{公司}/WEBCLAUDE/模型装载部分/`。
 
 与 `/load` 的区别：
-- `/load` 是真正的模型装载流程，按 `/ka` 的会议纪律先 overview、再分段确认、最后写 `核心假设_load.md`。
+- `/load` 是真正的模型装载流程，按 `/ka` 的会议纪律先 overview、再分段确认、最后写 `{原Excel文件名}_核心假设.md`。
 - `/webload` 只负责 prepare + 打包，不替用户理解模型、不生成核心假设、不编译 yaml1、不跑 DCF。
 
 **复制清单**：
@@ -233,7 +198,7 @@ python -m src.webka 002946.SZ
 | `02_model_boundary.md` | `Agent/Load/{load_id}/model_boundary.md` | 人读时间边界 |
 | `03_model_boundary.json` | `Agent/Load/{load_id}/model_boundary.json` | 机器可读时间边界 |
 | `04_forbidden_materials.md` | `Agent/Load/{load_id}/forbidden_materials.md` | 禁读清单，只可看清单 |
-| `05_核心假设_load_脚手架.md` | `Agent/Load/{load_id}/核心假设_load.md` | 网页端补写目标 |
+| `05_{原Excel文件名}_核心假设_脚手架.md` | `Agent/Load/{load_id}/{原Excel文件名}_核心假设.md` | 网页端补写目标 |
 | `06_核心假设生成修改器_skill_vN.md` | `D:\MKA\skills\` 最新版 | 继承 `/ka` 会议流程 |
 | `07_模型装载器_skill_vN.md` | `D:\MKA\skills\` 最新版 | load 时间沙箱覆盖层 |
 | `08_load_manifest.json` | `Agent/Load/{load_id}/load_manifest.json` | 沙箱路径和材料清单 |
@@ -243,8 +208,8 @@ python -m src.webka 002946.SZ
 **关键纪律**：
 - `model_load.prepare` 报时间轴冲突则停止，不打包。
 - 网页端不得读取 `forbidden_materials.md` 中列出的正文材料。
-- 网页端用户确认 overview 前，不补完 `核心假设_load.md`。
-- 网页端产出的 `核心假设_load.md` 放回 `Agent/Load/{load_id}/` 后，本地继续编译 `yaml1_load_*.yaml` 并运行 `py -m src.model_load dcf`。
+- 网页端用户确认 overview 前，不补完 `{原Excel文件名}_核心假设.md`。
+- 网页端产出的 `{原Excel文件名}_核心假设.md` 放回 `Agent/Load/{load_id}/` 后，本地继续编译 `yaml1_load_*.yaml` 并运行 `py -m src.model_load dcf`。
 
 **CLI**：
 ```bash
@@ -450,7 +415,12 @@ py -m src.calc --forecast-params companies/新乳业_002946/Agent/.modelking/for
 companies/{公司名}_{代码}/
 ├── 公司判断和最新观点.md
 ├── *核心假设*.md
-├── active_vore/
+├── Skills素材包/
+│   ├── 最高权重材料-放Agent最应对齐的材料/
+│   ├── LOAD外部EXCEL模型理解器（一次最多一个）/
+│   ├── BRKD业务理解器（研报和纪要放在这里）/
+│   └── ADJ增量信息（用来改模型的边际信息）/
+├── active_vore/                 # 遗留目录；新技能入口不再使用
 ├── WEBCLAUDE/
 ├── 公告/
 │   ├── 年报/
@@ -508,7 +478,7 @@ companies/{公司名}_{代码}/
 
 ### 3.5 本地 Web 工作台（FastAPI + React）
 
-本地 Web 工作台把公司文件夹变成可浏览的投研模型页。它不是另一个建模引擎，只是 `companies/{公司名}_{代码}/` 的本地 UI：读 `核心假设.md`、`yaml1*.yaml`、`Agent/forecast/`、`active_vore/` 等文件，并通过 `src.forecast` 触发 DCF 重算。
+本地 Web 工作台把公司文件夹变成可浏览的投研模型页。它不是另一个建模引擎，只是 `companies/{公司名}_{代码}/` 的本地 UI：读 `核心假设.md`、`yaml1*.yaml`、`Agent/forecast/`、`Skills素材包/` 等文件，并通过 `src.forecast` 触发 DCF 重算。
 
 | 组件 | 职责 |
 |------|------|
@@ -1084,7 +1054,7 @@ MKA/
 ├── src/                           # 核心 Python 源码
 │   ├── __init__.py                # 使 src 成为 package
 │   ├── init.py                    # 一键编排入口
-│   ├── webka.py                   # 旧版网页端核心假设打包器：汇总源文件到 WEBCLAUDE/核心假设部分/
+│   ├── webka.py                   # 已废弃的旧版网页端核心假设打包器；active skill 已移至 deprecatedlogs/webka/
 │   ├── webload.py                 # 网页端 load 打包器：prepare 时间沙箱并汇总到 WEBCLAUDE/模型装载部分/
 │   ├── data_fetcher.py            # 阶段①：TuShare 拉取 + 标准化 + 入库
 │   ├── clean.py                   # 阶段②：EAV→宽表 + 配平校验 + clean 表写入（字段分类/resolve 从 field_registry import）
@@ -1117,9 +1087,12 @@ MKA/
 │       ├── 公司判断和最新观点.md
 │       ├── Agent业务讨论.md       # /brkd 产出：业务预理解参考，/ka 消费
 │       ├── *核心假设*.md
-│       ├── active_vore/           # 活跃收集，建模材料入口
-│       │   ├── 核心假设生成（模型放在这里）/  # /ka 读外部模型
-│       │   └── 业务理解器（研报和纪要放在这里）/ # /brkd 读研报/纪要
+│       ├── Skills素材包/          # 建模材料固定入口
+│       │   ├── 最高权重材料-放Agent最应对齐的材料/
+│       │   ├── LOAD外部EXCEL模型理解器（一次最多一个）/
+│       │   ├── BRKD业务理解器（研报和纪要放在这里）/
+│       │   └── ADJ增量信息（用来改模型的边际信息）/
+│       ├── active_vore/           # 遗留目录；新技能入口不再使用
 │       ├── WEBCLAUDE/             # 高频打包输出，供分析师粘贴到 Claude
 │       ├── 公告/
 │       │   ├── 年报/              # 巨潮资讯网年度报告 PDF + Markdown（扁平目录）
@@ -1189,6 +1162,7 @@ MKA/
 | TuShare 接入 | 官方源 `api.waditu.com/dataapi` | raw_tushare 只接受官方源返回 |
 | 跨端点消歧 | `endpoint.field` 前缀 | credit_impa_loss 在 income/cashflow 中值不同 |
 | cninfo 接入 | vendored `rollysys/use_cninfo` | 直接复用成熟的 `hisAnnouncement/query`、orgId、PDF 下载封装，避免重复维护接口细节 |
+| NULL vs 0 provenance | `null_fields_by_period`（`wide.attrs`，fillna 前捕获 income 端 NULL 字段） | `fillna(0.0)` 把 TuShare NULL 抹成 0，validator 无法区分"数据源缺口"与"公司真报 0"。provenance 只喂 validator（compute 路径仍吃 fillna 后数字），让 IS 1.2 的 operating_adjustment NULL 缺口硬失败进 reconciler，而非被 `missing_optional` 静默放行。reconciler `collect_failures` 同步取此 provenance 传 `check_is`，`llm_override_suggestions` 加联合闭合处理多字段联合缺失 |
 | 年报文件命名 | `{年份}_年度报告.pdf/.md` / `{年份}_年度报告_修订版.pdf/.md` | 同年份原始版与修订版可并存，文件已存在时跳过 |
 
 ---

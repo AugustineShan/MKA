@@ -1,54 +1,163 @@
 ---
 name: brkd
-description: 启动业务预理解器。读 active_vore/业务理解器（研报和纪要放在这里）/ 下的大量研报/纪要，消化成 Agent业务讨论.md，作为 /ka 的业务预理解参考。当用户说 "brkd 新乳业"、"业务预理解 某公司"、"拆一下某公司业务" 时使用。
+description: 启动 BRKD 业务理解器。第一步用 Python 幂等地把公司 Skills素材包/BRKD业务理解器（研报和纪要放在这里）里的源文件转换到 markdown存储区；第二步让 AI 只读 markdown 存储区，并结合 /init 标准财务事实与年报按需查证，生成贴近 /ka 和 /comp 源语言的 Agent业务讨论.md。纪律和格式对齐旧 KA v19，功能不替 KA 拍板。
 argument-hint: [公司名或代码，如 新乳业 / 002946]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
 
-# /brkd — 业务预理解启动器
+# /brkd - 业务理解器启动器
 
-把 `active_vore/业务理解器（研报和纪要放在这里）/` 下的一大堆研报/纪要消化成一份 `Agent业务讨论.md`，作为 `/ka` 开会时的"业务预理解"参考。
+`/brkd` 分两步：
 
-## 管线位置（三站三种认知模式）
-
-```
-研报/纪要 → /brkd → Agent业务讨论.md → /ka → 核心假设.md → /comp → yaml1
-            读懂        记全              译准
-         discernment   fidelity         翻译
+```text
+Step 1 deterministic: 原始文件 -> markdown存储区
+Step 2 AI: markdown存储区 + /init + 年报按需查证 -> Agent业务讨论.md
 ```
 
-本 skill 是最前站，美德 = **discernment（鉴别）**，不是完备。怕的是被海量、有立场、互相抄的研报带偏。
+`/brkd` 的产物不是文献综述，而是 `/ka` 可以接手、`/comp` 源语言也能理解的业务假设草稿。它在纪律和格式上对齐旧 v19，但功能上不替 `/ka` 生成正式核心假设。
 
-## 执行顺序
+## 0. 共享真源
 
-1. **解析公司目录**：接受完整 ticker / 裸代码 / 中文公司名（同 /ka 第一动作：精确匹配 `companies\{参数}` → 代码 `companies\*_{参数}` → 公司名 `companies\{参数}_*` → 多候选问用户 → 未命中问用户）。
-2. **读定调**：`companies\{公司}\公司判断和最新观点.md`——**只当背景锚点读，不挂框架、不覆写**。若不存在 → 报错停止（缺定调材料，和 /ka 同要求）。
-3. **PDF→MD 前置转换**：研报几乎都是 PDF，本 skill 不读 PDF。先跑 `py -m src.research_pdf2md --ticker {ticker}`（或 `--folder <业务理解器子文件夹路径>`），把 `active_vore\业务理解器（研报和纪要放在这里）\` 下所有 `.pdf` 抽成同名 `.md`（PyMuPDF，幂等跳过已转的；`--force` 重抽）。转换后再读 `.md`。`.doc/.docx` 纪要暂不支持自动转换，需手动转成 `.md` 放入。
-4. **读材料**：扫描 `companies\{公司}\active_vore\业务理解器（研报和纪要放在这里）\`，**全读不交互选**（读 `.md`，不读 `.pdf`）。若该文件夹不存在或为空（无 `.md` 也无 `.pdf`）→ 报错停止："业务理解器子文件夹为空，请把研报/纪要放进 `active_vore\业务理解器（研报和纪要放在这里）\` 再跑 /brkd"。
-5. **动态加载最新版业务预理解器 skill**：扫描 `D:\MKA\skills\`，匹配 `业务预理解器_skill_v*.md`，取版本号最大的那份。**必须先加载 skill，再开始讨论**（防注意力涣散）。
-6. **按加载到的 skill 执行分段讨论**：先押再问、拍板才落盘（ka 式）。
-7. **收口**：出 `companies\{公司}\Agent业务讨论.md`（公司根目录，与 `公司判断和最新观点.md` 并列）。
+在 AI 理解阶段之前，必须加载两份共享真源：
 
-## 重要纪律
-
-- **不读 PDF**。第 3 步自动把 PDF 转成 .md（`src.research_pdf2md`，复用年报同款 PyMuPDF）；本 skill 只读已转成文本的（.md/.txt/.doc/.docx/.xls/.xlsx/.xlsm），不直接读 .pdf。
-- **碰旋钮给建议值，但不拍板**：建议值进 Agent业务讨论.md，ka 会议老板拍板。brief 分析师，不 replace 分析师观点。
-- **范围只收入分线**：费用/below-OP/税/中期/BS 由 ka 处理，本 skill 不碰。
-- **研报是线索不是权威**：每条数据/判断带四级可信度标注，ka 搬时用年报/clean_annual 校验。
-- 产物按 ka 消费方式组织（按业务线排），不写成文献综述。
-
-## CLI
-
+```text
+D:\MKA\skills\核心纪律_skill_v*.md
+D:\MKA\skills\核心假设源语言_skill_v*.md
 ```
+
+`/brkd` 完整继承核心纪律 A1/A2/A3/A7；A5/A6 只到草稿态；A4 是弱形态，产物整体保持 draft。输出必须符合核心假设源语言 B 的半成品形态。
+
+## 1. 解析公司目录
+
+从 `$ARGUMENTS` 定位 `D:\MKA\companies\{公司}`：
+
+1. 精确匹配 `companies\{参数}`。
+2. 代码匹配 `companies\*_{代码}`。
+3. 公司名匹配 `companies\{公司名}_*`。
+4. 命中多个时列候选并询问用户。
+5. 未命中时报错停止。
+
+## 2. 确定 BRKD 素材入口
+
+只从固定素材包读取源文件：
+
+```text
+companies\{公司}\Skills素材包\BRKD业务理解器（研报和纪要放在这里）\
+```
+
+该目录允许用户放 PDF、Markdown、TXT、CSV、DOCX、Excel 等材料。AI 不直接读取这些源文件，必须先 deterministic markdown 化。
+
+## 3. 先跑 deterministic markdown prepare
+
+AI 阅读材料之前，必须先运行：
+
+```bash
+py -m src.brkd_prepare "{公司}"
+```
+
+脚本会：
+
+1. 扫描 BRKD 素材包顶层源文件。
+2. 创建或复用：
+
+```text
+companies\{公司}\Skills素材包\BRKD业务理解器（研报和纪要放在这里）\markdown存储区\
+```
+
+3. 幂等转换：
+   - `.pdf` -> PyMuPDF plain-text markdown
+   - `.md/.markdown/.txt/.csv/.tsv` -> 带来源 frontmatter 的 markdown
+   - `.docx` -> Word XML text markdown
+   - `.xlsx/.xlsm` -> workbook sheets markdown 表
+   - `.doc/.xls` -> 生成“不支持确定性转换”的 markdown 占位，提示用户另存
+4. 写入：
+
+```text
+markdown存储区\brkd_prepare_manifest.json
+```
+
+如果脚本失败，停止并报告 stdout/stderr，不进入 AI 阅读阶段。
+
+## 4. 先加载业务预理解器 skill
+
+prepare 成功后，扫描并读取最新版本：
+
+```text
+D:\MKA\skills\业务预理解器_skill_v*.md
+```
+
+必须先加载 skill，再开始 AI 理解。读取顺序、年报使用方式、输出语法和草稿态纪律都由该 skill 约束。
+
+## 5. 判断 brkd 模式
+
+读取 `markdown存储区\` 里的 `.md` 文件和 manifest：
+
+- 若有成功转换或已有 markdown 材料 -> 外部材料增强模式：全读 markdown 存储区，不交互挑选。
+- 若源素材为空、markdown 存储区也无有效材料 -> 年报 + 历史财务模式：不报错；读取年报和 `/init` 历史事实包，产出更保守的 `Agent业务讨论.md`，明确标注“无外部研报/纪要”。
+- 若 manifest 中存在 `unsupported` 或 `error`，不得静默忽略；必须进入 `Agent业务讨论.md` 的缺口区。
+
+## 6. 读取定调、/init 与年报查证材料
+
+1. 读取 `companies\{公司}\公司判断和最新观点.md`。它是背景锚点，不覆盖、不另起 thesis。若不存在，停止。
+2. 读取 `/init` 历史事实包：
+   - 优先 `Agent/core_metrics_overview.md/json/csv`
+   - 若没有，读 `Agent/data.db` 的 `clean_annual`
+   - 若 `data.db` 或 `clean_annual` 不可用，停止并提示先跑 `/init`
+3. 年报是 X 光片，不是主材料：
+   - 外部材料增强模式下，只在需要查证分部、成本/毛利、费用明细、税收优惠、非经常性损益、减值、财务费用附注时查对应位置。
+   - 年报 + 历史财务模式下，可以用最新年报建立最小业务拆分，但必须明确保守性。
+
+研报/纪要只提供业务线索、共识分歧、管理层语言和争议；headline 财务事实以 `/init` clean 后的历史事实和年报为准。
+
+## 7. 生成 Agent业务讨论.md
+
+按业务预理解器 skill 执行。产物写到：
+
+```text
+companies\{公司}\Agent业务讨论.md
+```
+
+输出要求：
+
+- 结构贴近 `/ka` 和 `/comp` 的核心假设源语言。
+- 收入业务线尽量写成“上挂科目 + compiler family + 历史事实 + 建议旋钮 + 三件套 + 待 /ka 拍板”。
+- 费用、毛利、below-OP、税率也按 `/comp` 可理解的标准语义组织。
+- 所有建议值必须标注 `draft / 待 /ka 拍板`。
+- 不锁定最终时间轴，只记录建议 horizon、已知拐点和材料引用年份，交给 `/ka` 裁决。
+- 末尾必须有 `knobs` 草稿块；没有明确建议值时留空并说明原因。
+
+## 8. `/brkd` 独有纪律
+
+共享纪律见 `核心纪律_skill_v*.md`，源语言语法见 `核心假设源语言_skill_v*.md`。`/brkd` 本地只补这些独有条款：
+
+- 年报是 X 光片：外部材料存在时，不把年报升格为常规主材料；只按需查证。
+- 不替 `/ka` 拍板：不写正式核心假设，不写当前最终旋钮，不落正式 forecast。
+- 不编造量价原子：年报、研报、纪要都不支持时，不硬造销量、价格、门店、吨价、ARPU。
+- 研报线索 vs clean_annual 事实必须分级；headline 财务事实以 `/init` 或年报为准。
+- 不锁最终时间轴，只交建议 horizon、材料年份和拐点线索。
+- 所有预测建议标 `draft / 待 /ka 拍板`。
+- AI 只读 markdown 存储区，不碰生料。
+- prepare manifest 的 `unsupported/error` 不静默忽略。
+- 不生成 YAML1、DCF 或完整 `model_assumption_schema.json`。
+
+## 9. CLI
+
+```bash
 /brkd 新乳业
 /brkd 002946
 /brkd 002946.SZ
 ```
 
-## 退出码
+底层 prepare 可单独运行：
 
-- `0`：Agent业务讨论.md 生成成功（公司根目录）
-- `2`：输入无法解析为唯一公司目录
-- `3`：缺 `公司判断和最新观点.md`，或 `业务理解器（研报和纪要放在这里）\` 子文件夹不存在/为空
-- `1`：其他 IO 异常
+```bash
+py -m src.brkd_prepare 新乳业
+py -m src.brkd_prepare 新乳业 --force
 ```
+
+## 10. 退出码
+
+- `0`：`Agent业务讨论.md` 生成成功。
+- `2`：输入无法解析为唯一公司目录，或 `src.brkd_prepare` 失败。
+- `3`：缺 `公司判断和最新观点.md`，或 `/init` 历史事实不可用，或在无外部材料时缺最新年报 Markdown。
+- `1`：其他 IO 异常。

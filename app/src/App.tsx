@@ -46,7 +46,7 @@ const tabs: Array<{ key: TabKey; label: string }> = [
   { key: "dcf", label: "DCF" },
   { key: "reverse", label: "逆向 DCF" },
   { key: "quarterly", label: "季度展示" },
-  { key: "da", label: "重资产排程" },
+  { key: "da", label: "D&A" },
 ];
 
 async function apiGet<T>(path: string): Promise<T> {

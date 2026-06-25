@@ -346,3 +346,55 @@ def test_llm_propose_fallback_rejects_nonzero_old_value(monkeypatch):
     fields = [a.get("field") for a in adjustments]
     assert "sell_exp" not in fields
     assert adjustments == []
+
+
+def test_llm_propose_fallback_approves_joint_residual_closure(monkeypatch):
+    """IS 1.2 同时缺多个 operating_adjustment（oth_income/credit_impa_loss/
+    asset_disp_income）时，单字段都不闭合残差，但三者合计 = signed_residual。
+    llm_override_suggestions 的联合闭合分支必须返回整组，fallback 据此批准
+    （每字段 old_value=0），让 reconciler 能补 IS operating_adjustment 的
+    TuShare-NULL 缺口。这是新乳业 002946 IS 1.2 的典型形态。"""
+    analysis = {
+        "failure": {
+            "period": "2024",
+            "code": "IS 1.2",
+            "statement": "income",
+            "title": "营业利润",
+            "message": "IS 1.2 2024 营业利润: operate_profit=680.0076 calc=704.7943 residual=24.7867",
+            "residual": 24.7867,  # calc(704.79) > operate_profit(680) → target_lt_calc
+            "target_value": 680.0076,
+            "calc_value": 704.7943,
+            "direction": "target_lt_calc",
+        },
+        "annual_report_context": {
+            "markdown_path": "fake.md",
+            "snippets": [{"text": "13730: 加：其他收益 53,883,758.84\n13753: 信用减值损失 8,567,480.16\n13759: 资产处置收益 -87,237,912.06"}],
+        },
+        "candidate_tushare_fields": [
+            {"field": "oth_income", "description": "其他收益", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "credit_impa_loss", "description": "信用减值损失", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "asset_disp_income", "description": "资产处置收益", "value_million_cny": 0.0, "clean_category": None},
+        ],
+    }
+
+    def fake_call_llm(messages):
+        # 单字段 diff 都大（29.10/16.22/62.45），但 53.88+8.57-87.24 = -24.79 = signed_residual
+        return {
+            "suspected_tushare_issue": True,
+            "confidence": "high",
+            "recommended_action": "add_override",
+            "missing_or_suspicious_items": [
+                {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益", "value_million_cny": 53.8838, "residual_difference_million_cny": 29.0971},
+                {"candidate_tushare_field": "credit_impa_loss", "annual_report_item": "信用减值损失", "value_million_cny": 8.5675, "residual_difference_million_cny": 16.2192},
+                {"candidate_tushare_field": "asset_disp_income", "annual_report_item": "资产处置收益", "value_million_cny": -87.2379, "residual_difference_million_cny": 62.4512},
+            ],
+            "_provider": "glm",
+        }
+
+    monkeypatch.setattr(ar, "call_llm", fake_call_llm)
+    adjustments = ar._llm_propose_fallback("002946.SZ", None, None, [analysis], approve_high_confidence=True)
+
+    fields = {a.get("field") for a in adjustments}
+    assert fields == {"oth_income", "credit_impa_loss", "asset_disp_income"}
+    # 联合闭合 + 每字段 old_value=0 → 全部 approved
+    assert all(a.get("status") == "approved" for a in adjustments)

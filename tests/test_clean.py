@@ -135,6 +135,64 @@ class TestIncomeStatementChecks:
 
         assert errors == []
 
+    def test_missing_optional_excludes_raw_null_fields(self):
+        """null_fields (raw TuShare NULL, captured before fillna(0)) must be
+        excluded from optional-empty — a NULL is a data-source gap, not a
+        reported 0. This is the provenance bit fillna(0) would otherwise erase."""
+        row = {"oth_income": 0.0, "credit_impa_loss": 0.0, "asset_disp_income": 0.0}
+        present = {"oth_income", "credit_impa_loss", "asset_disp_income"}
+        # No null_fields → all present-&-0 fields are optional-empty (legacy behavior)
+        assert set(clean.missing_optional_is_adjustments(row, present)) == {
+            "oth_income", "credit_impa_loss", "asset_disp_income",
+        }
+        # oth_income raw-NULL → excluded; the other two remain optional-empty
+        assert set(clean.missing_optional_is_adjustments(row, present, null_fields={"oth_income"})) == {
+            "credit_impa_loss", "asset_disp_income",
+        }
+        # All raw-NULL → none optional-empty → IS 1.2 will hard-fail (reconciler fires)
+        assert clean.missing_optional_is_adjustments(
+            row, present, null_fields={"oth_income", "credit_impa_loss", "asset_disp_income"}
+        ) == []
+
+    def test_check_is_hard_fails_when_optional_adjustment_is_raw_null(self):
+        """A TuShare-NULL optional adjustment (oth_income truthfully 60 but
+        fillna(0)) must surface as an IS 1.2 hard failure, not be silently
+        swallowed as 'optional-empty'. This gate is what lets the reconciler
+        fire on IS operating_adjustment data-source gaps."""
+        # Official operate_profit (410) reflects the true oth_income=60; calc
+        # sees oth_income=0 → residual 60.
+        row = self._minimal_is_row(operate_profit=410.0)
+        row["oth_income"] = 0.0  # fillna(0) of a raw NULL
+        present = {k for k, v in row.items() if v != 0.0}
+        present.add("oth_income")  # raw had a (NULL) record → field is present
+        errors = clean.check_is(row, present, "2024", null_fields={"oth_income"})
+        assert any("IS 1.2" in e for e in errors)
+
+    def test_check_is_still_allows_reported_zero_optional_adjustment(self):
+        """A reported-0 (non-NULL) optional adjustment still trusts the official
+        subtotal — null_fields must not over-trigger on legitimate zeros. The
+        residual here comes from oth_income being reported 0 while official
+        operate_profit uses a different口径; legacy放行 behavior is preserved."""
+        row = self._minimal_is_row(operate_profit=360.0)  # official differs from calc by 10
+        row["oth_income"] = 0.0  # reported 0 (NOT raw-null)
+        present = {k for k, v in row.items() if v != 0.0}
+        present.add("oth_income")
+        errors = clean.check_is(row, present, "2024", null_fields=set())  # oth_income not in null_fields
+        assert not any("IS 1.2" in e for e in errors)
+
+    def test_check_is_hard_fails_when_null_optional_coexists_with_reported_zero(self):
+        """A reported-0 optional (forex_gain) must not smuggle a coexisting
+        NULL optional (oth_income) through the放行 gate. The NULL gap drives
+        the residual and must hard-fail so the reconciler fires — this is the
+        2019-style edge case (forex_gain reported 0 + oth_income NULL same period)."""
+        row = self._minimal_is_row(operate_profit=410.0)  # residual 60 from oth_income truth=60
+        row["oth_income"] = 0.0   # raw NULL → fillna 0
+        present = {k for k, v in row.items() if v != 0.0}
+        present.update({"oth_income", "forex_gain"})  # both had raw records
+        # only oth_income is NULL; forex_gain is a legit reported 0
+        errors = clean.check_is(row, present, "2024", null_fields={"oth_income"})
+        assert any("IS 1.2" in e for e in errors)
+
     def test_annual_income_subtotal_adaptation_prefers_stable_cost_detail(self):
         row = self._minimal_is_row(total_cogs=760.0)
         wide = pd.DataFrame([row], index=["2024"])

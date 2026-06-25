@@ -51,6 +51,11 @@ REVENUE_RATE_FIELDS = [
 ]
 
 COST_ABS_EXCLUDE = {"oper_cost", *REVENUE_RATE_FIELDS}
+IMPAIRMENT_COST_ABS_FIELDS = {
+    "assets_impair_loss",
+    "credit_impa_loss",
+    "oth_impair_loss_assets",
+}
 
 REVENUE_DRIVER_FIELDS = [
     "notes_receiv",
@@ -167,18 +172,23 @@ def build_defaults(db_path: Path, ticker: str | None = None) -> dict[str, Any]:
     interest_expense = row.get("fin_exp_int_exp", 0.0)
     interest_income = row.get("fin_exp_int_inc", 0.0)
 
-    cost_abs_fields = [
-        field
-        for field, category in IS_FIELD_CATEGORIES.items()
-        if category == "cost_item" and field not in COST_ABS_EXCLUDE | {"fin_exp"}
-    ]
+    cost_abs_fields = sorted(
+        {
+            field
+            for field, category in IS_FIELD_CATEGORIES.items()
+            if category == "cost_item" and field not in COST_ABS_EXCLUDE | {"fin_exp"}
+        }
+        | IMPAIRMENT_COST_ABS_FIELDS
+    )
     revenue_item_fields = [
         field
         for field, category in IS_FIELD_CATEGORIES.items()
         if category == "revenue_item" and field != "revenue"
     ]
     operating_adjustment_fields = [
-        field for field, category in IS_FIELD_CATEGORIES.items() if category == "operating_adjustment"
+        field
+        for field, category in IS_FIELD_CATEGORIES.items()
+        if category == "operating_adjustment" and field not in IMPAIRMENT_COST_ABS_FIELDS
     ]
     below_line_fields = [
         field for field, category in IS_FIELD_CATEGORIES.items() if category == "below_line"

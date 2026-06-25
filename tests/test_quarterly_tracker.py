@@ -466,3 +466,9 @@ def test_read_company_includes_quarterly_view():
     assert response.status_code == 200
     data = response.json()
     assert data["quarterly_view"]["year"] == 2025
+    assert data["rating_report"] == {
+        "data_start_year": 2023,
+        "data_end_year": 2025,
+        "forecast_start_year": 2026,
+        "forecast_end_year": 2028,
+    }

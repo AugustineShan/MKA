@@ -3,120 +3,757 @@
 export type SkillCard = {
   key: string;
   name: string;
-  tag: "主线" | "支线";
+  tag: "数据层" | "主线" | "滚续" | "增强" | "强烈推荐";
+  headline: string;
   when: string;
   command: string;
-  input: string;
-  output: string;
+  reads: string[];
+  writes: string[];
   next: string;
-  discipline: string[];
+  guardrails: string[];
+  mentalModel: string;
+  notFor?: string;
 };
 
-export const pipelineMain: string[] = [
-  "研报/纪要",
-  "/brkd",
-  "Agent业务讨论.md",
-  "/ka",
-  "核心假设.md",
-  "/comp",
-  "yaml1",
-  "DCF",
+export type SkillPrinciple = {
+  key: string;
+  name: string;
+  role: string;
+  principle: string;
+  why: string;
+  orchestration: string[];
+  stops: string[];
+  handoff: string;
+};
+
+export type PipelineStage = {
+  key: string;
+  cmd: string;
+  analystJob: string;
+  title: string;
+  feature: string;
+  output: string;
+  area: "init" | "load" | "brkd" | "ka" | "comp" | "da";
+  tone: "foundation" | "source" | "decision" | "engine" | "addon";
+  badge?: string;
+};
+
+export const pipelineStages: PipelineStage[] = [
+  {
+    key: "init",
+    cmd: "/init",
+    analystJob: "拉数取数",
+    title: "智能取数与年报核对",
+    feature: "自动拉 TuShare、沉淀 raw_tushare 原始镜像；clean 失败会查年报、补数、配平，过不了就硬停。",
+    output: "clean_annual / clean_quarterly + defaults.yaml",
+    area: "init",
+    tone: "foundation",
+    badge: "事实地基",
+  },
+  {
+    key: "load",
+    cmd: "/load",
+    analystJob: "读外部模型",
+    title: "公式级读 Excel，不被后验污染",
+    feature: "像分析师拆券商模型，但先锁模型 as-of、历史末年和预测起点，只保存旧模型自己的 vintage。",
+    output: "{原Excel文件名}_核心假设.md（Agent/Load）",
+    area: "load",
+    tone: "source",
+    badge: "新增",
+  },
+  {
+    key: "brkd",
+    cmd: "/brkd",
+    analystJob: "读报告纪要",
+    title: "把业务材料整理成假设讨论稿",
+    feature: "研报、纪要、年报先进入 markdown 存储区，再按收入、毛利、费用、税等口径消化。",
+    output: "Agent业务讨论.md",
+    area: "brkd",
+    tone: "source",
+    badge: "新增",
+  },
+  {
+    key: "ka",
+    cmd: "/ka",
+    analystJob: "开假设会",
+    title: "拍板核心假设",
+    feature: "最高权重材料优先，把 LOAD 和 BRKD 的候选都摆上桌，锁时间轴、骨架、逐年值。",
+    output: "核心假设.md",
+    area: "ka",
+    tone: "decision",
+    badge: "中枢",
+  },
+  {
+    key: "da",
+    cmd: "/da",
+    analystJob: "重资产排程",
+    title: "PP&E / Capex / 折旧插件",
+    feature: "固定资产决定估值时才打开；事实和假设分离，forecast 注入 da_series，避免 FCFF 打架。",
+    output: "da_schedule.yaml",
+    area: "da",
+    tone: "addon",
+    badge: "可选",
+  },
+  {
+    key: "comp",
+    cmd: "/comp",
+    analystJob: "搭模型算估值",
+    title: "人话判断翻译成机器覆盖层",
+    feature: "不再判断业务，只忠实编译 yaml1，清洗成 forecast_params，再由 calc.py 出三表和 DCF。",
+    output: "yaml1*.yaml / Agent/forecast/",
+    area: "comp",
+    tone: "engine",
+  },
 ];
 
-export const pipelineSide: { label: string; desc: string }[] = [
-  { label: "/init", desc: "刷新数据到 clean_annual / clean_quarterly，是全链路前置动作。" },
-  { label: "/annual-update", desc: "年报发布后，把旧核心假设滚动到最新年份。" },
-  { label: "/webka", desc: "把素材打包到 WEBCLAUDE，交给网页端模型跑。" },
+export type PipelineAuxGroup = {
+  title: string;
+  items: { cmd: string; analystJob: string; note: string; output: string; recommended?: boolean }[];
+};
+
+export const pipelineAux: PipelineAuxGroup[] = [
+  {
+    title: "维护和协作",
+    items: [
+      {
+        cmd: "/adj quick",
+        analystJob: "快拨旋钮",
+        note: "已有 knobs 小改，确认 patch plan 后直接刷新 DCF。",
+        output: "核心假设.md + yaml1 + forecast",
+      },
+      {
+        cmd: "/adj incremental",
+        analystJob: "读边际信息",
+        note: "ADJ 素材包 -> 讨论影响 -> 只改核心假设 -> /comp。",
+        output: "新核心假设.md",
+      },
+      {
+        cmd: "/annual-update",
+        analystJob: "年报滚续",
+        note: "新真实年份出来后，先 /init 刷数据，再把旧稿滚到最新年。",
+        output: "新日期核心假设.md",
+      },
+      {
+        cmd: "/webload",
+        analystJob: "网页端读模型",
+        note: "只给 /load 打包，适合长上下文理解 Excel。",
+        output: "WEBCLAUDE/模型装载部分",
+        recommended: true,
+      },
+    ],
+  },
 ];
 
-// 入口路由：根据手头是否有 Excel 完整模型，决定从哪一站开始。
+// 入口路由：根据手头是否有外部模型和 /brkd 产物，决定从哪一站开始。
 export const entryRoutes: { n: number; title: string; route: string; desc: string }[] = [
   {
     n: 1,
-    title: "已有 Excel 完整模型",
-    route: "直接 /ka",
-    desc: "手头已有券商或自建 Excel 完整模型，跳过业务预理解，直接进入核心假设生成。",
+    title: "新公司或刷新历史事实",
+    route: "/init",
+    desc: "先把 TuShare 原始数据沉到 raw_tushare，再生成 clean_annual / clean_quarterly 和 defaults.yaml。没有可信 clean，就不要讨论未来。",
   },
   {
     n: 2,
-    title: "没有 Excel 完整模型",
-    route: "先用 /brkd 预理解",
-    desc: "从零开始，先用 /brkd 读懂研报和纪要、建立业务预理解，再进入 /ka。",
+    title: "已有 Excel 完整模型",
+    route: "/init -> /load -> /ka -> /comp",
+    desc: "把唯一 Excel 放进 Skills素材包/LOAD外部EXCEL模型理解器（一次最多一个）。/load 只保存旧模型 vintage，/ka 再裁决成当前正式核心假设。",
+  },
+  {
+    n: 3,
+    title: "没有模型，但有研报/纪要",
+    route: "/init -> /brkd -> /ka -> /comp",
+    desc: "把材料放进 Skills素材包/BRKD业务理解器（研报和纪要放在这里）。/brkd 先 markdown 化并生成 Agent业务讨论.md，再交给 /ka 拍板。",
+  },
+  {
+    n: 4,
+    title: "已有核心假设，只想更新",
+    route: "/adj 或 /annual-update",
+    desc: "小幅拨已有 knobs 用 /adj quick；读新增材料系统性调整用 /adj incremental；新年报真实数出来后用 /annual-update。",
   },
 ];
 
-export const quickstart: { step: number; cmd: string; desc: string }[] = [
-  { step: 1, cmd: "/init 公司", desc: "拉 TuShare 数据、清洗、补年报，生成 Agent/data.db。" },
-  { step: 2, cmd: "/brkd 公司", desc: "读研报和纪要，生成业务预理解。" },
-  { step: 3, cmd: "/ka 公司", desc: "结合观点、年报和业务讨论，生成核心假设。" },
-  { step: 4, cmd: "/comp 公司", desc: "编译 yaml1 并生成 DCF，回到工作台查看。" },
+// 新手路线：按手头是否有完整 Excel 模型拆成两条，中间一站不同，首尾相同。
+export type QuickstartRoute = {
+  key: string;
+  title: string;
+  when: string;
+  steps: { cmd: string; desc: string }[];
+};
+
+export const quickstartRoutes: QuickstartRoute[] = [
+  {
+    key: "have-model",
+    title: "有模型",
+    when: "手头已有券商或自建 Excel 完整模型。",
+    steps: [
+      { cmd: "/init 公司", desc: "拉 TuShare 数据、清洗、补年报，生成 data.db、defaults 和核心指标速览。" },
+      { cmd: "放 Excel", desc: "把唯一模型放进 Skills素材包/LOAD外部EXCEL模型理解器（一次最多一个）。" },
+      { cmd: "/load 公司", desc: "按模型原时间轴消化旧模型，产出 {原Excel文件名}_核心假设.md，不被最新年报污染。" },
+      { cmd: "/ka 公司", desc: "结合最高权材料、LOAD 与 BRKD，正式裁决成 核心假设.md。" },
+      { cmd: "/comp 公司", desc: "编译 yaml1 并生成 DCF，回到工作台查看。" },
+    ],
+  },
+  {
+    key: "no-model",
+    title: "无模型",
+    when: "没有完整 Excel 模型，只有研报/纪要或仅年报+财务事实。",
+    steps: [
+      { cmd: "/init 公司", desc: "拉 TuShare 数据、清洗、补年报，生成 data.db、defaults 和核心指标速览。" },
+      { cmd: "放材料", desc: "把研报/纪要放进 Skills素材包/BRKD业务理解器（研报和纪要放在这里）；没有材料也可以走年报+历史事实模式。" },
+      { cmd: "/brkd 公司", desc: "先 deterministic markdown 化，再用财务事实+材料生成 Agent业务讨论.md。" },
+      { cmd: "/ka 公司", desc: "把 brkd 讨论结果正式翻译成语义化中枢核心假设.md。" },
+      { cmd: "/comp 公司", desc: "编译 yaml1 并生成 DCF，回到工作台查看。" },
+    ],
+  },
+  {
+    key: "adjust-existing",
+    title: "调已有模型",
+    when: "公司已经有正式 核心假设.md 和 yaml1，只是想更新判断或小幅试算。",
+    steps: [
+      { cmd: "/adj 公司 把毛利率稍微提一提", desc: "quick 模式先确认是不是已有 knobs；确认后回写核心假设、patch yaml1 并跑 DCF。" },
+      { cmd: "放增量材料", desc: "若是新业务信息，把材料放进 Skills素材包/ADJ增量信息（用来改模型的边际信息）。" },
+      { cmd: "/adj 公司 增量", desc: "incremental 模式先讨论受影响假设，只改核心假设源文，再走 /comp。" },
+      { cmd: "/annual-update 公司", desc: "如果是新年报真实数据覆盖旧预测，走年度滚续，不走普通调参。" },
+    ],
+  },
+];
+
+export const codexGuideFlow: { title: string; body: string }[] = [
+  {
+    title: "1. 新线程先加载项目地图",
+    body: "让 Codex 先读 D:\\MKA\\Codex.md。它会把数据层、假设层、编译层、DCF 输出和每个 skill 的边界一次性对齐，避免把 MKA 当成普通脚本项目乱跑。",
+  },
+  {
+    title: "2. 具体任务再读对应 skill",
+    body: "Claude 的 slash command 对 Codex 不是内置魔法。要明确让它读取 D:\\MKA\\.claude\\skills\\{skill}\\SKILL.md，再按里面指向的 D:\\MKA\\skills\\*_skill_vN.md 执行；旧 /webka 已放入 deprecatedlogs，不再作为入口。",
+  },
+  {
+    title: "3. 大活按链路推进",
+    body: "先确认公司目录和 clean 数据，再看是否已有 LOAD 产物或 Agent业务讨论.md。没有二者时，先 /load 或 /brkd；之后 /ka 只做全量裁决生成 核心假设.md，最后 /comp 编译 yaml1 并跑 DCF。",
+  },
+];
+
+export const codexGuidePrompts: { label: string; prompt: string }[] = [
+  {
+    label: "初始化上下文",
+    prompt: "请先完整读取 D:\\MKA\\Codex.md，按里面的 MKA 项目规则理解当前仓库，然后告诉我你会如何处理接下来的任务。",
+  },
+  {
+    label: "业务预讨论",
+    prompt: "请先读 D:\\MKA\\Codex.md，再读 D:\\MKA\\.claude\\skills\\brkd\\SKILL.md。公司【公司名】需要先生成 Agent业务讨论.md；请先跑 brkd_prepare，把 Skills素材包\\BRKD业务理解器（研报和纪要放在这里）里的材料幂等转成 markdown 存储区。",
+  },
+  {
+    label: "跑 /ka 前",
+    prompt: "请先读 D:\\MKA\\Codex.md，再读 D:\\MKA\\.claude\\skills\\ka\\SKILL.md。先检查是否有已完成 LOAD 产物或 Agent业务讨论.md；两者都没有就停止并建议先跑 /load 或 /brkd。/ka 现在不做旧稿 modify。",
+  },
+  {
+    label: "跑 /webload 前",
+    prompt: "请先读 D:\\MKA\\Codex.md，再读 D:\\MKA\\.claude\\skills\\webload\\SKILL.md 和 D:\\MKA\\.claude\\skills\\load\\SKILL.md。按 /webload 为【公司名】准备网页端 load 包。",
+  },
+  {
+    label: "编译并估值",
+    prompt: "请先读 D:\\MKA\\Codex.md 和 D:\\MKA\\.claude\\skills\\comp\\SKILL.md，把【公司名】最新 核心假设.md 忠实编译成 yaml1，并立即跑 DCF。",
+  },
+  {
+    label: "核心假设调整",
+    prompt: "请先读 D:\\MKA\\Codex.md 和 D:\\MKA\\.claude\\skills\\adj\\SKILL.md。公司【公司名】需要调整核心假设：如果是已有 knobs 小改，走 quick 并先确认 patch plan；如果要读增量材料，先跑 adj_prepare，再改核心假设并走 /comp。",
+  },
+  {
+    label: "年报滚续",
+    prompt: "请先读 D:\\MKA\\Codex.md 和 D:\\MKA\\.claude\\skills\\annual-update\\SKILL.md。公司【公司名】出了新年报，按 annual-update 规则滚动核心假设，完成后再走 /comp 跑 DCF。",
+  },
+  {
+    label: "前端修改",
+    prompt: "请先读 D:\\MKA\\Codex.md 和 D:\\MKA\\.claude\\skills\\frontend-edit\\SKILL.md，然后修改工作台前端。改完请跑 npm run build，并给我本地预览地址。",
+  },
+];
+
+export const codexGuideRules: { title: string; body: string }[] = [
+  {
+    title: "Codex 能用这些 skills 吗？",
+    body: "能。方式不是直接输入 slash，而是把 skill 文件当成操作说明书读取，然后用本地 shell、脚本、代码编辑和浏览器验证去执行。",
+  },
+  {
+    title: "哪些地方要特别提醒？",
+    body: "raw_tushare 是不可变镜像；clean_annual / clean_quarterly 和 /init 核心指标速览才是可信历史事实；核心假设.md 是人话判断源头；forecast_params.yaml 是内部编译产物，不应手工当源头改。",
+  },
+  {
+    title: "/load 为什么更适合网页端？",
+    body: "/ka 仍然复杂，但 /load 还多了一层 vintage 时间沙箱：模型自己的历史末年和预测起点最高优先，后来的年报和 clean 数据不能污染旧模型。真正需要网页端长上下文和强模型理解的是 /load，所以优先用 /webload 打包。",
+  },
+  {
+    title: "/brkd 现在承担什么？",
+    body: "/brkd 是 /ka 前置讨论站。它不只拆收入；BRKD 素材包有研报纪要时做外部材料增强，素材为空时用年报 + /init 历史财务事实生成保守版利润表讨论。",
+  },
+  {
+    title: "/adj 和 /ka 的分界",
+    body: "/ka 只做全量生成/重建。已有正式核心假设后的普通改动交给 /adj：quick 只拨已有 knobs，incremental 读 ADJ 增量材料后改核心假设再走 /comp。",
+  },
+];
+
+export const skillPrincipleStack: { title: string; body: string }[] = [
+  {
+    title: "启动器层",
+    body: "D:\\MKA\\.claude\\skills 里的 SKILL.md 是可用入口，负责解析公司、判断模式、做门禁、选择最新版动态 skill。废弃入口移到 D:\\MKA\\deprecatedlogs，不再出现在教程主线里。",
+  },
+  {
+    title: "动态细则层",
+    body: "D:\\MKA\\skills 里的 *_skill_vN.md 才是每个复杂技能的 runbook。版本号最大的文件生效，方便不断升级 /ka、/comp、annual-update、/da 的规则。",
+  },
+  {
+    title: "确定性脚本层",
+    body: "取数、清洗、编译后展开、forecast、DCF 都尽量交给 Python。LLM 负责读懂、翻译、提出候选；真正写库、验闭合、算 DCF 的地方由代码守门。",
+  },
+  {
+    title: "人类拍板层",
+    body: "凡是未来判断、参数化选择、估算口径，都必须回到人话权威层 核心假设.md。yaml1 是机器可读覆盖层，forecast_params.yaml 是内部编译产物，都不是让人绕过去直接改的源头。",
+  },
+];
+
+export const skillPrincipleFlow: string[] = [
+  "TuShare 原始数据：/init 调 data_fetcher 拉取三表和公告，原始返回先进入 raw_tushare，不在这里做主观修正。",
+  "raw_tushare 不可变镜像：所有补数、重分类、豁免都进入 clean_adjustments / clean_warnings / approved overrides，不能手改 raw。",
+  "clean_annual / clean_quarterly 可信历史宽表：clean.py 与 reconciler/bridge 负责配平、查年报和硬门禁，失败就停止。",
+  "defaults.yaml 机器平推底座：从 clean 历史生成无主观判断的默认预测命名空间，是 /comp 和 forecast 的机器底板。",
+  "核心假设.md 人话判断：/ka 裁决最高权重材料、BRKD 与 LOAD；/adj、/annual-update 也必须回到这一层改判断。",
+  "yaml1*.yaml 机器可读覆盖层：/comp 忠实把核心假设翻译成稀疏覆盖，不替分析师重新判断。",
+  "forecast_params.yaml 内部编译产物：yaml1_cleaner 把 defaults + clean + yaml1 折成 calc.py 可吃的标准参数，禁止手工当源头改。",
+  "calc.py 三表 + DCF：forecast.py 调 calc.py 生成完整 IS/BS/CF、DCF 明细和摘要。",
+  "Agent/forecast/ 正式输出：工作台只展示这里的正式结果；LOAD 沙箱和前端试算不是正式 forecast。",
+];
+
+export const skillPrinciples: SkillPrinciple[] = [
+  {
+    key: "init",
+    name: "/init",
+    role: "数据地基和可信历史宽表的生产线。",
+    principle: "先保 raw_tushare 不变，再把它清洗成可被估值信任的 clean_annual / clean_quarterly，并在 clean 后生成后续 Agent 可直接读的核心指标速览。",
+    why: "DCF 最怕在脏历史上讨论未来。/init 的价值不是多拉几个接口，而是让数据失败显性化，并把利润表主链路整理成 /brkd 和 /ka 能消费的事实底稿。",
+    orchestration: [
+      "解析公司名、裸代码或完整 ticker，交给 src.init 做确定性编排。",
+      "TuShare 增量取三表，年报/季报下载并生成 Markdown。",
+      "clean.py 生成 clean 宽表并做年度/季度 hard check。",
+      "年度失败时先走 reconciler；复杂残差再用 subagent 读年报提案，由 bridge 验闭合后写 approved override。",
+      "clean 成功后生成 Agent/core_metrics_overview.md/json/csv，供后续 Agent 快速理解收入、毛利率、费用率、利润率和税率趋势。",
+      "生成 financial_expense.yaml、OfficialBreakdowns 和数据拉取报告。",
+    ],
+    stops: [
+      "exit 3 代表 clean 数据仍不可信，不能改判成功。",
+      "raw_tushare 永不手改；补数只进 clean_adjustments / clean_warnings。",
+      "2010 前历史可降级入库，但要明确这是闸门规则，不是已被年报核对。",
+    ],
+    handoff: "交给 /brkd、/ka、/comp、/annual-update 和工作台作为历史事实底座；其中核心指标速览是 /brkd 无外部材料时的关键输入。",
+  },
+  {
+    key: "brkd",
+    name: "/brkd",
+    role: "业务与利润表预讨论，不是最终模型。",
+    principle: "它的美德是 discernment：把业务线、毛利/成本、费用率、below-OP、所得税和净利率先整理成可讨论的地图，但不替 /ka 拍最终旋钮。",
+    why: "没有完整 Excel 模型时，/ka 不能凭空硬写。/brkd 先用 BRKD 素材包里的研报纪要增强；没有研报纪要时，也能用年报 + /init 历史财务事实生成保守版 Agent业务讨论.md。",
+    orchestration: [
+      "定位公司目录，最先读 公司判断和最新观点.md 作为背景锚。",
+      "检查 Skills素材包/BRKD业务理解器（研报和纪要放在这里）：有材料就先跑 src.brkd_prepare，幂等转换到 markdown存储区；没有材料不失败。",
+      "读取 /init 核心指标速览；没有速览时读取 Agent/data.db 的 clean_annual。缺 clean 历史事实则停，提示先 /init。",
+      "读取最新年报 Markdown，用于查分部、成本毛利、费用、税收优惠和一次性项目。",
+      "动态加载最新版 业务预理解器 skill_vN，AI 只读 markdown存储区和 manifest。",
+      "按收入、毛利/成本、费用、below-OP 与税、净利率/待确认项分段整理建议和证据。",
+      "输出公司根目录 Agent业务讨论.md，可带 draft knobs 供 /ka 接手。",
+    ],
+    stops: [
+      "缺定调文件就停；BRKD 素材包为空不再停。",
+      "无外部材料时若缺 /init 历史事实或最新年报 Markdown，则停。",
+      "不读 PDF 原文，只读转换后的 Markdown。",
+      "不生成核心假设、不写 yaml1、不跑 DCF；建议值只是 /ka 的起点。",
+    ],
+    handoff: "交给 /ka 当正式输入；/ka 仍需用年报和 clean_annual 校验 headline，并让分析师拍板。",
+  },
+  {
+    key: "ka",
+    name: "/ka",
+    role: "全量裁决器：把最高权重材料、BRKD、LOAD 和 /init 校验层收口成 核心假设.md。",
+    principle: "KA 不再读原始 Excel、研报或纪要，也不做旧稿 modify。它专职裁决：先对齐时间边界和骨架，再把多源候选压成可读、可追责、可被 /comp 翻译的人话判断。",
+    why: "/ka 是业务理解层的中枢，因为它要同时处理分析师 thesis、BRKD 草稿、LOAD vintage 模型、/init 历史 headline、年报按需查证和下游可编译性。",
+    orchestration: [
+      "解析公司目录；若根目录已有正式核心假设且用户未明确重建，停止并提示改走 /adj 或 /annual-update。",
+      "先加载共享核心纪律、核心假设源语言和最新版 核心假设编辑器 skill。",
+      "运行 src.ka_prepare，把 公司判断和最新观点.md 与 Skills素材包/最高权重材料-放Agent最应对齐的材料 幂等 markdown 化。",
+      "读取 Agent业务讨论.md，并扫描 Agent/Load/*/*_核心假设.md 中已经完成的 LOAD 产物。",
+      "执行启动门槛：已完成 LOAD 产物和 Agent业务讨论.md 至少有一个；两者都没有则停止并建议先 /load 或 /brkd。",
+      "读取 /init 核心指标速览或 clean_annual，再读取最新年报 Markdown。",
+      "独立锁定历史末年、显式期、衰减期、永续增长点，解释官方 history_end 与 LOAD vintage 边界的差异。",
+      "先做接缝总账和骨架门，再按收入、毛利、费用、below-OP 与税、中期/terminal 进入数值门。",
+      "写盘前做收口核对；聊透写正式 核心假设.md，有悬项只写参考稿并标明不可直接 /comp。",
+    ],
+    stops: [
+      "无已完成 LOAD 且无 Agent业务讨论.md 时不启动。",
+      "不产 yaml1，不算 DCF，不直接改 clean 数据。",
+      "不做局部 modify；小改走 /adj quick，增量材料走 /adj incremental，年报滚动走 /annual-update。",
+      "派生预测不手算；旋钮必须精确、逐年、可机读，并同步 knobs 块。",
+    ],
+    handoff: "交给 /comp 翻译成 yaml1；没聊透时只能输出参考稿，不应伪装正式核心假设。",
+  },
+  {
+    key: "load",
+    name: "/load",
+    role: "把旧 Excel 模型按它当时的时间轴装进 vintage 沙箱。",
+    principle: "/load 是开了时间沙箱的 /ka：工作流尽量继承 /ka 的 overview、分段停止、先押再问，但模型时间轴拥有最高权威。",
+    why: "旧模型最怕后验污染。若模型历史止于 2024A、从 2025E 开始预测，2025 年报和 clean_annual 的 2025 行即使已经存在，也不能拿来修正这份旧模型。",
+    orchestration: [
+      "解析公司并定位 Skills素材包/LOAD外部EXCEL模型理解器（一次最多一个）里的唯一 Excel。",
+      "先运行 model_load prepare，用公式层锁 history_end_year、forecast_start_year 和 forecast_years。",
+      "创建 Agent/Load/{load_id}/ 沙箱，生成 data_cutoff.db、defaults.yaml、model_boundary、forbidden_materials 和 {原Excel文件名}_核心假设.md 脚手架。",
+      "加载最新版 KA 生成器和 模型装载器 覆盖层。",
+      "先给模型理解 overview，用户确认后才按收入、毛利、费用、below-OP 与税、中期分段装载。",
+      "确认完成后编译 yaml1_load 并用 model_load dcf 跑沙箱 DCF。",
+    ],
+    stops: [
+      "时间轴冲突就停，不能先看年报补判断。",
+      "用户未确认 overview 前，不补完核心假设、不编译、不跑 DCF。",
+      "产物只落 Agent/Load/{load_id}/，不覆盖公司根目录核心假设和正式 forecast。",
+    ],
+    handoff: "load 结果只是 vintage 沙箱，不是当前正式 forecast；若要转正式模型，应另走 annual-update 或显式 promote 流程。",
+  },
+  {
+    key: "webload",
+    name: "/webload",
+    role: "把 /load 沙箱和安全材料打包给网页版模型。",
+    principle: "它是 /load 的网页搬运箱。先本地 prepare 锁时间边界，再把 allowed_materials、禁读清单、KA 生成器和 load 覆盖层复制到 WEBCLAUDE/模型装载部分。",
+    why: "真正需要网页端跑的是 /load：它既要理解 Excel 公式层，又要避免未来材料泄漏，还要先讲模型理解让用户确认。网页版长上下文和强模型更适合承担这段会话。",
+    orchestration: [
+      "运行 py -m src.webload 公司 --overwrite。",
+      "内部先调用 src.model_load.prepare 创建 Agent/Load/{load_id}/。",
+      "清空 WEBCLAUDE/模型装载部分，防止旧包污染。",
+      "复制 00_webload_网页端执行说明、load 启动器、model_boundary、forbidden_materials、{原Excel文件名}_核心假设.md 脚手架。",
+      "复制最新版 核心假设生成修改器 skill 和 模型装载器 skill。",
+      "复制 allowed_materials，网页端只看这些允许材料。",
+    ],
+    stops: [
+      "prepare 失败或边界冲突就停。",
+      "网页端不得读取 forbidden_materials 列出的正文。",
+      "不生成、不修改、不编译；网页端生成的 {原Excel文件名}_核心假设.md 放回沙箱后，本地再跑 yaml1_load 和 DCF。",
+    ],
+    handoff: "网页端产出的 {原Excel文件名}_核心假设.md 放回 Agent/Load/{load_id}/ 后，继续本地编译 yaml1_load 并跑 src.model_load dcf。",
+  },
+  {
+    key: "adj",
+    name: "/adj",
+    role: "已有正式核心假设的调整器，分 quick 和 incremental 两种模式。",
+    principle: "quick 只拨已有 knobs，追求快但不越权；incremental 读 ADJ 增量材料，先理解业务影响，只改 核心假设.md，再让 /comp 重新生成 yaml1。",
+    why: "/ka 删除 modify 后，需要一个专门处理正式稿改动的入口。小幅数值调整不该重开全量 KA，系统性新信息也不该直接手改 yaml1。",
+    orchestration: [
+      "解析公司和模式；包含“增量/读材料/边际信息”走 incremental，否则走 quick。",
+      "共同定位公司根目录最新正式 核心假设.md、Agent 最新 yaml1、defaults、data.db 和当前 DCF。",
+      "quick：读取 knobs 与 yaml1，判断用户请求是否对应已有 knobs；不是已有 knobs 就停止并列出可拨旋钮。",
+      "quick：生成 patch plan，用户确认后归档旧稿、写新核心假设、定点 patch 今日 yaml1、跑 forecast。",
+      "incremental：先运行 src.adj_prepare，把 Skills素材包/ADJ增量信息（用来改模型的边际信息）幂等转到 markdown存储区。",
+      "incremental：加载 核心假设调整器 skill，讨论受影响假设清单；拍板后只改核心假设源文，再走 /comp。",
+    ],
+    stops: [
+      "缺正式核心假设或最新 yaml1 时停止，因为 /adj 不负责从零生成。",
+      "quick 不能新增/删除结构、改 compiler family、改显式期或 terminal。",
+      "incremental 若推翻模型骨架或 thesis 基础，应弹回 /ka 重建，不硬补丁。",
+      "增量材料的 unsupported/error 必须进入缺口区，不能静默忽略。",
+    ],
+    handoff: "quick 直接交给 forecast 输出新 DCF；incremental 交给 /comp 编译新 yaml1，再进入正式 Agent/forecast/。",
+  },
+  {
+    key: "comp",
+    name: "/comp",
+    role: "把人话核心假设忠实翻译成机器话 yaml1，并立即跑 DCF。",
+    principle: "compiler 是翻译器，不是研究员。它弥合业务线语言和机器路径语言的差异：能翻就翻，翻不了举旗，绝不猜。",
+    why: "核心假设.md 按业务线讲判断，calc.py 只能吃逐年标准参数。/comp 负责把判断变成 yaml1，再交给 yaml1_cleaner 展开成 forecast_params.yaml。",
+    orchestration: [
+      "先跑 assumption_staleness 年份门禁；若 clean 实际年覆盖预测起点，立即停止并提示 /annual-update。",
+      "动态加载最新版 yaml1compiler skill。",
+      "读取最新核心假设.md、Agent/defaults.yaml、数据格式参考、yaml1算法模板契约。",
+      "盘点源文，逐句翻成 knob / decomposition / formula / stash 等结构。",
+      "写 Agent/yaml1_公司_YYYYMMDD.yaml，随后跑 fidelity check。",
+      "yaml1 落盘后立即 py -m src.forecast --yaml1，生成 Agent/forecast/。",
+    ],
+    stops: [
+      "不读 PDF，不重新判断业务，不替原文改数。",
+      "defaults.yaml 是目标命名空间，不是预测意见。",
+      "yaml1 落盘是主成功；DCF 失败要明示，但不回滚 yaml1。",
+    ],
+    handoff: "交给 yaml1_cleaner -> forecast_params.yaml -> calc.py -> Agent/forecast/。",
+  },
+  {
+    key: "annual-update",
+    name: "/annual-update",
+    role: "把放旧的核心假设滚到最新年报版本。",
+    principle: "它不是从零 /ka，而是时间迁移：旧稿只读、数据先刷新、历史填或旗、未来再重定，最后用 /comp 收口。",
+    why: "公司出了新年报后，旧预测的一部分变成真实历史。直接 /comp 会被年份门禁拦住，直接 /ka 又会丢掉旧稿复盘价值。",
+    orchestration: [
+      "读旧核心假设和定调文件，提取 H、显式期、衰减期、永续点，并建立总账。",
+      "调用 /init 刷新数据和公告，再重建 defaults.yaml。",
+      "调用 annual_update_fetcher 从 clean_annual 取 (H, A] 的标准事实线和偏离诊断。",
+      "动态加载最新版 年度更新器 skill，自动平移时间轴、补真实历史、重吐 knobs。",
+      "估算拿不到的非标原子时标明 估算·待校准，未来重定按年度更新器纪律先押再问。",
+      "新稿另存，旧稿和旧 yaml1 留存；最后 /comp 生成新 DCF。",
+    ],
+    stops: [
+      "init exit 3 未闭合就停，不在脏数据上滚。",
+      "clean_annual 缺核心字段时停，不能用 0 或残差硬填。",
+      "拿不到的事实只能估算带旗或待补，不能冒充真实历史。",
+    ],
+    handoff: "收口后交给 /comp；收口报告要列清自动填、估算、挂旗、重定和新旧 DCF 差异。",
+  },
+  {
+    key: "da",
+    name: "/da",
+    role: "重资产公司专用的折旧摊销与 capex 排程外挂。",
+    principle: "事实和假设分离。LLM 只扒年报事实和参与商议，未来排程必须拍板后写 da_schedule.yaml；真正滚 cohort、对齐 BS/CF/FCFF 的是 Python da_roll。",
+    why: "默认 capex_pct + depr_rate 对重资产公司太粗，容易让固定资产、在建工程、折旧和自由现金流互相打架。",
+    orchestration: [
+      "解析公司目录，第一时间读 公司判断和最新观点.md，可参考 Agent业务讨论.md 的产能线索。",
+      "判断是否已有 Agent/da_schedule.yaml，并动态加载最新版 da 执行细则。",
+      "并行抽取年报固定资产、在建工程、PP&E 折旧等事实，写 Agent/recon/da_facts_latest.json。",
+      "按 capex 六点商议未来扩张、维持、转固、年限、残值和终值稳态。",
+      "拍板后写 Agent/da_schedule.yaml；enabled: true 时 forecast 自动注入 da_series。",
+      "forecast 中 da_roll 负责 capex 单一来源、PP&E 折旧、fix_assets / cip 和 FCFF 对齐。",
+    ],
+    stops: [
+      "轻资产或稳态公司不要用，避免把简单模型复杂化。",
+      "da_schedule.base_year 必须等于 defaults.base_period，否则 DaAlignError。",
+      "无形资产、使用权资产、长摊不进 da_schedule，仍由 yaml1/defaults 管。",
+    ],
+    handoff: "落盘后重跑 forecast；重资产模式下 yaml1 的 capex_pct 被禁用并告警。",
+  },
+  {
+    key: "frontend-edit",
+    name: "/frontend-edit",
+    role: "把前端试算结果安全回写到人话权威层。",
+    principle: "它是一把手术刀，不是研究员。前端已经完成试算和拍板，技能只做定点 patch：改核心假设正文和 knobs 块，再 /comp。",
+    why: "工作台里的 assumption-preview 只是内存试算。要让正式 DCF 生效，必须回到 核心假设.md，再由 /comp 重编 yaml1，不能直接改 yaml1 或 forecast_params。",
+    orchestration: [
+      "从 prompt 解析核心假设路径、当前 yaml1 路径和前端变更列表。",
+      "读取核心假设.md，定位 knobs 块、horizon、抬头和中期三段式。",
+      "按 path 映射到 anchor/sub，改正文预测行和 knobs values；百分比做单位转换。",
+      "做正文与 knobs 同源核对。",
+      "先归档旧稿到 Agent/KAhistory，再写今日新稿。",
+      "调用 /comp 重新编译 yaml1 并覆盖 Agent/forecast/。",
+    ],
+    stops: [
+      "映射不到的 path 立即停，不猜。",
+      "terminal.explicit_end / fade.to_year 属结构性改动，停并提示走 /adj incremental 或 /ka 重建。",
+      "不读定调、活跃素材、年报或业务讨论；不直接改 yaml1。",
+    ],
+    handoff: "交给 /comp；汇报每条变更、同源核对、最新每股价值和 forecast 路径。",
+  },
 ];
 
 export const skills: SkillCard[] = [
   {
     key: "init",
     name: "/init",
-    tag: "支线",
-    when: "新公司入库，或日常刷新数据。",
+    tag: "数据层",
+    headline: "把一家公司从 TuShare 原始三表拉到可信 clean 数据，并生成 Agent 可读的核心指标速览。",
+    when: "新公司第一次入库、年报/季报更新后刷新数据，或 DCF 前发现 data.db/defaults 过旧。",
     command: "/init 新乳业",
-    input: "公司名、股票代码或完整 ticker，例如 000333.SZ。",
-    output: "companies/{公司}/Agent/data.db，以及年报 PDF/MD。",
-    next: "数据干净后跑 /brkd 做业务预理解，或直接进入 /ka。",
-    discipline: ["硬失败不要强行继续。", "raw_tushare 永不手改。"],
+    reads: [
+      "公司名、裸代码或完整 ticker，例如 002946 / 002946.SZ。",
+      "TuShare 接口、公告下载目录、已有 approved override 和财务费用档案。",
+    ],
+    writes: [
+      "Agent/data.db：raw_tushare、clean_annual、clean_quarterly、clean_adjustments、clean_warnings。",
+      "Agent/core_metrics_overview.md/json/csv：clean 后的利润表核心指标速览。",
+      "公告/年报 与 公告/季报 的 PDF/Markdown；Agent/financial_expense.yaml；Agent/OfficialBreakdowns/。",
+    ],
+    next: "clean 成功后，已有 Excel 先 /load；没有模型先 /brkd；具备 LOAD 或 BRKD 产物后再 /ka。",
+    guardrails: ["raw_tushare 永不手改。", "年度 hard check 失败不能手工 plug；exit 3 不能假装成功。"],
+    mentalModel: "这是数据地基，不负责写核心假设，也不替分析师判断未来。",
+    notFor: "不用于修改核心假设、编译 yaml1 或解释估值结果。",
   },
   {
     key: "brkd",
     name: "/brkd",
     tag: "主线",
-    when: "已有研报、纪要，要先读懂业务再建模。",
+    headline: "先把业务和利润表大部分问题整理成 Agent业务讨论.md，给 /ka 接手。",
+    when: "没有完整 Excel 模型、BRKD 素材包材料很多，或没有外部材料但需要用年报和历史财务事实先做业务讨论。",
     command: "/brkd 新乳业",
-    input: "把研报/纪要放进 active_vore/业务理解器（研报和纪要放在这里）/。",
-    output: "companies/{公司}/Agent业务讨论.md。",
-    next: "进入 /ka，作为收入段和业务线判断的参考。",
-    discipline: ["只做业务线理解，不拍最终旋钮。", "研报是线索，不是权威。"],
+    reads: [
+      "公司判断和最新观点.md，作为唯一判断锚点。",
+      "Agent/core_metrics_overview.* 或 Agent/data.db: clean_annual，作为历史利润表事实。",
+      "最新年报 Markdown，用于查分部、毛利/成本、费用、税收优惠、一次性项目。",
+      "Skills素材包/BRKD业务理解器（研报和纪要放在这里）/markdown存储区；源材料必须先由 brkd_prepare 转换。",
+    ],
+    writes: ["公司根目录/Agent业务讨论.md：收入、毛利/成本、费用、below-OP、税率、净利率的讨论底稿和待拍板清单。"],
+    next: "进入 /ka。无外部模型时，Agent业务讨论.md 是 /ka 的必需入口材料。",
+    guardrails: ["BRKD 素材包为空不是失败；缺 /init 历史事实才停。", "给建议值但不拍最终旋钮；研报是线索，clean_annual 和年报是事实。"],
+    mentalModel: "这是 /ka 的会前讨论底稿，不是最终核心假设。它先把能讨论的利润表框架摆上桌。",
+    notFor: "不生成核心假设，不写 yaml1，不跑 DCF；中期三段式和正式 knobs 终稿留给 /ka。",
   },
   {
     key: "ka",
     name: "/ka",
     tag: "主线",
-    when: "生成或修改核心假设。",
+    headline: "把最高权重材料、LOAD 和 BRKD 裁决成一份人能读的正式核心假设.md。",
+    when: "需要全量生成或重建正式核心假设；必须至少有已完成 LOAD 产物或 Agent业务讨论.md。已有正式稿的小改不要用 /ka。",
     command: "/ka 新乳业",
-    input: "公司判断和最新观点.md、活跃素材、最新年报、Agent业务讨论.md。",
-    output: "companies/{公司}/{公司}-YYYYMMDD-核心假设.md。",
-    next: "进入 /comp，把核心假设编译成 yaml1 并生成 DCF。",
-    discipline: ["核心假设产物必须落公司根目录。", "先读定调文件，再写假设。"],
+    reads: [
+      "公司判断和最新观点.md 与 Skills素材包/最高权重材料-放Agent最应对齐的材料/markdown存储区。",
+      "Agent业务讨论.md：由 /brkd 生成的业务层草稿。",
+      "Agent/Load/*/*_核心假设.md：由 /load 生成的旧模型假设源文。",
+      "Agent/core_metrics_overview.* 或 clean_annual，作为标准历史事实。",
+      "最新年报 Markdown，只在裁决期按需查证，不通读升格。",
+    ],
+    writes: [
+      "公司根目录/{公司}-YYYYMMDD-核心假设.md，或没聊透时写核心假设参考.md。",
+    ],
+    next: "进入 /comp，把人话判断翻译成 yaml1 并跑 DCF。",
+    guardrails: ["无已完成 LOAD 且无 Agent业务讨论.md 时停止，提示先 /load 或 /brkd。", "不做旧稿 modify；小改走 /adj，年报滚动走 /annual-update。", "先押再问，关键旋钮拍板后再落盘。"],
+    mentalModel: "这是分析师会议纪要，不是 YAML；按业务线组织，保全历史、识别旋钮、写清判断。",
+    notFor: "不直接算 DCF，不生成 yaml1，不修 clean 数据，不做局部小改。",
+  },
+  {
+    key: "load",
+    name: "/load",
+    tag: "主线",
+    headline: "按旧 Excel 模型自己的时间轴保存 vintage 假设，并在沙箱里跑 DCF。",
+    when: "已有旧模型，模型历史止于过去年份、预测从后来已经变成实际的年份开始；需要保存原模型而不是被最新年报覆盖。",
+    command: "/load 影石创新",
+    reads: [
+      "Skills素材包/LOAD外部EXCEL模型理解器（一次最多一个）/ 下的唯一 Excel 模型。",
+      "Agent/Load/{load_id}/allowed_materials/，只含模型和未越过边界的材料。",
+      "最新版核心假设生成修改器 skill 与 模型装载器 skill。",
+    ],
+    writes: [
+      "Agent/Load/{load_id}/{原Excel文件名}_核心假设.md。",
+      "Agent/Load/{load_id}/yaml1_load_*.yaml 和 forecast/。",
+    ],
+    next: "load 结果只代表旧模型 vintage。要变成当前正式 forecast，需要另走 annual-update 或显式 promote。",
+    guardrails: ["模型时间轴最高权威。", "用户确认 overview 前不能补完假设、编译或跑 DCF。", "禁止读取预测起点及之后的实际材料。"],
+    mentalModel: "这是开了时间沙箱的 /ka：工作流像 /ka，但材料边界和输出都在 Agent/Load 里。",
+    notFor: "不用于当前正式假设更新；当前模型应走 /ka 或 /annual-update。",
+  },
+  {
+    key: "webload",
+    name: "/webload",
+    tag: "强烈推荐",
+    headline: "强烈推荐：把 /load 沙箱和安全材料复制成网页端上传包。",
+    when: "准备按旧模型跑 /load 前优先使用。真正需要网页端理解力的是 /load：即使用 GLM5.2 也建议开 MAX 模式；原生 Claude Code 配 Opus 4.8 high/xhigh 或直接上 Fable 效果最好，网页版完全可平替。",
+    command: "py -m src.webload 影石创新 --overwrite",
+    reads: [
+      "Skills素材包/LOAD外部EXCEL模型理解器（一次最多一个）里的唯一 Excel 模型。",
+      "model_load prepare 生成的 model_boundary、forbidden_materials、allowed_materials 和 {原Excel文件名}_核心假设.md 脚手架。",
+      "D:/MKA/skills 里的最新版核心假设生成修改器 skill 和 模型装载器 skill。",
+    ],
+    writes: ["WEBCLAUDE/模型装载部分/，每次先清空再重建。", "同时创建或覆盖 Agent/Load/{load_id}/ 沙箱。"],
+    next: "把打包目录上传到网页端，按 /load 逻辑先讲模型理解 overview；网页端产出的 {原Excel文件名}_核心假设.md 放回沙箱后，本地编译 yaml1_load 并跑 DCF。",
+    guardrails: ["纯打包，不替用户确认模型理解。", "网页端只读 allowed_materials，不能打开 forbidden 材料正文。", "不要把 load 结果写进公司根目录或正式 forecast。"],
+    mentalModel: "这是 /load 的推荐入口和搬运箱。它先把时间边界钉死，再把网页端需要的上下文按顺序备齐。",
+    notFor: "不负责普通 /ka 网页端打包；旧 /webka 已废弃并移入 deprecatedlogs。",
+  },
+  {
+    key: "adj",
+    name: "/adj",
+    tag: "增强",
+    headline: "已有正式核心假设后的调整入口：quick 快拨已有 knobs，incremental 读增量材料再走 /comp。",
+    when: "已经有正式 核心假设.md 和 yaml1；用户想小幅改数，或读 ADJ 增量材料后系统性更新假设。",
+    command: "/adj 新乳业 把毛利率稍微提一提",
+    reads: [
+      "公司根目录最新正式 核心假设.md。",
+      "Agent/ 最新 yaml1_*.yaml、defaults.yaml、data.db 和当前 forecast 摘要。",
+      "incremental 模式会读 Skills素材包/ADJ增量信息（用来改模型的边际信息）/markdown存储区。",
+    ],
+    writes: [
+      "quick：归档旧核心假设，写新核心假设，定点 patch 今日 yaml1，覆盖 Agent/forecast/。",
+      "incremental：写新核心假设，再由 /comp 生成新 yaml1 和 forecast。",
+    ],
+    next: "quick 看最新 DCF；incremental 拍板后走 /comp。",
+    guardrails: ["quick 只能拨已有 knobs，不能新增结构或改 terminal。", "非已有 knobs 的请求要列出可拨旋钮并建议走 incremental。", "incremental 不直接改 yaml1。"],
+    mentalModel: "这是正式稿后的调参和边际信息处理层。它接走旧 KA modify 的工作，但把快改和系统性改动分开。",
+    notFor: "不用于从零生成核心假设；新模型/新公司仍走 /load、/brkd、/ka。",
   },
   {
     key: "comp",
     name: "/comp",
     tag: "主线",
-    when: "核心假设写好后，编译出可计算模型。",
+    headline: "把核心假设.md 忠实翻译成机器可读 yaml1，并立即跑 DCF。",
+    when: "核心假设已经完成或修改后，需要生成新的 DCF 结果。",
     command: "/comp 新乳业",
-    input: "核心假设.md、Agent/defaults.yaml、数据格式参考、yaml1 算法模板契约。",
-    output: "Agent/yaml1_公司_YYYYMMDD.yaml 和 Agent/forecast/。",
-    next: "在工作台 DCF tab 看结果，不满意再改核心假设重跑。",
-    discipline: ["不读 PDF。", "先加载最新 yaml1 compiler skill。"],
+    reads: [
+      "公司根目录最新 *核心假设*.md。",
+      "Agent/defaults.yaml：目标命名空间，不是预测意见。",
+      "docs/数据格式参考.md 与 docs/yaml1算法模板契约.md：字段字典和算法边界。",
+    ],
+    writes: [
+      "Agent/yaml1_公司_YYYYMMDD.yaml：人的判断覆盖层。",
+      "Agent/.modelking/forecast_params.yaml 与 yaml1_clean_report.json。",
+      "Agent/forecast/：forecast_is/bs/cf、full_is/bs/cf、dcf_summary、dcf_detail。",
+    ],
+    next: "看工作台 DCF 和完整三表；不满意就回 /adj 或 /ka 重建改判断，再 /comp。",
+    guardrails: ["compiler 是翻译器，形变照翻、歧义举旗，不替人重算判断。", "yaml1 落盘即主成功；DCF 失败要明示但不回滚 yaml1。"],
+    mentalModel: "这是人话到机器话的接缝。它不做投资判断，只保证判断能被引擎读懂。",
+    notFor: "不用于从零读研报，不用于修数据配平，不用于绕过 yaml1_cleaner。",
   },
   {
     key: "annual-update",
     name: "/annual-update",
-    tag: "支线",
-    when: "年报发布后，把旧核心假设滚到最新年份。",
+    tag: "滚续",
+    headline: "公司出了新年报后，把旧核心假设从历史末年滚到最新年。",
+    when: "已有旧核心假设.md，且 clean 数据更新到了新年报，需要保留旧稿逻辑但补入新真实年份。",
     command: "/annual-update 新乳业",
-    input: "旧核心假设.md 和新年报。",
-    output: "新日期核心假设.md，以及新的 DCF 输出。",
-    next: "用 /comp 收口；旧稿保留作复盘基准。",
-    discipline: ["数据硬失败未闭合就停。", "旧稿只读，不覆盖。"],
+    reads: [
+      "旧核心假设.md：提取历史末年 H、显式期、旋钮和所有历史行总账。",
+      "公司判断和最新观点.md、Agent/data.db、Agent/financial_expense.yaml、最新年报 Markdown。",
+      "annual_update_fetcher 输出的标准事实线和偏离诊断。",
+    ],
+    writes: [
+      "新日期核心假设.md：旧稿只读，另存新稿。",
+      "Agent/Logs/annual_update_deviation_*.md：旧预测 vs 新真实偏离诊断。",
+      "收口后通常继续生成新 yaml1 和新 Agent/forecast/。",
+    ],
+    next: "第 4 步起和用户商议估算/重定；拍板后 /comp 收口。",
+    guardrails: ["init exit 3 未闭合就停，不在脏数据上滚。", "拿不到的历史事实只能标估算待校准或待补旗，不能静默捏造。"],
+    mentalModel: "这是年度滚续，不是从零 /ka；它尊重旧稿、补真实、重拨未来。",
+    notFor: "没有旧核心假设时不要用它；那应该先 /ka。",
   },
   {
-    key: "webka",
-    name: "/webka",
-    tag: "支线",
-    when: "需要把核心假设素材打包到 Claude.ai 网页端运行。",
-    command: "python -m src.webka 新乳业",
-    input: "观点文件、活跃素材、年报 MD、核心假设生成修改器 skill。",
-    output: "WEBCLAUDE/核心假设部分/。",
-    next: "上传到网页端配合 skill 跑。",
-    discipline: ["不读 PDF，只打包 MD。", "缺 MD 先生成。"],
+    key: "da",
+    name: "/da",
+    tag: "增强",
+    headline: "重资产公司专用：把固定资产、在建工程和 PP&E 折旧变成可滚动排程。",
+    when: "公司固定资产/在建工程/产能扩张决定估值，默认 capex_pct + depr_rate 太粗。",
+    command: "/da 新乳业",
+    reads: [
+      "公司判断和最新观点.md，必须最先读。",
+      "公告/年报/*.md 里的固定资产、在建工程、折旧政策等附注。",
+      "可选 Agent业务讨论.md，作为扩张性 capex 的业务线索。",
+    ],
+    writes: [
+      "Agent/recon/da_facts_latest.json：事实层，只抽年报事实。",
+      "Agent/da_schedule.yaml：假设层，用户拍板后落盘。",
+    ],
+    next: "重跑 py -m src.forecast --ticker 公司；enabled: true 时 forecast 注入 da_series。",
+    guardrails: ["轻资产或稳态公司不要用，别把简单模型复杂化。", "事实和假设分离；未经拍板不能写 da_schedule.yaml。"],
+    mentalModel: "这是 DCF 的重资产外挂。它不改变 /ka 的常规毛利率语义，只在 forecast 阶段注入 PP&E 折旧和 capex。",
+    notFor: "不处理无形资产、使用权资产、长摊三类摊销；这些仍由 yaml1/defaults 管。",
+  },
+  {
+    key: "frontend-edit",
+    name: "/frontend-edit",
+    tag: "增强",
+    headline: "把前端试算的旋钮变更定点回写核心假设.md + patch yaml1，再跑 forecast。",
+    when: "工作台前端已完成 assumption-preview 试算并拍板，只想改几个旋钮值刷新 DCF；普通文字请求优先走 /adj quick。",
+    command: "/frontend-edit 进入前端编辑模式 ...",
+    reads: [
+      "前端 prompt：核心假设路径、当前 yaml1 路径、变更列表（label/path/year/old->new）。",
+      "公司根目录最新 核心假设.md：定位 knobs 块、horizon、抬头、中期三段式。",
+      "Agent/ 下最新 yaml1_*.yaml：定位对应旋钮 values 数组。",
+    ],
+    writes: [
+      "归档旧 核心假设.md 到 Agent/KAhistory/，再写今日新稿到公司根目录。",
+      "定点 patch yaml1 对应旋钮值（保留格式/注释，不跑 compiler）。",
+      "覆盖 Agent/forecast/：py -m src.forecast --yaml1 <新 yaml1>。",
+    ],
+    next: "汇报每条变更、md 正文&knobs&yaml1 三处同源核对、最新每股价值和 forecast 路径。",
+    guardrails: [
+      "旋钮值小改不跑 compiler；结构性变更（新增/删旋钮、改 terminal 长度）走 /adj incremental 或 /ka 重建 + /comp。",
+      "映射不到的 path 立即停，不猜；md 正文与 knobs、yaml1 三处不同源立即停。",
+      "不读定调/活跃素材/年报/业务讨论；不改历史段；派生行不动。",
+    ],
+    mentalModel: "这是一把手术刀，不是研究员。前端已替用户拍板，它只做安全定点 patch 和同源核对。",
+    notFor: "不用于重新做业务判断、不用于结构性改假设、不绕过 核心假设.md 直接改 yaml1 当源头。",
   },
 ];

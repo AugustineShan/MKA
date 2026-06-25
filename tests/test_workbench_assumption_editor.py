@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from src.workbench import (
     _apply_assumption_patches,
     _editable_assumptions,
-    _format_ka_change_prompt,
+    _format_frontend_edit_prompt,
 )
 
 
@@ -98,7 +98,7 @@ def test_apply_assumption_patches_rejects_old_value_mismatch():
         )
 
 
-def test_format_ka_change_prompt_lists_changed_revenue_driver_and_standard_knob():
+def test_format_frontend_edit_prompt_lists_changed_revenue_driver_and_standard_knob():
     data = {
         "meta": {"horizon": [2025, 2026]},
         "income.gpm": {"values": [0.29, 0.30], "src": "#整体毛利率"},
@@ -121,7 +121,7 @@ def test_format_ka_change_prompt_lists_changed_revenue_driver_and_standard_knob(
         },
     ]
 
-    prompt = _format_ka_change_prompt(
+    prompt = _format_frontend_edit_prompt(
         company_name="新乳业_002946",
         core_path="D:/MKA/companies/新乳业_002946/新乳业-20260618-核心假设.md",
         yaml1_path="D:/MKA/companies/新乳业_002946/Agent/yaml1_新乳业_20260616.yaml",
@@ -130,11 +130,16 @@ def test_format_ka_change_prompt_lists_changed_revenue_driver_and_standard_knob(
         preview_summary={"per_share_value": 18.5},
     )
 
-    assert "不要直接修改 yaml1" in prompt
+    assert "yaml1" in prompt
+    assert prompt.startswith("/frontend-edit 进入前端编辑模式")
+    assert "进入前端编辑模式" in prompt
+    assert "并更新DCF" in prompt
     assert "核心假设.md" in prompt
     assert "income.gpm" in prompt
     assert "低温鲜奶 · 销量" in prompt
     assert "2025" in prompt
     assert "0.29 -> 0.31" in prompt
-    assert "/ka" in prompt
-    assert "/comp" in prompt
+    assert "/frontend-edit" in prompt
+    assert "forecast" in prompt
+    assert "试算结果摘要" not in prompt
+    assert "per_share_value" not in prompt

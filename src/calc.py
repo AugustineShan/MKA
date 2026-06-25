@@ -664,7 +664,11 @@ def reset_forecast_dir(output_dir: Path) -> None:
     if output_dir.exists() and not output_dir.is_dir():
         raise CalcError(f"Forecast output path exists and is not a directory: {output_dir}")
     if output_dir.exists():
-        shutil.rmtree(output_dir)
+        for child in output_dir.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
     output_dir.mkdir(parents=True, exist_ok=True)
 
 

@@ -2,7 +2,7 @@
 
 import src.business_breakdown_extractor as bbe
 from src.business_breakdown_extractor import extract_report, write_company_outputs
-from src.company_paths import annual_reports_dir, official_breakdowns_dir
+from src.company_paths import annual_reports_dir, official_breakdowns_dir, quarterly_reports_dir
 
 
 def write_report(tmp_path: Path, body: str) -> Path:
@@ -11,6 +11,15 @@ def write_report(tmp_path: Path, body: str) -> Path:
     annuals.mkdir(parents=True)
     report = annuals / "2024_年度报告.md"
     report.write_text(body, encoding="utf-8")
+    return report
+
+
+def write_h1_report(tmp_path: Path, year: int, body: str) -> Path:
+    company_dir = tmp_path / "companies" / "样本公司_600000"
+    h1_dir = quarterly_reports_dir(company_dir) / str(year)
+    h1_dir.mkdir(parents=True)
+    report = h1_dir / f"{year}_半年度报告.md"
+    report.write_text(f'---\nyear: {year}\nkind: "h1"\n---\n\n{body}', encoding="utf-8")
     return report
 
 
@@ -247,4 +256,83 @@ def test_extract_reports_uses_configured_parallel_workers(tmp_path: Path, monkey
 
     assert calls["max_workers"] == 3
     assert len(rows) == 1
+
+
+def test_extracts_h1_report_with_period_identity(tmp_path: Path):
+    report = write_h1_report(
+        tmp_path,
+        2025,
+        """
+主营业务分产品情况
+单位：千元 币种：人民币
+分产品
+营业收入
+营业成本
+毛利率
+工程机械
+75,831,195
+55,640,721
+26.63
+6.03
+5.36
+增加0.47 个百分点
+主营业务分行业、分产品、分地区、分销售模式情况的说明
+""",
+    )
+
+    rows = extract_report(report)
+
+    assert len(rows) == 1
+    assert rows[0].year == 2025
+    assert rows[0].period == "2025H1"
+    assert rows[0].period_type == "h1"
+    assert rows[0].period_label == "半年度"
+
+
+def test_discovers_recent_three_h1_reports(tmp_path: Path):
+    write_report(tmp_path, "无")
+    for year in (2021, 2022, 2023, 2024, 2025):
+        write_h1_report(tmp_path, year, "无")
+
+    reports = bbe.discover_reports(tmp_path / "companies", tickers={"600000"}, include_h1=True, h1_recent_years=3)
+
+    assert [report.name for report in reports if "半年度" in report.name] == [
+        "2023_半年度报告.md",
+        "2024_半年度报告.md",
+        "2025_半年度报告.md",
+    ]
+
+
+def test_writes_h1_and_all_outputs(tmp_path: Path):
+    report = write_h1_report(
+        tmp_path,
+        2025,
+        """
+主营业务分产品情况
+单位：千元 币种：人民币
+分产品
+营业收入
+营业成本
+毛利率
+工程机械
+75,831,195
+55,640,721
+26.63
+6.03
+5.36
+增加0.47 个百分点
+主营业务分行业、分产品、分地区、分销售模式情况的说明
+""",
+    )
+    company_dir = report.parents[3]
+    rows = extract_report(report)
+
+    outputs = write_company_outputs(rows, tmp_path / "companies")
+
+    out_dir = official_breakdowns_dir(company_dir)
+    assert len(outputs) == 1
+    assert (out_dir / "business_revenue_breakdown_h1.csv").exists()
+    assert (out_dir / "business_revenue_breakdown_h1.jsonl").exists()
+    assert (out_dir / "business_revenue_breakdown_all.csv").exists()
+    assert (out_dir / "business_revenue_breakdown_all.jsonl").exists()
 

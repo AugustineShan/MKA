@@ -25,9 +25,19 @@ RESEARCH_REPORTS_DIR = "研报"
 MEETING_NOTES_DIR = "纪要"
 COLLECTION_DIR = "收集"
 IMPORTANT_FILES_DIR = "重要文件"
-ACTIVE_VORE_DIR = "active_vore"
-KA_MODEL_SUBDIR = "核心假设生成（模型放在这里）"
-BRKD_MATERIAL_SUBDIR = "业务理解器（研报和纪要放在这里）"
+INTERNAL_REPORTS_DIR = "内部报告"
+RATING_REPORTS_DIR = "评级报告"
+TRACKING_REPORTS_DIR = "跟踪报告"
+DEEP_REPORTS_DIR = "深度报告"
+OTHER_MATERIALS_DIR = "其他材料"
+ACTIVE_VORE_DIR = "Skills素材包"
+KA_MODEL_SUBDIR = "LOAD外部EXCEL模型理解器（一次最多一个）"
+BRKD_MATERIAL_SUBDIR = "BRKD业务理解器（研报和纪要放在这里）"
+TOP_WEIGHT_MATERIAL_SUBDIR = "最高权重材料-放Agent最应对齐的材料"
+ADJ_INCREMENT_SUBDIR = "ADJ增量信息（用来改模型的边际信息）"
+BRKD_MARKDOWN_STORE_SUBDIR = "markdown存储区"
+TOP_WEIGHT_MARKDOWN_STORE_SUBDIR = "markdown存储区"
+ADJ_MARKDOWN_STORE_SUBDIR = "markdown存储区"
 WEBCLAUDE_DIR = "WEBCLAUDE"
 
 TICKER_RE = re.compile(r"^\d{6}\.(SZ|SH|BJ)$")
@@ -154,18 +164,72 @@ def important_files_dir(company_dir: Path) -> Path:
     return company_dir / IMPORTANT_FILES_DIR
 
 
+def internal_reports_dir(company_dir: Path) -> Path:
+    return company_dir / INTERNAL_REPORTS_DIR
+
+
+def rating_reports_dir(company_dir: Path) -> Path:
+    return internal_reports_dir(company_dir) / RATING_REPORTS_DIR
+
+
+def tracking_reports_dir(company_dir: Path) -> Path:
+    return internal_reports_dir(company_dir) / TRACKING_REPORTS_DIR
+
+
+def deep_reports_dir(company_dir: Path) -> Path:
+    return internal_reports_dir(company_dir) / DEEP_REPORTS_DIR
+
+
+def other_materials_dir(company_dir: Path) -> Path:
+    return internal_reports_dir(company_dir) / OTHER_MATERIALS_DIR
+
+
 def active_vore_dir(company_dir: Path) -> Path:
     return company_dir / ACTIVE_VORE_DIR
 
 
 def ka_model_dir(company_dir: Path) -> Path:
-    """ka 读活跃素材的子文件夹（外部模型放这里）。"""
+    """历史名称：当前指向 LOAD 外部 Excel 模型素材文件夹。"""
     return active_vore_dir(company_dir) / KA_MODEL_SUBDIR
 
 
 def brkd_material_dir(company_dir: Path) -> Path:
     """/brkd 读研报/纪要的子文件夹。"""
     return active_vore_dir(company_dir) / BRKD_MATERIAL_SUBDIR
+
+
+def brkd_markdown_store_dir(company_dir: Path) -> Path:
+    """/brkd deterministic prepare 输出的 markdown 存储区。"""
+    return brkd_material_dir(company_dir) / BRKD_MARKDOWN_STORE_SUBDIR
+
+
+def skills_materials_dir(company_dir: Path) -> Path:
+    return active_vore_dir(company_dir)
+
+
+def load_model_dir(company_dir: Path) -> Path:
+    """/load 读取外部 Excel 模型的唯一素材文件夹。"""
+    return ka_model_dir(company_dir)
+
+
+def top_weight_material_dir(company_dir: Path) -> Path:
+    """最高权重材料子文件夹（Agent 最应该对齐的材料放这里）。当前无消费方，仅建目录占位。"""
+    return active_vore_dir(company_dir) / TOP_WEIGHT_MATERIAL_SUBDIR
+
+
+def adj_increment_dir(company_dir: Path) -> Path:
+    """ADJ增量信息子文件夹（用来改模型的边际信息放这里）。当前无消费方，仅建目录占位。"""
+    return active_vore_dir(company_dir) / ADJ_INCREMENT_SUBDIR
+
+
+def adj_markdown_store_dir(company_dir: Path) -> Path:
+    """/adj deterministic prepare 输出的 markdown 存储区。"""
+    return adj_increment_dir(company_dir) / ADJ_MARKDOWN_STORE_SUBDIR
+
+
+def top_weight_markdown_store_dir(company_dir: Path) -> Path:
+    """/ka deterministic prepare 输出的最高权重材料 markdown 存储区。"""
+    return top_weight_material_dir(company_dir) / TOP_WEIGHT_MARKDOWN_STORE_SUBDIR
 
 
 def webclaude_dir(company_dir: Path) -> Path:
@@ -189,9 +253,19 @@ def ensure_workspace_layout(company_dir: Path) -> None:
         meeting_notes_dir(company_dir),
         collection_dir(company_dir),
         important_files_dir(company_dir),
+        internal_reports_dir(company_dir),
+        rating_reports_dir(company_dir),
+        tracking_reports_dir(company_dir),
+        deep_reports_dir(company_dir),
+        other_materials_dir(company_dir),
         active_vore_dir(company_dir),
         ka_model_dir(company_dir),
         brkd_material_dir(company_dir),
+        brkd_markdown_store_dir(company_dir),
+        top_weight_material_dir(company_dir),
+        top_weight_markdown_store_dir(company_dir),
+        adj_increment_dir(company_dir),
+        adj_markdown_store_dir(company_dir),
         webclaude_dir(company_dir),
     ):
         path.mkdir(parents=True, exist_ok=True)

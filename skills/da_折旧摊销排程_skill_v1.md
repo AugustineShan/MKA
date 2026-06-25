@@ -79,10 +79,22 @@ py -m src.da_facts --ticker {代码} --base-year {base_year} --years 5
 
 ### da_schedule.yaml schema(spec §12.2,loader 已实现)
 
+`da_schedule.yaml` 是假设层审计产物,不是纯参数文件。里面每个数字必须能立刻归入三类之一:事实(`da_facts` 带来源)、人的判断(三件套/decision_log)、显式缺口旗(`待校准`/`待补旗`)。不得出现来历不明的数。
+
 ```yaml
 enabled: true                      # true 才被 forecast.py 消费
 base_year: 2024                    # 必须 = defaults.base_period 的年份(load_da_schedule 校验,不匹配 DaAlignError)
 generated_at: ...
+
+audit:
+  facts_source: Agent/recon/da_facts_latest.json
+  decision_log:
+    - field: terminal.capex_da_ratio
+      who_decided: 分析师
+      why: "成熟期回到维持性 capex≈D&A"
+      source: "公司判断和最新观点.md / da_facts_latest.json / 商议记录"
+      status: official              # official / estimated·待校准 / 待补旗
+  gaps: []                          # 抽不到或未拍板的值逐条列,不得补零
 
 ppe:
   存量策略:
@@ -135,7 +147,7 @@ terminal:
 
 `companies\{公司}\Agent\da_schedule.yaml`(`da_schedule_path(company_dir)`)。modify 模式**先归档旧版**到 `Agent\DAhistory\da_schedule_YYYYMMDD.yaml`(加时间戳后缀防覆盖,平移 /ka 的归档纪律),再写新版。init 模式直接写。
 
-`enabled: true` 才被 `forecast.py` 消费;`enabled: false` / 文件缺失 / da_roll 异常 → 自动回退轻资产路径。
+`enabled: true` 才被 `forecast.py` 消费；只要 `enabled: true`，`da_roll` 异常、未执行或被忽略都必须阻断 official forecast，**不得自动回退轻资产路径**。只有 `enabled: false` / 文件缺失才允许轻资产路径。若分析师明确要求临时忽略 DA，只能标 `reference·DA未生效`，不得覆盖正式 DCF。
 
 ### 收口(提示用户重跑)
 
@@ -151,7 +163,7 @@ py -m src.forecast --ticker {代码}
 3. **gpm→ex-dep 覆盖(仅 PP&E 拆分)**:base 年 PP&E 折旧从现金流量表 `depr_fa_coga_dpba` 取(该行 = 固定资产折旧 + 油气资产折耗 + 生产性生物资产折旧,三类同源;da_roll 建模 PP&E + other_depreciating_assets,总量校准到它;三类摊销仍嵌在 gpm 内,与轻资产一致),加回 gpm 得 `gpm_ex_dep = gpm + base_ppe_dep/revenue`。IS 用 `gpm_ex_dep` 算 oper_cost、以 `ppe_depreciation` 作**单一显式 PP&E 折旧行**扣 ebit(三类不显式,仍嵌 oper_cost)。base 年 da_roll 校准使 ppe_dep≈base_ppe_dep,故 EBIT_heavy(base)=EBIT_light(base)(会计中性)。保留 /ka 常规 gpm(loaded)输入语义。
 4. 注入 forecast_params → `calc.py` 重资产分支:BS 的 `fix_assets`/`cip` 从 da_series、CF/FCFF 的 capex/da 从 da_series、yaml1 的 `capex_pct` **禁用并告警**。
 
-若 da_roll 异常(非 `DaAlignError`)→ 自动 warning 回退轻资产 + 不阻塞 forecast。
+若 da_roll 异常(包括非 `DaAlignError`)且 `enabled: true` → 阻断 official forecast，原样报告异常，最多输出 `reference·DA未生效`；不得 warning 后静默回退轻资产。
 
 ### 终值归一化门提醒(Step 6 实现,现先提)
 
@@ -170,8 +182,8 @@ py -m src.forecast --ticker {代码}
 3. **capex 不走 `revenue × pct`**(重资产模式 capex 是项目制绝对值排程)。
 4. **capex 单一来源**:重资产模式下 BS 与 CF/FCFF 的 capex 同源(da_roll),yaml1 `capex_pct` 禁用并告警。
 5. **终值交接平滑**:`capex_da_ratio→1`,末年 da 归一化(双边)。
-6. **回退保证**:`enabled: false` / da_schedule 缺失 / da_roll 异常 → 回退轻资产,不阻塞现有公司。
-7. **审计**:`da_facts` + 时间戳副本 → `Agent\recon\`;`da_schedule.yaml` → `Agent\`,旧版 → `Agent\DAhistory\`;da_roll 产物 → `Agent\.modelking\`。
+6. **回退边界**:`enabled: false` / da_schedule 缺失 → 可回退轻资产；`enabled: true` 下 da_roll 异常或未生效 → 阻断 official forecast,只能标 `reference·DA未生效`。
+7. **审计**:`da_facts` + 时间戳副本 → `Agent\recon\`;`da_schedule.yaml` → `Agent\`,旧版 → `Agent\DAhistory\`;da_roll 产物 → `Agent\.modelking\`。`da_schedule.yaml` 必须带 `audit.facts_source`、`audit.decision_log`、`audit.gaps`，每个数都能归因到事实/判断/旗。
 8. **诚实于找不到**:exit 3 不改判、找不到证据不凑数、拿不到的值标"待校准/待补旗"。
 9. **通用性第一原则**:不写死任何公司特征(行名/业务线数量/年限/单位/拆分层级)。换任何重资产公司只要年报披露了 DA 附注就能跑。见 `CLAUDE.md` 开发总原则。
 10. **不读 PDF**:只信任已经翻译进 `.md` 的年报内容。

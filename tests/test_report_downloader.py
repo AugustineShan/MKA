@@ -152,3 +152,210 @@ class TestMinYearGate:
         ]
         kept = [r for r in reports if r.year >= report_downloader.DEFAULT_MIN_REPORT_YEAR]
         assert [r.year for r in kept] == [2010, 2011, 2024]
+
+
+class TestParseReportLenient:
+    """兜底解析：strict parse_report 漏掉、但形似定期报告本体的标题。
+
+    仅由 collect_reports 在 _looks_like_periodic_report 为真时调用；这里直接单测
+    parse_report_lenient，锁定 kind 优先级首匹配、EXCLUDED 前置排除、年份抽取。
+    """
+
+    def _item(self, title: str, adjunct_url: str = "test.pdf", announcement_id: str = "1", announcement_time: int = 0) -> dict:
+        return {
+            "announcementTitle": title,
+            "adjunctUrl": adjunct_url,
+            "announcementId": announcement_id,
+            "announcementTime": announcement_time,
+        }
+
+    ALL = {"annual", "h1", "q1", "q3"}
+
+    def test_half_year_full_text(self):
+        r = report_downloader.parse_report_lenient(self._item("2023年半年度报告全文"), {"h1"})
+        assert r is not None and r.kind == "h1" and r.year == 2023 and not r.is_revision
+
+    def test_half_year_revision(self):
+        r = report_downloader.parse_report_lenient(self._item("2023年半年度报告（修订版）"), {"h1"})
+        assert r is not None and r.is_revision
+
+    def test_q1_without_di(self):
+        # 比亚迪 2022 起去"第"字变体：strict 旧形会漏，lenient 必须接住
+        r = report_downloader.parse_report_lenient(self._item("2022年一季度报告"), {"q1"})
+        assert r is not None and r.kind == "q1" and r.year == 2022
+
+    def test_annual_short_form(self):
+        r = report_downloader.parse_report_lenient(self._item("2024年年报"), {"annual"})
+        assert r is not None and r.kind == "annual" and r.year == 2024
+
+    def test_duplicated_nian(self):
+        r = report_downloader.parse_report_lenient(self._item("2020年年年度报告"), {"annual"})
+        assert r is not None and r.kind == "annual" and r.year == 2020
+
+    def test_half_year_not_misclassified_as_annual(self):
+        """关键回归："半年度报告"含子串"年度报告"，优先级必须保证判 h1 而非 annual。"""
+        r = report_downloader.parse_report_lenient(self._item("2023年半年度报告"), self.ALL)
+        assert r is not None and r.kind == "h1"
+
+    def test_kind_not_in_allowed_rejected(self):
+        """标题是 h1 但 allowed 只含 annual → 放弃，不 fall-through 成 annual。"""
+        assert report_downloader.parse_report_lenient(self._item("2023年半年度报告"), {"annual"}) is None
+
+    def test_excluded_keywords_rejected(self):
+        for title in (
+            "2023年年度报告摘要",
+            "关于2023年半年度报告的补充公告",
+            "2023年半年度报告更正公告",
+            "2023年半年度报告（英文版）",
+        ):
+            assert report_downloader.parse_report_lenient(self._item(title), self.ALL) is None, (
+                f"非正文不应被 lenient 接住: {title}"
+            )
+
+    def test_no_kind_word_rejected(self):
+        # 含年份但无 kind 词
+        assert report_downloader.parse_report_lenient(self._item("2023年股东大会通知"), self.ALL) is None
+
+    def test_missing_adjunct_url(self):
+        assert report_downloader.parse_report_lenient(self._item("2023年半年度报告", adjunct_url=""), {"h1"}) is None
+
+
+class TestH1MarkdownGate:
+    """半年报 Markdown 仅最近 N 年生成；年报全量；Q1/Q3 不生成。"""
+
+    def _report(self, kind: str, year: int) -> "report_downloader.Report":
+        return report_downloader.Report(
+            year=year, kind=kind, is_revision=False, ann_date="", ann_id="1",
+            title=f"{year} {kind}", pdf_url="x", adjunct_size_kb=None,
+        )
+
+    def _run(self, monkeypatch, tmp_path, report, h1_markdown_years):
+        monkeypatch.setattr(report_downloader, "_fetch_pdf_with_retry", lambda *a, **k: b"%PDF-fake")
+        rendered: list[tuple[int, str]] = []
+
+        def fake_render(*, company, report, pdf_path, md_path, force):
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path.write_text("md", encoding="utf-8")
+            rendered.append((report.year, report.kind))
+            return True
+
+        monkeypatch.setattr(report_downloader, "render_markdown", fake_render)
+        company = report_downloader.CompanyInfo(
+            code="000333", ticker="000333.SZ", plate="sz", org_id="x", name="t",
+        )
+        report_downloader._download_single_report(
+            report, company, tmp_path,
+            timeout=1, generate_markdown=True, force_markdown=False,
+            h1_markdown_years=h1_markdown_years,
+        )
+        return rendered
+
+    def test_h1_in_allowed_years_rendered(self, monkeypatch, tmp_path):
+        rendered = self._run(monkeypatch, tmp_path, self._report("h1", 2024), {2023, 2024})
+        assert (2024, "h1") in rendered
+
+    def test_h1_outside_allowed_years_not_rendered(self, monkeypatch, tmp_path):
+        rendered = self._run(monkeypatch, tmp_path, self._report("h1", 2020), {2023, 2024})
+        assert rendered == []
+
+    def test_h1_none_means_all_years(self, monkeypatch, tmp_path):
+        rendered = self._run(monkeypatch, tmp_path, self._report("h1", 2015), None)
+        assert (2015, "h1") in rendered
+
+    def test_q1_never_rendered(self, monkeypatch, tmp_path):
+        rendered = self._run(monkeypatch, tmp_path, self._report("q1", 2024), None)
+        assert rendered == []
+
+    def test_q3_never_rendered(self, monkeypatch, tmp_path):
+        rendered = self._run(monkeypatch, tmp_path, self._report("q3", 2024), None)
+        assert rendered == []
+
+    def test_annual_always_rendered(self, monkeypatch, tmp_path):
+        # 年报不受 h1_markdown_years 限制
+        rendered = self._run(monkeypatch, tmp_path, self._report("annual", 2012), {2024})
+        assert (2012, "annual") in rendered
+
+
+class TestFetchPdfWithRetry:
+    """_fetch_pdf_with_retry：瞬态重试、4xx 不重试、最终失败抛出。"""
+
+    def _make_response(self, status_code: int):
+        import requests
+        resp = requests.Response()
+        resp.status_code = status_code
+        resp._content = b""
+        return resp
+
+    def test_success_first_try(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_fetch(url, *, timeout, session):
+            calls["n"] += 1
+            return b"%PDF-ok"
+
+        monkeypatch.setattr(report_downloader, "fetch_pdf_bytes", fake_fetch)
+        monkeypatch.setattr(report_downloader.time, "sleep", lambda s: None)
+        data = report_downloader._fetch_pdf_with_retry("u", timeout=1, session=None)
+        assert data == b"%PDF-ok"
+        assert calls["n"] == 1
+
+    def test_timeout_then_success(self, monkeypatch):
+        import requests
+        calls = {"n": 0}
+
+        def fake_fetch(url, *, timeout, session):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise requests.exceptions.Timeout("boom")
+            return b"%PDF-ok"
+
+        monkeypatch.setattr(report_downloader, "fetch_pdf_bytes", fake_fetch)
+        monkeypatch.setattr(report_downloader.time, "sleep", lambda s: None)
+        data = report_downloader._fetch_pdf_with_retry("u", timeout=1, session=None, max_retries=3)
+        assert data == b"%PDF-ok"
+        assert calls["n"] == 2
+
+    def test_5xx_retried(self, monkeypatch):
+        import requests
+        calls = {"n": 0}
+
+        def fake_fetch(url, *, timeout, session):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise requests.exceptions.HTTPError(response=self._make_response(503))
+            return b"%PDF-ok"
+
+        monkeypatch.setattr(report_downloader, "fetch_pdf_bytes", fake_fetch)
+        monkeypatch.setattr(report_downloader.time, "sleep", lambda s: None)
+        data = report_downloader._fetch_pdf_with_retry("u", timeout=1, session=None, max_retries=3)
+        assert data == b"%PDF-ok"
+        assert calls["n"] == 3
+
+    def test_404_not_retried(self, monkeypatch):
+        import requests
+        calls = {"n": 0}
+
+        def fake_fetch(url, *, timeout, session):
+            calls["n"] += 1
+            raise requests.exceptions.HTTPError(response=self._make_response(404))
+
+        monkeypatch.setattr(report_downloader, "fetch_pdf_bytes", fake_fetch)
+        monkeypatch.setattr(report_downloader.time, "sleep", lambda s: None)
+        with pytest.raises(requests.exceptions.HTTPError):
+            report_downloader._fetch_pdf_with_retry("u", timeout=1, session=None, max_retries=3)
+        assert calls["n"] == 1  # 4xx 不重试
+
+    def test_all_timeouts_raise(self, monkeypatch):
+        import requests
+        calls = {"n": 0}
+
+        def fake_fetch(url, *, timeout, session):
+            calls["n"] += 1
+            raise requests.exceptions.Timeout("boom")
+
+        monkeypatch.setattr(report_downloader, "fetch_pdf_bytes", fake_fetch)
+        monkeypatch.setattr(report_downloader.time, "sleep", lambda s: None)
+        with pytest.raises(requests.exceptions.Timeout):
+            report_downloader._fetch_pdf_with_retry("u", timeout=1, session=None, max_retries=2)
+        assert calls["n"] == 3  # 1 初试 + 2 重试
+

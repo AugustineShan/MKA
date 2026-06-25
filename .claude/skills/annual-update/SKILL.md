@@ -1,13 +1,24 @@
 ﻿---
 name: annual-update
-description: 把一家公司的旧核心假设.md 滚到最新年报。当用户说 "annual-update 新乳业"、"年度更新 某公司"、"把某公司核心假设滚到最新"、"某公司出年报了更新一下" 时使用。编排 init 刷数据 → annual_update_fetcher 取标准线 → 年度更新器 skill 滚旧稿(估算/重定/收口)。
+description: 把一家公司的旧核心假设.md 滚到最新年报。当用户说 "annual-update 新乳业"、"年度更新 某公司"、"把某公司核心假设滚到最新"、"某公司出年报了更新一下" 时使用。编排 init 刷数据 → 重建 defaults.yaml → annual_update_fetcher 取标准线 → 年度更新器 skill 滚旧稿(估算/重定/收口)。
 argument-hint: [公司名或代码，如 新乳业 / 002946]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
 
 # /annual-update — 年度更新编排
 
-把一份**放旧的核心假设.md** 升级到**最新年报这一版**:数据自动滚到最新、标准线免费填、拿不到的非标原子和分析师一起估、未来照生成器顺序被复盘分诊封顶地重定一遍。旧稿原样留存,另存带新日期的稿。
+把一份**放旧的核心假设.md** 升级到**最新年报这一版**:数据自动滚到最新、标准线免费填、拿不到的非标原子和分析师一起估、未来按核心假设源语言的过表顺序被复盘分诊封顶地重定一遍。旧稿原样留存,另存带新日期的稿。
+
+## 共享真源
+
+滚稿阶段必须先加载：
+
+```text
+D:\MKA\skills\核心纪律_skill_v*.md
+D:\MKA\skills\核心假设源语言_skill_v*.md
+```
+
+`/annual-update` 完整继承核心纪律 A1-A7，编辑同一套核心假设源语言 B。本文只保留年度更新独有条款：旧稿只读另存、外层 `/init` 刷数、声明式估算、双向核、annual_update_fetcher 取数清单。
 
 ## 定位(和 init / ka / comp 的边界,别混)
 
@@ -16,9 +27,11 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 | `init` | 刷数据到 A(clean_annual) | 不碰核心假设.md |
 | `ka` | 从材料生成/修改核心假设.md(通用) | 不管数据刷新 |
 | `comp` | 核心假设.md → yaml1 → forecast | 不管数据/判断 |
-| **`annual-update`** | **init 刷数据 + 把旧核心假设.md 从 H 滚到 A + comp 收口** | 不从零生成(那是 ka)、不重写数据刷新(那是 init) |
+| **`annual-update`** | **调用 init 刷数据/公告 + 重建 defaults.yaml + 把旧核心假设.md 从 H 滚到 A + comp 收口** | 不从零生成(那是 ka)、不重写 init 内部数据刷新逻辑 |
 
-它用**年度更新器 skill v1** 的时间轴平移 + 声明式估算 + 收口报告,不是 ka 的通用 modify——`annual-update` 是"数据新了 N 年,把旧稿滚过去"的特定流程。
+它用**年度更新器 skill v1** 的时间轴平移 + 声明式估算 + 收口报告,不是 `/adj incremental` 的通用补丁——`annual-update` 是"数据新了 N 年,把旧稿滚过去"的特定流程。
+
+**边界一句话**:`/annual-update` 这个外层启动器会先调用 `python -m src.init <ticker>`,所以会复用 init 里的 TuShare 取数、年报/季报下载、Markdown 抽取、clean/reconciler、财务费用附注分析；init 成功后再调用 `py -m src.defaults_gen --ticker <ticker>`，把 `defaults.yaml` 的 `base_period` 滚到最新实际年。`skills/年度更新器_skill_v1.md` 只在数据刷新完成后接管"滚旧稿"阶段;它说"不拉数据"指的是滚稿阶段不再自己联网/抓公告,不是说 `/annual-update` 不跑 init。
 
 ## 触发
 
@@ -43,12 +56,18 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 
 没旧稿 → 报"无核心假设.md,这是 init 不是更新,请走 /ka",停。
 
-### 第 2 步 · init 刷数据到 A(复用,后台跑)
+### 第 2 步 · init 刷数据到 A + 重建 defaults(复用,后台跑)
 
 ```bash
 python -m src.init <ticker>          # 增量,不带 --force
 ```
 
+- 这是完整复用 init,不只是检查本地库:默认会跑 TuShare 增量取数、年报/季报下载、年报 Markdown 抽取、clean 配平、年报 reconciler 和财务费用附注分析。除非用户明确要求,不要加 `--no-markdown`/`--no-quarterly`。
+- init 退出码为 `0` 后,立刻重建估值底座:
+  ```bash
+  py -m src.defaults_gen --ticker <ticker>
+  ```
+  这是年度更新的必要动作:如果 `clean_annual` 已到 2025,但 `defaults.yaml.base_period` 仍是 2024,`/comp` 和 `src.forecast` 的年份门禁会继续拦截正式 DCF。
 - **复杂公司务必后台跑**(`run_in_background: true`,不接 `| tail`)——首跑几分钟到十几分钟,前台撞 10 分钟超时。init 逐行流式回显 clean/reconciler 日志,后台输出文件可 Read 看进度。轮询 reconciler 至少 sleep 300s(批量 LLM 静默期)。
 - **退出码**:
   - `0` → 数据刷新成功,进第3步。
@@ -86,7 +105,8 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> \
   - 分线收入:年报萃取 `收集\年报萃取\{年}_年报萃取.md` 分部表(若该公司没萃取文件,啃 `公告\年报\{年}_年度报告.md`)。注意旧稿分线口径可能与年报不同(如新乳业 4 线 vs 年报 3 类),按旧稿口径对齐,结构性残差推算可继续用。
   - 量价原子(销量/吨价):A 股年报不披露,外部模型 `active_vore\*.xlsm` 若未更新到 A 年 → 走**声明式估算·预测真实化**(旧稿对该年预测按比例缩放对齐真实营收)。标"估算·待校准"。
   - 先押再问,拍板才落盘。
-- **第4步「重定未来」(和你一起)**:照生成器利润表顺序(收入→毛利→费用→below-OP/税→中期),被复盘分诊封顶,以定调 thesis 为锚。每块只在"该重看"的行停,干净的平移带过。
+- **第4步「重定未来」(和你一起)**:照核心假设源语言 B 的过表顺序(收入→毛利→费用→below-OP/税→中期),被复盘分诊封顶,以定调 thesis 为锚。每块只在"该重看"的行停,干净的平移带过。
+- **来源冲突**:若旧稿、真实值、定调 thesis、偏离诊断或估算来源之间冲突,按核心纪律 A2 与源语言 B7 写“来源与裁决”(候选A/候选B/采用/未采用方去处),不能静默丢掉未采用方。
 - **第5步「收口」(自动)**:跑 `/comp` → fidelity(block-diff 对新 knobs 块)→ forecast → DCF。完整性终检(总账每项划掉、新稿 ⊇ 旧稿)。出收口报告。**旧稿 + 旧 yaml1 原样留存**,另存带新日期的稿。
 
 ### 第 5 步 · 汇报
@@ -115,7 +135,7 @@ fetcher 默认 19 条覆盖**所有公司都有的 IS 通用标准线**:revenue_
 - **第4步起人机交互**:估算/重定是"先押再问、拍板才落盘",不能一口气跑完。这是 annual-update 和 init(全自动)的根本区别。
 - **raw_tushare 永不被修改**;fetcher 只读 clean_annual,不写库。
 - **定调文件只读当锚点 + 提示是否该刷新**,绝不覆写 `公司判断和最新观点.md`(那是 ka/分析师维护的)。
-- **完整性**:旧稿每条线/历史/stash 只增不减;无新数据的线 carry + 标"无新数据·平移",绝不丢。靠总账 + 填或旗 + 有序走 + 双向核四条保证(→年度更新器 skill v1)。
+- **完整性**:旧稿每条线/历史/stash 只增不减;无新数据的线 carry + 标"无新数据·平移",绝不丢。靠总账 + 填或旗 + 有序走 + 双向核四条保证(→年度更新器 skill v1；总账纪律见核心纪律 A2)。
 - 汇报用事实,不用营销词;估出来的要标"待校准"。
 
 ## 退出码 / 守门

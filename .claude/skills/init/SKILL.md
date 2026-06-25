@@ -1,12 +1,12 @@
 ﻿---
 name: init
-description: 一键拉取并校验某 A 股公司的财务数据。当用户说 "init 美的集团"、"init 000333"、"init 600519.SH"、"初始化某公司数据"、"拉一下某公司财报" 时使用。自动编排 TuShare 取数 → 年报下载 → 配平校验 → 年报补全重跑，并输出数据拉取报告。
+description: 一键拉取并校验某 A 股公司的财务数据。当用户说 "init 美的集团"、"init 000333"、"init 600519.SH"、"初始化某公司数据"、"拉一下某公司财报" 时使用。自动编排 TuShare 取数 → 年报下载 → 配平校验 → 年报补全重跑 → 年度核心指标速览，并输出数据拉取报告。
 ---
 
 # init — 一键拉取并校验 A 股财务数据
 
 把一个公司（名称 / 裸代码 / 完整 ticker）跑完 MKA 全流程：
-取数 → 年报下载 → 清洗配平校验 →（必要时）年报确认补全后重跑。
+取数 → 年报下载 → 清洗配平校验 →（必要时）年报确认补全后重跑 → 生成年度核心指标速览。
 确定性编排由 `init.py` 完成；你（Agent）只负责输入解析兜底、读退出码、如实汇报。
 
 ## 触发
@@ -32,7 +32,7 @@ python -m src.init <用户输入>
 
 **复杂公司务必后台跑，别前台 `| tail`**：复杂公司（金融子公司、多年 BS 缺明细、年度失败多）首跑要几分钟到十几分钟——前台跑会撞 10 分钟超时，且 `| tail -N` 会把输出全量缓冲到跑完才回显，用户盯着黑屏。所以：
 - **后台执行**（`run_in_background: true`），不接 `| tail`。init 现在逐行流式回显 clean/reconciler 日志（`PYTHONUNBUFFERED=1`），后台输出文件里能实时看到「Analyzing BS 2.2 2018...」「第 1 轮...」。
-- 每阶段结束打印 `⏱ 阶段N 用时 Xm Ys`，最后打印总用时分解（取数/下载/clean/财务费用）。即使用户只看最终报告，也能知道「年报下载了多久、核对了多久」。
+- 每阶段结束打印 `⏱ 阶段N 用时 Xm Ys`，最后打印总用时分解（取数/下载/clean/速览/财务费用）。即使用户只看最终报告，也能知道「年报下载了多久、核对了多久」。
 - 后台跑完会通知；中途可 Read 输出文件看进度。
 
 
@@ -43,11 +43,21 @@ python -m src.init <用户输入>
 **幂等**：脚本默认增量——当日已拉取则跳过取数，已存在的年报 PDF/MD 跳过下载，
 年报补数只在重跑时应用。所以反复 `init` 同一公司是安全且廉价的，用于日常更新数据。
 
+clean 年度表成功后，`init.py` 会覆盖生成给后续 Agent/LLM 读的年度事实速览：
+
+```text
+companies/{公司}/Agent/core_metrics_overview.md
+companies/{公司}/Agent/core_metrics_overview.json
+companies/{公司}/Agent/core_metrics_overview.csv
+```
+
+它只读 `clean_annual`，不读 forecast/yaml/defaults，不调用 LLM，不写生成时间；同一份 `clean_annual` 重跑应保持字节稳定。`--mode quarterly` 不更新这份年度速览。
+
 ### 第 2 步：按退出码决定下一步
 
 | 退出码 | 含义 | 你要做的 |
 |--------|------|----------|
-| **0** | 全链路成功 | 把 init.py 打印的「数据拉取报告」转述给用户。重点说明：哪些是纯 TuShare 通过、哪些科目经年报确认后补全（如美的的 `lending_funds`）。 |
+| **0** | 全链路成功 | 把 init.py 打印的「数据拉取报告」转述给用户。重点说明：哪些是纯 TuShare 通过、哪些科目经年报确认后补全（如美的的 `lending_funds`），以及 `core_metrics_overview.*` 是否已刷新。 |
 | **2** | 输入无法解析为唯一 ticker（中文名歧义/无匹配） | 看 stderr 列出的候选；**用 websearch 查"<公司名> A股 股票代码"** 确认正确代码，然后用完整 ticker 重新 `python init.py 000333.SZ`。 |
 | **3** | 应用年报补数后仍有年度硬校验失败（**真数据问题**） | **先如实告知用户**：哪一期/哪条 check 失败、reconciler 为何没能闭合。**然后**（agent 在线时）走下面的「退出码 3 subagent 升级通道」——派并发 subagent 啃残差。若用户明确不要升级或 subagent 也找不到证据，才如实留 exit 3。**绝不静默改判成功**。 |
 | **1** | 其它异常（API/网络/鉴权/缺 .env） | 报错并给出可能原因（TUSHARE_TOKEN、网络、中转站、年报缺失）。 |
@@ -219,6 +229,8 @@ exit 3 的失败里若混有 `跨表 7.4`（上期CF期末 ≠ 本期CF期初）
 ## 性能与耗时预期（通用，排查"慢"先看这里）
 
 - **"init 慢"≈"在等串行 LLM"，几乎从不是 TuShare 取数或年报下载慢。** 取数 0.8s/次、下载已多线程；真正的墙钟时间花在两处 LLM 循环：clean 年度失败后的 **reconcile 配平确认**，和 **财务费用细则**逐年分析。排查慢按全局 CLAUDE.md 的调试顺序：先查并发/超时，最后才怀疑模型。
+- **阶段并行（2026-06-25）**：`init.py` 的 5 阶段不再全串行——② 年报/季报下载丢后台线程，与 ③ 首轮 clean **并行**。首轮 clean 只读 `raw_tushare`（不读年报），纯 TuShare 配平的公司秒级通过 ③，不等 ② 下载完即进 ④。仅当首轮 clean 年度硬失败（reconciler 需要年报 Markdown）时才 `join` ② 再触发 reconciler。④ 核心速览 / ⑤ 财务费用仍按原序在 ② join 后跑（⑤ 读年报 Markdown）。脏公司（需 reconciler）省不下 ②，但干净公司把整段下载移出关键路径。
+- **clean 同进程（2026-06-25）**：`init.py` 改同进程调 `clean_all()`（不再 `python -m src.clean` subprocess 套娃），两轮 backfill 的 4-6 次 clean 重跑省掉每次 Python 冷启动 + pandas/tushare 重复 import。reconciler 仍由 init 显式调 `auto_reconcile_annual_failure` 触发（其内部仍 subprocess reconciler，stderr 流式回显保留）。`HARD CHECK FAIL` 行仍由 `validate_wide` 打到 stderr，init 另从 `CheckError.errors` 结构化取全量硬失败供 plug 提示。CLI `python -m src.clean` 入口不变（workbench 等仍可用）。
 - **这两处 LLM 循环已并发**（有界线程池，`LLM_MAX_WORKERS` 默认 6）：N 个失败年×bucket / N 个年份不再相加，墙钟≈最慢的一次。每次调用仍各自保留超时+重试+`chunk_errors` 分片审计，不会因并发静默吞错。公司失败年份很多时首跑仍要几分钟，但已是"最慢一次"而非"逐次相加"，属正常。
 - **首跑 vs 复跑成本不对称**：首跑要付 K 次 LLM 确认 + K 次 PDF→Markdown 解析；复跑几乎免费（年报 PDF/MD、`financial_expense.yaml`、approved override 全部缓存/跳过）。所以反复 init 同一公司廉价。`--force` 会重新付全部 LLM 成本，仅在确需重算时用。
 - 单公司还嫌慢可临时调大并发：`LLM_MAX_WORKERS=8 python -m src.init <公司>`（受 GLM/Kimi 速率限制约束，别盲目调高；默认 5 是为避开 GLM 按分钟限流，调高易触发 429）。

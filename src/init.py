@@ -1,7 +1,7 @@
-"""init.py - 一键编排 MKA 核心流程（取数 → 年报 → 清洗校验 → 年报补全重跑 → 财务费用细则）。
+"""init.py - 一键编排 MKA 核心流程（取数 → 年报 → 清洗校验 → 核心指标速览 → 财务费用细则）。
 
 给 Agent / 人用的单一入口：输入公司名 / 裸代码 / 完整 ticker，自动完成
-data_fetcher → report_downloader → clean → financial_expense_analyzer 的确定性编排，
+data_fetcher → report_downloader → clean → core_metrics_overview → financial_expense_analyzer 的确定性编排，
 并保证幂等（增量跳过、重跑只应用补数），最后输出一份"数据拉取报告"。
 
 设计边界（与 CLAUDE.md 纪律一致）：
@@ -29,25 +29,33 @@ import argparse
 import datetime as dt
 import json
 import logging
-import os
 import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import src.data_fetcher as df_mod
 from src.business_breakdown_extractor import (
     business_breakdown_max_workers,
     discover_reports as discover_business_breakdown_reports,
     extract_reports as extract_business_breakdown_reports,
-    write_outputs as write_business_breakdown_files,
+    write_breakdown_file_set as write_business_breakdown_file_set,
     write_company_outputs as write_business_breakdown_outputs,
 )
-from src.clean import approved_override_count, default_overrides_path, default_plugs_path, RECONCILE_MIN_YEAR
+from src.clean import (
+    approved_override_count,
+    auto_reconcile_annual_failure,
+    CheckError,
+    clean_all,
+    default_overrides_path,
+    default_plugs_path,
+    RECONCILE_MIN_YEAR,
+)
 from src.company_paths import (
     annual_reports_dir,
     company_dir_from_db_path,
@@ -57,6 +65,7 @@ from src.company_paths import (
     official_breakdowns_dir,
     quarterly_reports_dir,
 )
+from src.core_metrics_overview import write_core_metrics_overview
 from src.financial_expense_analyzer import (
     analyze_all_periods,
     default_yaml_path,
@@ -75,6 +84,8 @@ from cninfo.api import guess_plate  # noqa: E402
 TICKER_RE = re.compile(r"^\d{6}\.(SH|SZ|BJ)$")
 BARE_CODE_RE = re.compile(r"^\d{6}$")
 MAX_BACKFILL_CYCLES = 2  # 两轮 reconcile+apply：第一轮补数，第二轮核对第一轮残差；仍不过→plug 提示
+# 与 clean.py CLI --auto-reconcile-max-failures 默认对齐（complex 公司失败可超 30）。
+AUTO_RECONCILE_MAX_FAILURES = 60
 
 
 class TickerResolutionError(RuntimeError):
@@ -168,7 +179,7 @@ def stage_fetch(ticker: str, *, force: bool) -> tuple[Path, str]:
         if last_updated[:10] == today:
             return db_path, f"跳过（当日已拉取 last_updated={last_updated}）"
 
-    LOGGER.info("[1/4] TuShare 拉取 %s ...", ticker)
+    LOGGER.info("[1/5] TuShare 拉取 %s ...", ticker)
     new_path = Path(df_mod.fetch_company(ticker, force_refresh=force, output_root=BASE_DIR))
     return new_path, "已更新" + ("（force 全量重拉）" if force else "（UPSERT 增量）")
 
@@ -208,12 +219,14 @@ def stage_reports(
         pdf_before += q_pdf_before
         md_before += q_md_before
 
-    cmd = [sys.executable, str(BASE_DIR / "src" / "report_downloader.py"), "--ticker", ticker]
+    cmd = [sys.executable, "-m", "src.report_downloader", "--ticker", ticker]
     # 报告落到 data_fetcher 已建的公司目录，避免 cninfo 与 TuShare
     # 公司名口径不一致（半角万科A vs 全角万科Ａ）导致公告目录与 Agent/data.db 分家、
     # find_company_dir 命中多个目录而崩溃。
     cmd.extend(["--company-dir", str(company_dir)])
     cmd.extend(["--min-year", str(min_year)])
+    # 半年报 Markdown 仅最近 3 年（人工备查），省 PyMuPDF CPU；年报 md 全量。
+    cmd.extend(["--h1-md-recent-years", "3"])
     if not no_quarterly:
         cmd.append("--all-reports")
     if no_markdown:
@@ -221,7 +234,7 @@ def stage_reports(
     if force_markdown:
         cmd.append("--force-markdown")
 
-    LOGGER.info("[2/4] 年报/季报 PDF/Markdown 下载 %s ...", ticker)
+    LOGGER.info("[2/5] 年报/季报 PDF/Markdown 下载 %s ...", ticker)
     result = subprocess.run(cmd, cwd=BASE_DIR)
 
     pdf_after, md_after = _count_reports(annuals_dir)
@@ -251,27 +264,27 @@ def stage_business_breakdown(
     no_markdown: bool,
     max_workers: int | None,
 ) -> str:
-    """Extract annual-report disclosed revenue breakdowns into Agent/OfficialBreakdowns."""
+    """Extract official annual and recent H1 revenue breakdowns into Agent/OfficialBreakdowns."""
     if no_markdown:
         return "skipped (--no-markdown)"
 
     company_dir = company_dir_from_db_path(db_path)
     workers = max_workers or business_breakdown_max_workers()
     try:
-        reports = discover_business_breakdown_reports(COMPANIES_DIR, tickers={ticker})
+        reports = discover_business_breakdown_reports(COMPANIES_DIR, tickers={ticker}, include_h1=True, h1_recent_years=3)
         if not reports:
-            write_business_breakdown_files([], official_breakdowns_dir(company_dir))
+            write_business_breakdown_file_set([], official_breakdowns_dir(company_dir))
             return "0 reports, wrote empty OfficialBreakdowns"
 
         rows = extract_business_breakdown_reports(reports, max_workers=workers)
         if rows:
             outputs = write_business_breakdown_outputs(rows, COMPANIES_DIR)
         else:
-            csv_path, jsonl_path = write_business_breakdown_files([], official_breakdowns_dir(company_dir))
+            csv_path, jsonl_path = write_business_breakdown_file_set([], official_breakdowns_dir(company_dir))
             outputs = [(company_dir.name, csv_path, jsonl_path)]
         return f"{len(reports)} reports, {len(rows)} rows, {len(outputs)} company file set(s), workers={workers}"
     except Exception as exc:  # noqa: BLE001
-        LOGGER.warning("annual revenue breakdown extraction failed: %s", exc)
+        LOGGER.warning("official revenue breakdown extraction failed: %s", exc)
         return f"warning: extraction failed: {exc}"
 
 
@@ -283,48 +296,34 @@ def _fmt_dur(seconds: float) -> str:
     return f"{s}s"
 
 
-def _run_clean(
+def _run_clean_inproc(
     ticker: str,
     db_path: Path,
     *,
     mode: str,
-    no_auto_reconcile: bool,
-    verbose: bool,
     allow_plug: bool = False,
-) -> tuple[int, list[tuple[str, str, float]]]:
-    """Run clean.py, returning (returncode, hard_failures).
+) -> tuple[bool, list[tuple[str, str, float]], bool]:
+    """同进程跑 clean_all，返回 (是否通过, 硬失败列表, 是否年度失败)。
 
-    Streams clean/reconciler stderr **line-by-line as it happens** (PYTHONUNBUFFERED=1
-    + line-buffered pipe), so during the long 2-round reconcile the user sees
-    'Analyzing BS 2.2 2018...' / '第 1 轮...' live instead of a multi-minute
-    black screen. Also accumulates stderr to parse 'HARD CHECK FAIL' lines for
-    the plug prompt. stdout (clean only prints 'All checks passed!') is discarded.
+    替代原 `python -m src.clean` subprocess：省 Python 冷启动 + pandas/tushare 重复
+    import（两轮 backfill 重跑 4-6 次，每次省 2-4s）。HARD CHECK FAIL 行仍由
+    validate_wide 打到 stderr（流式回显保留）；这里另从 CheckError.errors 结构化
+    取全量硬失败供 plug 提示，免解析 stderr 文本。
+
+    **不触发 reconciler**——reconciler 需要年报 Markdown，时机由 stage_clean 显式
+    调 auto_reconcile_annual_failure 控制：首轮 clean 只读 raw_tushare，可与 ② 年报
+    下载并行；reconciler 延后到 ② 完成。
+
+    `is_annual` 复刻 clean.main 的判定（str(exc).startswith("annual validation failed")）：
+    reconciler 只对年度硬失败有意义，季度失败直接走 plug/exit 3。
     """
-    cmd = [
-        sys.executable, "-m", "src.clean",
-        "--ticker", ticker,
-        "--db", str(db_path),
-        "--mode", mode,
-    ]
-    if no_auto_reconcile:
-        cmd.append("--no-auto-reconcile")
-    if allow_plug:
-        cmd.append("--allow-annual-plug")
-    if verbose:
-        cmd.append("--verbose")
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
-    proc = subprocess.Popen(
-        cmd, cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
-    )
-    stderr_parts: list[str] = []
-    assert proc.stderr is not None
-    for line in proc.stderr:
-        stderr_parts.append(line)
-        sys.stderr.write(line)
-        sys.stderr.flush()
-    rc = proc.wait()
-    return rc, _parse_hard_failures("".join(stderr_parts))
+    try:
+        clean_all(db_path, ticker, mode=mode, allow_annual_plug=allow_plug)
+        return True, [], False
+    except CheckError as exc:
+        errs = getattr(exc, "errors", None) or [str(exc)]
+        is_annual = str(exc).startswith("annual validation failed")
+        return False, _parse_hard_failures("\n".join(errs)), is_annual
 
 
 _HARD_FAIL_RE = re.compile(r"HARD CHECK FAIL:\s+(BS \d\.\d)\s+(\d{4})\b.*?residual=([-\d.]+)")
@@ -376,35 +375,52 @@ def ensure_company_artifacts(db_path: Path) -> str:
     return "⏭️ 已存在"
 
 
-def stage_clean(ticker: str, db_path: Path, *, mode: str, verbose: bool) -> tuple[bool, str]:
-    """阶段②清洗校验：两轮年报补全 + plug 兜底。
+def stage_clean(
+    ticker: str,
+    db_path: Path,
+    *,
+    mode: str,
+    verbose: bool,
+    ensure_reports_done: Callable[[], None],
+) -> tuple[bool, str]:
+    """阶段③清洗校验：首轮与 ② 年报下载并行 + 两轮年报补全 + plug 兜底。
 
-    流程：
-      第一轮 — clean 失败时内部强触发 reconciler（reconciler 先应用已有 override 再提议）。
-      循环 MAX_BACKFILL_CYCLES 轮 — 每轮：应用新 override 重跑 clean；（非末轮）再强触发
-        reconciler 在残差上提议下一轮。reconciler 应用已有 override 后只看残差，故第二轮
-        天然"核对第一轮"——LLM 看到 round 1 已补的值，专攻更小残差。
-      两轮仍不过 — 问用户是否塞年度 QA plug（吸收残差入库，带 warning+审计）。
+    首轮 clean 只读 raw_tushare（不读年报），故可与 ② 年报下载并行：
+      - 纯 TuShare 配平的公司首轮秒级通过，不等 ②，直接进 ④。
+      - 首轮失败 → reconciler 需要年报 Markdown，调 ensure_reports_done() 等 ② 完成，
+        再显式触发 reconciler（reconciler 自行重算失败，不必 clean 重跑）。
+    之后两轮 apply + 必要时第 2 轮强触发，与原逻辑一致。
+    reconciler 只对年度硬失败有意义；季度失败直接走 plug/exit 3。
 
     返回 (是否最终通过, 状态描述)。最终未通过 → 调用方返回退出码 3。
     """
     override_path = default_overrides_path(db_path)
     approved_before = approved_override_count(override_path)
-    # 既有 plug 指令 = 用户已批准的硬残差兜底。重跑时 clean 自动沿用（--allow-annual-plug），
+    # 既有 plug 指令 = 用户已批准的硬残差兜底。重跑时 clean 自动沿用（allow_annual_plug），
     # 这些残差被吸收不再触发提示；只有新出现的、plug 文件未覆盖的硬失败才进 plug 提示。
     plug_path = default_plugs_path(db_path)
-    plug_exists = plug_path.exists()
-    allow_plug = plug_exists
+    allow_plug = plug_path.exists()
 
-    LOGGER.info("[3/4] clean 配平校验 %s (mode=%s) ...", ticker, mode)
-    # 第一轮提议：clean 失败 → 内部强触发 reconciler
-    rc, fails = _run_clean(ticker, db_path, mode=mode, no_auto_reconcile=False, verbose=verbose, allow_plug=allow_plug)
-    if rc == 0:
+    LOGGER.info("[3/5] clean 配平校验 %s (mode=%s) ...（首轮与年报下载并行）", ticker, mode)
+    # 首轮：只读 raw_tushare，不触发 reconciler——与 ② 并行。
+    ok, fails, is_annual = _run_clean_inproc(ticker, db_path, mode=mode, allow_plug=allow_plug)
+    if ok:
         if approved_before > 0:
             return True, f"✅ 通过（含 {approved_before} 项既有年报补数，详见下方科目）"
         return True, "✅ 全部通过（纯 TuShare 数据已配平）"
 
-    # 两轮 reconcile+apply
+    # 非年度失败（季度硬失败）——reconciler 帮不上，直接走 plug/exit 3，不等 ②。
+    if not is_annual:
+        return _offer_annual_plug(ticker, db_path, mode, fails, verbose)
+
+    # 年度硬失败 → reconciler 需要年报 Markdown，等 ② 下载完成。
+    LOGGER.info("首轮 clean 有年度硬失败，等年报下载完成后触发年报核对 ...")
+    ensure_reports_done()
+
+    # 第 1 轮强触发 reconciler（直接调，免 clean 重跑——reconciler 内部自行重算失败）。
+    auto_reconcile_annual_failure(db_path, ticker, max_failures=AUTO_RECONCILE_MAX_FAILURES)
+
+    # 两轮 apply + 必要时第 2 轮强触发
     for cycle in range(MAX_BACKFILL_CYCLES):
         approved_after = approved_override_count(override_path)
         if approved_after <= approved_before:
@@ -414,15 +430,14 @@ def stage_clean(ticker: str, db_path: Path, *, mode: str, verbose: bool) -> tupl
         approved_before = approved_after
         LOGGER.info("第 %d 轮：年报核对累计 %d 条 approved override（新增 %d），重跑 clean 应用 ...",
                     cycle + 1, approved_after, new_count)
-        rc, fails = _run_clean(ticker, db_path, mode=mode, no_auto_reconcile=True, verbose=verbose, allow_plug=allow_plug)
-        if rc == 0:
+        ok, fails, is_annual = _run_clean_inproc(ticker, db_path, mode=mode, allow_plug=allow_plug)
+        if ok:
             return True, f"✅ 通过（其中 {approved_after} 项经年报确认后补全，详见 clean_adjustments）"
+        if not is_annual:
+            break  # 转为季度失败，reconciler 无效，走 plug
         if cycle < MAX_BACKFILL_CYCLES - 1:
-            # 非末轮：再强触发 reconciler，在残差上提议下一轮
             LOGGER.info("第 %d 轮应用后仍有硬失败，强触发 reconciler 核对残差 ...", cycle + 1)
-            rc, fails = _run_clean(ticker, db_path, mode=mode, no_auto_reconcile=False, verbose=verbose, allow_plug=allow_plug)
-            if rc == 0:
-                return True, "✅ 通过（年报核对补全）"
+            auto_reconcile_annual_failure(db_path, ticker, max_failures=AUTO_RECONCILE_MAX_FAILURES)
 
     # 两轮都不过 → plug 提示（fails 只含 plug 未覆盖的新硬失败，既有 plug 已被 allow_plug 吸收）
     return _offer_annual_plug(ticker, db_path, mode, fails, verbose)
@@ -492,13 +507,31 @@ def _offer_annual_plug(
     )
     LOGGER.info("已写 %s（追加 %d 条新 plug，累计 %d 条），重跑 clean 应用年度 plug ...",
                 plug_path, len(new_plugs), len(all_plugs))
-    rc, _ = _run_clean(ticker, db_path, mode="annual", no_auto_reconcile=True, verbose=verbose, allow_plug=True)
-    if rc == 0:
+    ok, _, _is_annual = _run_clean_inproc(ticker, db_path, mode="annual", allow_plug=True)
+    if ok:
         return True, (
             f"✅ 通过（新增 {len(new_plugs)} 个硬失败用年度 QA plug 吸收，累计 {len(all_plugs)} 条 plug；"
             "详见 clean_warnings annual_bs_plug；建议人工核对后改用 LLM override 并删 plug）"
         )
     return False, "❌ 塞年度 plug 后仍失败（不应发生，请检查 annual_plugs.json 与残差方向）"
+
+
+def stage_core_metrics_overview(ticker: str, db_path: Path, *, mode: str) -> str:
+    """生成 clean_annual 年度核心指标速览。
+
+    这是 /init 后续 Agent 的历史事实底稿，只读 clean_annual，失败不阻塞 init 主链路。
+    """
+    if mode == "quarterly":
+        return "⏭️ --mode quarterly 未更新年度速览"
+
+    LOGGER.info("[4/5] 年度核心指标速览 %s ...", ticker)
+    try:
+        paths = write_core_metrics_overview(db_path)
+        names = ", ".join(path.name for path in paths.values())
+        return f"✅ 已生成 {names}"
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("年度核心指标速览生成失败（不影响 init 退出码）: %s", exc)
+        return f"⚠️ 生成失败: {exc}"
 
 
 def stage_financial_expense(
@@ -508,12 +541,12 @@ def stage_financial_expense(
     force: bool,
     verbose: bool,
 ) -> tuple[str, dict[str, Any] | None]:
-    """阶段③：财务费用细则分析（clean 之后、defaults 之前）。
+    """阶段⑤：财务费用细则分析（clean 之后、defaults 之前）。
 
     生成 companies/{公司}/Agent/financial_expense.yaml 多年档案；失败仅 warning，不阻塞管线。
     返回 (状态描述, archive dict 或 None)。
     """
-    LOGGER.info("[4/4] 财务费用细则分析 %s ...", ticker)
+    LOGGER.info("[5/5] 财务费用细则分析 %s ...", ticker)
     try:
         yaml_path = analyze_all_periods(ticker, db_path=db_path, force=force)
         import yaml  # type: ignore
@@ -538,6 +571,7 @@ def build_report(
     report_status: str,
     revenue_breakdown_status: str,
     clean_status: str,
+    core_metrics_status: str,
     fin_exp_status: str,
 ) -> str:
     meta = read_meta(db_path)
@@ -546,16 +580,17 @@ def build_report(
     lines.append("=" * 64)
     lines.append(f"  init 数据拉取报告: {name} ({ticker})")
     lines.append("=" * 64)
-    lines.append(f"  [0/4] 公司目录入口    : {artifacts_status}")
-    lines.append(f"  [1/4] TuShare 拉取      : {fetch_status}")
+    lines.append(f"  [0/5] 公司目录入口    : {artifacts_status}")
+    lines.append(f"  [1/5] TuShare 拉取      : {fetch_status}")
     if meta:
         lines.append(
             f"          latest_trade_date={meta.get('latest_trade_date','?')} "
             f"last_report_period={meta.get('last_report_period','?')}"
         )
-    lines.append(f"  [2/4] 年报 PDF/Markdown : {report_status}")
-    lines.append(f"  [3/4] clean 配平校验    : {clean_status}")
-    lines.append(f"  [4/4] 财务费用细则      : {fin_exp_status}")
+    lines.append(f"  [2/5] 年报 PDF/Markdown : {report_status}")
+    lines.append(f"  [3/5] clean 配平校验    : {clean_status}")
+    lines.append(f"  [4/5] 核心指标速览      : {core_metrics_status}")
+    lines.append(f"  [5/5] 财务费用细则      : {fin_exp_status}")
 
     with closing(sqlite3.connect(db_path)) as conn:
         def _count(table: str) -> int:
@@ -641,48 +676,86 @@ def run_one(
 
     artifacts_status = ensure_company_artifacts(db_path)
 
-    t0 = time.monotonic()
-    report_status = stage_reports(
-        ticker,
-        db_path,
-        no_markdown=no_markdown,
-        force_markdown=force_markdown,
-        no_quarterly=no_quarterly,
-        min_year=min_year,
+    # ② 年报/季报下载丢后台线程，与 ③ 首轮 clean 并行（clean 首轮只读 raw_tushare，不读年报）。
+    # 首轮纯 TuShare 配平的公司，③ 秒级完成时 ② 仍在后台下载，不阻塞 ③→④。
+    t_reports_start = time.monotonic()
+    reports_box: dict[str, str] = {}
+
+    def _run_reports_stage() -> None:
+        try:
+            reports_box["report"] = stage_reports(
+                ticker,
+                db_path,
+                no_markdown=no_markdown,
+                force_markdown=force_markdown,
+                no_quarterly=no_quarterly,
+                min_year=min_year,
+            )
+            reports_box["breakdown"] = stage_business_breakdown(
+                ticker,
+                db_path,
+                no_markdown=no_markdown,
+                max_workers=breakdown_workers,
+            )
+        except Exception as exc:  # noqa: BLE001
+            reports_box["error"] = f"⚠️ ② 阶段异常: {exc}"
+
+    reports_thread = threading.Thread(
+        target=_run_reports_stage, name=f"init-reports-{ticker}", daemon=True
     )
-    t_report = time.monotonic() - t0
-    t0 = time.monotonic()
-    revenue_breakdown_status = stage_business_breakdown(
-        ticker,
-        db_path,
-        no_markdown=no_markdown,
-        max_workers=breakdown_workers,
-    )
-    t_breakdown = time.monotonic() - t0
-    LOGGER.info("annual revenue breakdown extraction took %s", _fmt_dur(t_breakdown))
-    LOGGER.info("⏱ 阶段② 年报/季报下载用时 %s", _fmt_dur(t_report))
+    reports_thread.start()
+
+    reports_joined = {"done": False}
+
+    def _ensure_reports_done() -> None:
+        if reports_joined["done"]:
+            return
+        reports_thread.join()
+        reports_joined["done"] = True
+        dur = time.monotonic() - t_reports_start
+        reports_joined["dur"] = dur
+        LOGGER.info("⏱ 阶段② 年报/季报下载用时 %s（与 ③ 首轮 clean 并行）", _fmt_dur(dur))
 
     t0 = time.monotonic()
-    ok, clean_status = stage_clean(ticker, db_path, mode=mode, verbose=verbose)
+    ok, clean_status = stage_clean(
+        ticker, db_path, mode=mode, verbose=verbose, ensure_reports_done=_ensure_reports_done
+    )
     t_clean = time.monotonic() - t0
     LOGGER.info("⏱ 阶段③ clean 配平+年报核对用时 %s", _fmt_dur(t_clean))
+
+    # ③ 完成后确保 ② 也完成：⑤ 财务费用细则读年报 Markdown，报告也需要 ② 状态。
+    _ensure_reports_done()
+    report_status = reports_box.get("report", "")
+    revenue_breakdown_status = reports_box.get("breakdown", "")
+    if not report_status:
+        report_status = reports_box.get("error", "⚠️ ② 阶段未产出状态")
+
+    if ok:
+        t0 = time.monotonic()
+        core_metrics_status = stage_core_metrics_overview(ticker, db_path, mode=mode)
+        t_core_metrics = time.monotonic() - t0
+    else:
+        core_metrics_status = "⏭️ clean 未通过，未生成"
+        t_core_metrics = 0.0
+    LOGGER.info("⏱ 阶段④ 年度核心指标速览用时 %s", _fmt_dur(t_core_metrics))
 
     t0 = time.monotonic()
     fin_exp_status, _evidence = stage_financial_expense(
         ticker, db_path, force=force, verbose=verbose
     )
     t_finexp = time.monotonic() - t0
-    LOGGER.info("⏱ 阶段④ 财务费用细则用时 %s", _fmt_dur(t_finexp))
+    LOGGER.info("⏱ 阶段⑤ 财务费用细则用时 %s", _fmt_dur(t_finexp))
 
     LOGGER.info(
-        "⏱ 总用时 %s（取数 %s / 下载 %s / clean %s / 财务费用 %s）",
-        _fmt_dur(time.monotonic() - t_total), _fmt_dur(t_fetch), _fmt_dur(t_report),
-        _fmt_dur(t_clean), _fmt_dur(t_finexp),
+        "⏱ 总用时 %s（取数 %s / 下载 %s / clean %s / 速览 %s / 财务费用 %s）",
+        _fmt_dur(time.monotonic() - t_total), _fmt_dur(t_fetch),
+        _fmt_dur(reports_joined.get("dur", 0.0)),
+        _fmt_dur(t_clean), _fmt_dur(t_core_metrics), _fmt_dur(t_finexp),
     )
 
     print("\n" + build_report(
         ticker, db_path, artifacts_status, fetch_status, report_status,
-        revenue_breakdown_status, clean_status, fin_exp_status
+        revenue_breakdown_status, clean_status, core_metrics_status, fin_exp_status
     ))
 
     return 0 if ok else 3
@@ -690,7 +763,7 @@ def run_one(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="一键编排 MKA 核心流程：取数 → 年报 → 清洗校验 → 年报补全重跑 → 财务费用细则（幂等）。"
+        description="一键编排 MKA 核心流程：取数 → 年报 → 清洗校验 → 核心指标速览 → 财务费用细则（幂等）。"
     )
     parser.add_argument("inputs", nargs="+", help="公司名 / 裸代码 / 完整 ticker（可多个）")
     parser.add_argument("--force", action="store_true",

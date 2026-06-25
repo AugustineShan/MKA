@@ -125,7 +125,7 @@ def newest_core_assumption_skill(skills_dir: Path = SKILLS_DIR) -> Path | None:
     """取最新版核心假设生成修改器 skill 文件（按文件名版本号 vN）。"""
     if not skills_dir.exists():
         return None
-    files = list(skills_dir.glob("核心假设生成修改器_skill_v*.md"))
+    files = list(skills_dir.glob("*核心假设生成修改器_skill_v*.md"))
     if not files:
         return None
 
@@ -190,7 +190,8 @@ def copy_to_webclaude(company_dir: Path) -> dict[str, str]:
     # 5. 核心假设生成修改器 skill（网页端执行时需要）
     skill_file = newest_core_assumption_skill()
     if skill_file:
-        dest = webclaude_dir / f"04_{skill_file.name}"
+        # 源文件已带序号前缀（如 04_），直接沿用原名，避免 04_04_ 重复
+        dest = webclaude_dir / skill_file.name
         shutil.copy2(skill_file, dest)
         report["核心假设生成修改器 skill"] = f"✅ {skill_file.name}"
     else:

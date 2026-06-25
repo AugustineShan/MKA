@@ -27,6 +27,9 @@ from src.calc import (
     value_from_statements,
     write_outputs,
 )
+from src.assumption_staleness import ensure_assumptions_fresh
+from src.company_excel_export import export_company_excel
+from src.derived_metrics import build_and_write_derived_metrics
 from src.yaml1_cleaner import (
     clean_yaml1,
     find_company_dir,
@@ -174,6 +177,12 @@ class ForecastRun:
     manifest_path: Path
     summary: dict[str, Any]
     warnings_count: int
+    derived_metrics_path: Path | None = None
+    derived_metrics_annual_path: Path | None = None
+    derived_metrics_quarterly_path: Path | None = None
+    company_excel_output_path: Path | None = None
+    company_excel_export_status: str | None = None
+    company_excel_export_warning: str | None = None
 
 
 def _infer_company_dir(ticker: str | None, yaml1_path: Path | None, defaults_path: Path | None) -> Path:
@@ -195,10 +204,16 @@ def _infer_code(company_dir: Path, ticker: str | None) -> str:
 def _manifest(
     run: ForecastRun,
     report: dict[str, Any],
+    *,
+    mode: str = "official",
 ) -> dict[str, Any]:
+    contract = "Agent/defaults.yaml + Agent/yaml1*.yaml -> Agent/forecast/"
+    if mode != "official":
+        contract = "load vintage sandbox: defaults.yaml + yaml1*.yaml -> Load/{id}/forecast/"
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "contract": "Agent/defaults.yaml + Agent/yaml1*.yaml -> Agent/forecast/",
+        "mode": mode,
+        "contract": contract,
         "yaml2_defaults_path": str(run.defaults_path),
         "yaml1_path": str(run.yaml1_path),
         "clean_annual_path": str(run.clean_annual_path),
@@ -209,6 +224,12 @@ def _manifest(
         "warnings_count": run.warnings_count,
         "errors_count": len(report.get("errors", [])),
         "summary": run.summary,
+        "derived_metrics_path": str(run.derived_metrics_path) if run.derived_metrics_path else None,
+        "derived_metrics_annual_path": str(run.derived_metrics_annual_path) if run.derived_metrics_annual_path else None,
+        "derived_metrics_quarterly_path": str(run.derived_metrics_quarterly_path) if run.derived_metrics_quarterly_path else None,
+        "company_excel_output_path": str(run.company_excel_output_path) if run.company_excel_output_path else None,
+        "company_excel_export_status": run.company_excel_export_status,
+        "company_excel_export_warning": run.company_excel_export_warning,
     }
 
 
@@ -274,6 +295,9 @@ def run_company_forecast(
     clean_annual_path: str | Path | None = None,
     output_dir: str | Path | None = None,
     internal_dir: str | Path | None = None,
+    skip_staleness_gate: bool = False,
+    mode: str = "official",
+    write_derived_outputs: bool = True,
 ) -> ForecastRun:
     yaml1 = Path(yaml1_path) if yaml1_path else None
     defaults = Path(defaults_path) if defaults_path else None
@@ -289,6 +313,12 @@ def run_company_forecast(
     out_dir = Path(output_dir) if output_dir else company_forecast_dir(company_dir)
     manifest_path = out_dir / MANIFEST_FILENAME
 
+    if not skip_staleness_gate:
+        ensure_assumptions_fresh(
+            yaml1_path=yaml1,
+            defaults_path=defaults,
+            clean_annual_path=clean_annual,
+        )
     cleaned = clean_yaml1(yaml1, defaults, clean_annual)
     da_warnings: list[dict[str, Any]] = []
     da_series = _maybe_roll_da_series(
@@ -349,8 +379,26 @@ def run_company_forecast(
         result["cash_flow"],
         build.base_period,
     )
+    if write_derived_outputs:
+        try:
+            derived_metrics, derived_paths = build_and_write_derived_metrics(company_dir)
+            run.derived_metrics_path = derived_paths.get("json")
+            run.derived_metrics_annual_path = derived_paths.get("annual_csv")
+            run.derived_metrics_quarterly_path = derived_paths.get("quarterly_csv")
+            try:
+                run.company_excel_output_path = export_company_excel(company_dir, metrics=derived_metrics)
+                run.company_excel_export_status = "written"
+            except Exception as exc:  # noqa: BLE001 - Excel export is non-blocking.
+                run.company_excel_export_status = "failed"
+                run.company_excel_export_warning = str(exc)
+        except Exception as exc:  # noqa: BLE001 - keep the core DCF contract available.
+            run.company_excel_export_status = "skipped"
+            run.company_excel_export_warning = f"derived metrics failed: {exc}"
+    else:
+        run.company_excel_export_status = "skipped"
+        run.company_excel_export_warning = "derived outputs disabled"
     manifest_path.write_text(
-        json.dumps(_manifest(run, cleaned.report), ensure_ascii=False, indent=2) + "\n",
+        json.dumps(_manifest(run, cleaned.report, mode=mode), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     return run

@@ -175,11 +175,13 @@ def collect_failures(
     # 与 clean.validate_wide 同步推断面值：TuShare total_share 是股数，权益校验需
     # par×total_share 折算股本元，否则 BS 4.1 会被误报为失败（面值≠1 的公司）。
     bs_reclass_by_period = wide.attrs.get("bs_reclass", {})
+    null_fields_by_period = wide.attrs.get("null_fields_by_period", {})
     par_value = clean.infer_par_value(wide, present_by_period, bs_reclass_by_period)
 
     for period in sorted(str(period) for period in wide.index.tolist()):
         row = wide.loc[period].to_dict()
         present = present_by_period.get(period, set())
+        null_fields = null_fields_by_period.get(period, set())
 
         # Skip heavy checks for non-target periods (only_period) AND for any
         # pre-RECONCILE_MIN_YEAR period: 2010 之前的年度披露稀疏、不对年报核对，
@@ -194,7 +196,7 @@ def collect_failures(
             continue
 
         messages: list[str] = []
-        messages.extend(clean.check_is(row, present, period))
+        messages.extend(clean.check_is(row, present, period, null_fields=null_fields))
         messages.extend(clean.check_bs(row, present, period, par=par_value)[0])
         messages.extend(clean.check_cf(row, present, period))
         messages.extend(clean.check_is_supplement(row, present, period))
@@ -1089,28 +1091,53 @@ def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     if llm.get("recommended_action") != "add_override":
         return []
 
-    out: list[dict[str, Any]] = []
     provider = str(llm.get("_provider") or llm_provider())
     candidates = analysis.get("candidate_tushare_fields", []) or []
+    # ① 服务端字段映射：LLM 常把科目名映射到不存在/拼错的字段（lease_ncl、
+    # null）。只用 candidate 集反向映射，映射不到就跳过，绝不接受集外字段。
+    mapped_items: list[dict[str, Any]] = []
     for item in llm.get("missing_or_suspicious_items", []):
         if not isinstance(item, dict):
             continue
-        # ① 服务端字段映射：LLM 常把科目名映射到不存在/拼错的字段（lease_ncl、
-        # null）。只用 candidate 集反向映射，映射不到就跳过，绝不接受集外字段。
         field = resolve_candidate_field(
             item.get("candidate_tushare_field"),
             item.get("annual_report_item"),
             candidates,
         )
         value = item.get("value_million_cny")
-        diff = item.get("residual_difference_million_cny")
         if not field or value is None:
             continue
+        mapped_items.append({**item, "candidate_tushare_field": field})
+
+    # 单字段闭合优先：某 missing item 的值恰好解释残差（diff<TOLERANCE）。
+    out: list[dict[str, Any]] = []
+    for it in mapped_items:
+        diff = it.get("residual_difference_million_cny")
         if diff is not None and abs(float(diff)) >= clean.TOLERANCE:
             continue
-        mapped = {**item, "candidate_tushare_field": field}
-        out.append({"source": provider, "confidence": llm.get("confidence"), **mapped})
-    return out
+        out.append({"source": provider, "confidence": llm.get("confidence"), **it})
+    if out:
+        return out
+
+    # 联合闭合：单个字段都不闭合残差，但多个 missing items 的值之和闭合
+    # （IS 1.2 同时缺 oth_income/credit_impa_loss/asset_disp_income 等多个
+    # operating_adjustment，单字段 diff 都大，但三者合计 = signed_residual）。
+    # 这是 IS operating_adjustment TuShare-NULL 缺口的典型形态。联合闭合必须
+    # Σ(value) ≈ signed_residual，且每字段仍受 fallback 的 old_value=0 守卫约束
+    # （add_override 语义：只补 TuShare 漏录/为 0 的明细，不覆盖已有非 0 值）。
+    if mapped_items:
+        failure = analysis.get("failure", {}) or {}
+        residual = float(failure.get("residual") or 0.0)
+        signed_residual = (
+            -residual if str(failure.get("direction")) == "target_lt_calc" else residual
+        )
+        group_sum = sum(float(it["value_million_cny"]) for it in mapped_items)
+        if abs(signed_residual - group_sum) < clean.TOLERANCE:
+            return [
+                {"source": provider, "confidence": llm.get("confidence"), **it}
+                for it in mapped_items
+            ]
+    return []
 
 
 def _llm_propose_fallback(

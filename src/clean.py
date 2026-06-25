@@ -445,8 +445,19 @@ def pivot_to_wide(
 
     # Build present_fields (using original field names, not prefixed)
     present_by_period: dict[str, set[str]] = {}
+    # null_fields_by_period: income-endpoint fields whose raw value is NULL,
+    # captured BEFORE fillna(0) so the validator can distinguish a TuShare
+    # data-source gap (NULL → hard-fail IS 1.2 → reconciler backfills) from a
+    # company-reported 0 (legit empty optional adjustment). Income-only because
+    # missing_optional gates IS checks; a cashflow credit_impa_loss NULL must
+    # not masquerade as an income gap.
+    null_fields_by_period: dict[str, set[str]] = {}
     for period, group in df.groupby("period"):
         present_by_period[str(period)] = set(group["field"].tolist())
+        income_group = group[group["endpoint"] == "income"]
+        null_fields_by_period[str(period)] = set(
+            income_group.loc[income_group["value"].isna(), "field"].tolist()
+        )
 
     # Pivot using renamed columns
     # Collect ALL column names before pivot so that all-NaN columns are not
@@ -464,6 +475,7 @@ def pivot_to_wide(
     pivot = pivot.reindex(columns=all_columns)
     pivot = pivot.fillna(0.0)
     pivot = ensure_qa_columns(pivot)
+    pivot.attrs["null_fields_by_period"] = null_fields_by_period
     if mode == "quarterly":
         pivot.attrs["output_periods"] = output_periods
         pivot.attrs["helper_periods"] = helper_periods
@@ -735,10 +747,25 @@ def base_is_adjustment_sum(row: dict[str, float]) -> float:
     return total
 
 
-def missing_optional_is_adjustments(row: dict[str, float], present: set[str]) -> list[str]:
-    """Return optional operating adjustment fields present in raw but empty in clean."""
+def missing_optional_is_adjustments(
+    row: dict[str, float],
+    present: set[str],
+    null_fields: set[str] | None = None,
+) -> list[str]:
+    """Return optional operating adjustments that are present, truly 0, and NOT raw-NULL.
+
+    A field counts as "optional-empty" (→ trust official subtotal, no hard-fail)
+    only when the company actually reported 0. A TuShare NULL (captured in
+    null_fields_by_period before fillna(0)) is a data-source gap, not a reported
+    0 — excluding it makes the gap surface as an IS 1.2 hard failure so the
+    reconciler fires and backfills from the annual report. Without this, fillna(0)
+    erases the NULL-vs-0 distinction and the gap is silently swallowed.
+    """
+    null_set = null_fields or set()
     missing: list[str] = []
     for field in sorted(OPTIONAL_IS_ADJUSTMENT_FIELDS):
+        if field in null_set:
+            continue
         if field in present and abs(get_income_value(row, field)) <= 1e-9:
             missing.append(field)
     return missing
@@ -868,7 +895,7 @@ def resolve_is_signs(
     ]
 
 
-def check_is(row: dict[str, float], present: set[str], year: str, sign_map: dict[str, int] | None = None) -> list[str]:
+def check_is(row: dict[str, float], present: set[str], year: str, sign_map: dict[str, int] | None = None, null_fields: set[str] | None = None) -> list[str]:
     """Income statement hard checks using exhaustive field categorisation."""
     errors: list[str] = []
 
@@ -943,8 +970,20 @@ def check_is(row: dict[str, float], present: set[str], year: str, sign_map: dict
         oper_profit_calc = revenue_base - total_cogs + is_bucket_sum("operating_adjustment", row, present)
     residual = abs(operate_profit - oper_profit_calc)
     if residual >= TOLERANCE:
-        missing_optional = missing_optional_is_adjustments(row, present)
-        if missing_optional:
+        missing_optional = missing_optional_is_adjustments(row, present, null_fields)
+        null_optional = OPTIONAL_IS_ADJUSTMENT_FIELDS & (null_fields or set())
+        if null_optional:
+            # A TuShare-NULL optional adjustment is contributing to the residual —
+            # a data-source gap, not a company-not-disclosed situation. Hard-fail so
+            # the reconciler fires and backfills from the annual report. A reported-0
+            # optional alone must not smuggle a coexisting NULL gap through the放行
+            # gate (e.g. forex_gain reported 0 + oth_income NULL in the same period).
+            errors.append(
+                f"IS 1.2 {year} 营业利润: operate_profit={operate_profit:.4f} "
+                f"calc={oper_profit_calc:.4f} residual={residual:.4f} "
+                f"(TuShare-NULL optional: {sorted(null_optional)})"
+            )
+        elif missing_optional:
             LOGGER.warning(
                 "IS 1.2 %s uses official operate_profit because optional operating adjustments are empty: "
                 "missing=%s operate_profit=%.4f calc=%.4f residual=%.4f",
@@ -1526,7 +1565,7 @@ def check_cross_table(row: dict[str, float], present: set[str], year: str) -> li
     return errors
 
 
-def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]:
+def check_soft(row: dict[str, float], present: set[str], year: str, null_fields: set[str] | None = None) -> list[str]:
     """Soft checks — warnings only."""
     warnings: list[str] = []
 
@@ -1549,8 +1588,9 @@ def check_soft(row: dict[str, float], present: set[str], year: str) -> list[str]
     )
     operate_profit = get_income_value(row, "operate_profit")
     optional_gap = operate_profit - oper_profit_calc
-    missing_optional = missing_optional_is_adjustments(row, present)
-    if abs(optional_gap) >= TOLERANCE and missing_optional:
+    missing_optional = missing_optional_is_adjustments(row, present, null_fields)
+    null_optional = OPTIONAL_IS_ADJUSTMENT_FIELDS & (null_fields or set())
+    if abs(optional_gap) >= TOLERANCE and missing_optional and not null_optional:
         warnings.append(
             f"IS 1.2 {year} 官方源缺少可选营业调整项，营业利润按官方 subtotal 保留: "
             f"missing={missing_optional} operate_profit={operate_profit:.4f} "
@@ -1654,6 +1694,7 @@ def validate_wide(
     for period in sorted_periods:
         row = wide.loc[period].to_dict()
         present = present_by_period.get(period, set())
+        null_fields = wide.attrs.get("null_fields_by_period", {}).get(period, set())
         reclass = bs_reclass_by_period.get(period)
 
         period_errors: list[str] = []
@@ -1664,9 +1705,9 @@ def validate_wide(
         period_warnings.extend(sign_warnings)
 
         if label == "quarterly":
-            period_warnings.extend(check_is(row, present, period, sign_map=sign_map))
+            period_warnings.extend(check_is(row, present, period, sign_map=sign_map, null_fields=null_fields))
         else:
-            period_errors.extend(check_is(row, present, period, sign_map=sign_map))
+            period_errors.extend(check_is(row, present, period, sign_map=sign_map, null_fields=null_fields))
         bs_errors, bs_warnings = check_bs(row, present, period, reclass, par=par_value)
         period_errors.extend(bs_errors)
         period_warnings.extend(bs_warnings)
@@ -1704,7 +1745,7 @@ def validate_wide(
 
         prev_period_end_cash = get_cashflow_value(row, "c_cash_equ_end_period")
 
-        period_warnings.extend(check_soft(row, present, period))
+        period_warnings.extend(check_soft(row, present, period, null_fields=null_fields))
 
         if period_errors:
             all_errors.extend(period_errors)
@@ -1722,7 +1763,11 @@ def validate_wide(
             print(f"HARD CHECK FAIL: {e}", file=sys.stderr)
         if len(all_errors) > 20:
             print(f"... and {len(all_errors) - 20} more errors", file=sys.stderr)
-        raise CheckError(f"{len(all_errors)} hard check(s) failed")
+        err = CheckError(f"{len(all_errors)} hard check(s) failed")
+        # 附加结构化错误列表供同进程调用方（init.py）解析硬失败，免解析 stderr 文本。
+        # stderr 流式打印已发生，CLI 行为不变。
+        err.errors = [str(e) for e in all_errors]
+        raise err
 
     return all_warnings
 
@@ -2251,7 +2296,9 @@ def clean_all(
                     restatement_exemptions=restatement_exemptions,
                 )
             except CheckError as exc:
-                raise CheckError(f"annual validation failed: {exc}") from exc
+                wrapper = CheckError(f"annual validation failed: {exc}")
+                wrapper.errors = getattr(exc, "errors", [str(exc)])
+                raise wrapper from exc
         if mode in {"quarterly", "all"}:
             try:
                 outputs["quarterly"] = clean_dataset(
@@ -2264,7 +2311,9 @@ def clean_all(
                     max_quarters=max_quarters,
                 )
             except CheckError as exc:
-                raise CheckError(f"quarterly validation failed: {exc}") from exc
+                wrapper = CheckError(f"quarterly validation failed: {exc}")
+                wrapper.errors = getattr(exc, "errors", [str(exc)])
+                raise wrapper from exc
         write_audit_tables_for_mode(conn, applied_adjustments, warning_records, mode=mode)
         conn.commit()
 

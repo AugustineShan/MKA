@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Iterable
 
 from src.annual_report_utils import parallel_map
-from src.company_paths import annual_reports_dir, official_breakdowns_dir
+from src.company_paths import annual_reports_dir, official_breakdowns_dir, quarterly_reports_dir
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,6 +47,10 @@ DIMENSION_PATTERNS = [
 NUMBER_RE = re.compile(r"[-+]?\d{1,3}(?:,\d{3})*(?:\.\d+)?%?|[-+]?\d+(?:\.\d+)?%?")
 OUTPUT_CSV_NAME = "business_revenue_breakdown.csv"
 OUTPUT_JSONL_NAME = "business_revenue_breakdown.jsonl"
+OUTPUT_H1_CSV_NAME = "business_revenue_breakdown_h1.csv"
+OUTPUT_H1_JSONL_NAME = "business_revenue_breakdown_h1.jsonl"
+OUTPUT_ALL_CSV_NAME = "business_revenue_breakdown_all.csv"
+OUTPUT_ALL_JSONL_NAME = "business_revenue_breakdown_all.jsonl"
 
 
 @dataclass
@@ -54,6 +58,9 @@ class BusinessBreakdownRow:
     company_name: str
     stock_code: str
     year: int
+    period: str
+    period_type: str
+    period_label: str
     source_file: str
     source_section: str
     source_table: str
@@ -120,19 +127,22 @@ def read_markdown_lines(path: Path) -> list[str]:
 
 
 def infer_company_dir_from_report(path: Path) -> Path:
-    try:
-        candidate = path.parents[2]
-    except IndexError:
-        return path.parent.parent
-    if annual_reports_dir(candidate) == path.parent:
-        return candidate
+    for depth in (2, 3):
+        try:
+            candidate = path.parents[depth]
+        except IndexError:
+            continue
+        if annual_reports_dir(candidate) == path.parent:
+            return candidate
+        if path.parent.parent == quarterly_reports_dir(candidate):
+            return candidate
     return path.parent.parent
 
 
 def extract_report(path: Path, company_dir: Path | None = None) -> list[BusinessBreakdownRow]:
     company_dir = company_dir or infer_company_dir_from_report(path)
     company_name, stock_code = parse_company_dir(company_dir)
-    year = parse_year(path)
+    year, period, period_type, period_label = parse_period(path)
     lines = [_Line(idx + 1, normalize_space(line)) for idx, line in enumerate(read_markdown_lines(path))]
 
     rows: list[BusinessBreakdownRow] = []
@@ -163,13 +173,13 @@ def extract_report(path: Path, company_dir: Path | None = None) -> list[Business
 
         new_dimension = parse_dimension(text)
         if new_dimension and ("主营业务" in text or active_context_lines > 0):
-            append_pending(rows, pending, company_name, stock_code, year, path)
+            append_pending(rows, pending, company_name, stock_code, year, period, period_type, period_label, path)
             dimension = new_dimension
             pending = _PendingRow(dimension, source_section, unit_label, unit_multiplier)
             continue
 
         if is_hard_stop(text):
-            append_pending(rows, pending, company_name, stock_code, year, path)
+            append_pending(rows, pending, company_name, stock_code, year, period, period_type, period_label, path)
             pending = None
             dimension = None
             active_context_lines = 0
@@ -207,7 +217,7 @@ def extract_report(path: Path, company_dir: Path | None = None) -> list[Business
             continue
 
         if pending.values and row_has_enough_values(pending):
-            append_pending(rows, pending, company_name, stock_code, year, path)
+            append_pending(rows, pending, company_name, stock_code, year, period, period_type, period_label, path)
             pending = _PendingRow(dimension, source_section, unit_label, unit_multiplier)
 
         if not is_header_noise(text):
@@ -215,7 +225,7 @@ def extract_report(path: Path, company_dir: Path | None = None) -> list[Business
                 pending.start_line = line.number
             pending.name_parts.append(text)
 
-    append_pending(rows, pending, company_name, stock_code, year, path)
+    append_pending(rows, pending, company_name, stock_code, year, period, period_type, period_label, path)
     return dedupe_rows(rows)
 
 
@@ -225,6 +235,9 @@ def append_pending(
     company_name: str,
     stock_code: str,
     year: int,
+    period: str,
+    period_type: str,
+    period_label: str,
     path: Path,
 ) -> None:
     if pending is None:
@@ -234,7 +247,7 @@ def append_pending(
     if not item_name or len(values) < 5 or is_bad_item_name(item_name):
         return
 
-    row = build_row(company_name, stock_code, year, path, pending)
+    row = build_row(company_name, stock_code, year, period, period_type, period_label, path, pending)
     if row:
         rows.append(row)
 
@@ -243,6 +256,9 @@ def build_row(
     company_name: str,
     stock_code: str,
     year: int,
+    period: str,
+    period_type: str,
+    period_label: str,
     path: Path,
     pending: _PendingRow,
 ) -> BusinessBreakdownRow | None:
@@ -261,6 +277,9 @@ def build_row(
             company_name=company_name,
             stock_code=stock_code,
             year=year,
+            period=period,
+            period_type=period_type,
+            period_label=period_label,
             source_file=str(path),
             source_section=pending.source_section,
             source_table=source_table,
@@ -307,6 +326,9 @@ def build_row(
         company_name=company_name,
         stock_code=stock_code,
         year=year,
+        period=period,
+        period_type=period_type,
+        period_label=period_label,
         source_file=str(path),
         source_section=pending.source_section,
         source_table=source_table,
@@ -345,6 +367,8 @@ def discover_reports(
     years: set[int] | None = None,
     tickers: set[str] | None = None,
     limit: int | None = None,
+    include_h1: bool = True,
+    h1_recent_years: int = 3,
 ) -> list[Path]:
     reports: list[Path] = []
     code_filter = {ticker_code(ticker) for ticker in tickers} if tickers else None
@@ -366,13 +390,55 @@ def discover_reports(
             reports.append(report)
             if limit and len(reports) >= limit:
                 return reports
+        if include_h1:
+            for report in discover_h1_reports(company_dir, years=years, recent_years=h1_recent_years):
+                reports.append(report)
+                if limit and len(reports) >= limit:
+                    return reports
     return reports
 
 
+def discover_h1_reports(
+    company_dir: Path,
+    *,
+    years: set[int] | None = None,
+    recent_years: int = 3,
+) -> list[Path]:
+    quarterly = quarterly_reports_dir(company_dir)
+    if not quarterly.exists():
+        return []
+
+    reports: list[Path] = []
+    for report in sorted(quarterly.glob("*/*.md")):
+        try:
+            year = parse_year(report)
+        except ValueError:
+            continue
+        if years and year not in years:
+            continue
+        if report_kind(report) != "h1":
+            continue
+        reports.append(report)
+
+    if recent_years > 0:
+        allowed_years = set(sorted({parse_year(report) for report in reports}, reverse=True)[:recent_years])
+        reports = [report for report in reports if parse_year(report) in allowed_years]
+    return sorted(reports, key=lambda path: (parse_year(path), path.name))
+
+
 def write_outputs(rows: list[BusinessBreakdownRow], output_dir: Path) -> tuple[Path, Path]:
+    return write_named_outputs(rows, output_dir, OUTPUT_CSV_NAME, OUTPUT_JSONL_NAME)
+
+
+def write_named_outputs(
+    rows: list[BusinessBreakdownRow],
+    output_dir: Path,
+    csv_name: str,
+    jsonl_name: str,
+) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = output_dir / OUTPUT_CSV_NAME
-    jsonl_path = output_dir / OUTPUT_JSONL_NAME
+    csv_path = output_dir / csv_name
+    jsonl_path = output_dir / jsonl_name
     fieldnames = list(asdict(rows[0]).keys()) if rows else list(BusinessBreakdownRow.__dataclass_fields__.keys())
 
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -406,9 +472,18 @@ def write_company_outputs(rows: list[BusinessBreakdownRow], companies_dir: Path 
         company_dir = company_dirs.get(code)
         if company_dir is None:
             continue
-        csv_path, jsonl_path = write_outputs(company_rows, official_breakdowns_dir(company_dir))
+        csv_path, jsonl_path = write_breakdown_file_set(company_rows, official_breakdowns_dir(company_dir))
         outputs.append((company_dir.name, csv_path, jsonl_path))
     return outputs
+
+
+def write_breakdown_file_set(rows: list[BusinessBreakdownRow], output_dir: Path) -> tuple[Path, Path]:
+    annual_rows = [row for row in rows if row.period_type == "annual"]
+    h1_rows = [row for row in rows if row.period_type == "h1"]
+    annual_csv, annual_jsonl = write_outputs(annual_rows, output_dir)
+    write_named_outputs(h1_rows, output_dir, OUTPUT_H1_CSV_NAME, OUTPUT_H1_JSONL_NAME)
+    write_named_outputs(rows, output_dir, OUTPUT_ALL_CSV_NAME, OUTPUT_ALL_JSONL_NAME)
+    return annual_csv, annual_jsonl
 
 
 def normalize_space(text: str) -> str:
@@ -427,6 +502,26 @@ def parse_year(path: Path) -> int:
     if not match:
         raise ValueError(f"Annual report filename must start with YYYY_: {path}")
     return int(match.group(1))
+
+
+def parse_period(path: Path) -> tuple[int, str, str, str]:
+    year = parse_year(path)
+    kind = report_kind(path)
+    if kind == "h1":
+        return year, f"{year}H1", "h1", "半年度"
+    return year, f"{year}A", "annual", "年度"
+
+
+def report_kind(path: Path) -> str:
+    for line in read_markdown_lines(path)[:30]:
+        match = re.match(r"kind:\s*[\"']?([^\"']+)[\"']?", line.strip())
+        if match:
+            kind = match.group(1).strip().lower()
+            return "h1" if kind == "h1" else "annual"
+    name = path.name
+    if "半年度" in name or "半年报" in name:
+        return "h1"
+    return "annual"
 
 
 def ticker_code(ticker: str) -> str:
@@ -649,6 +744,7 @@ def dedupe_rows(rows: list[BusinessBreakdownRow]) -> list[BusinessBreakdownRow]:
         key = (
             row.company_name,
             row.year,
+            row.period,
             row.dimension,
             row.item_name,
             row.source_table,
@@ -717,6 +813,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--year", "--years", dest="years", help="Year list/range, e.g. 2024 or 2020-2024.")
     parser.add_argument("--tickers", help="Comma-separated stock codes/tickers, e.g. 600031,300866.SZ.")
     parser.add_argument("--limit", type=int, help="Stop after N annual reports, useful for smoke tests.")
+    parser.add_argument("--no-h1", action="store_true", help="Only extract annual reports, without recent half-year reports.")
+    parser.add_argument(
+        "--h1-recent-years",
+        type=int,
+        default=3,
+        help="Number of most recent half-year report years to include per company. 0 means all available H1 reports.",
+    )
     parser.add_argument(
         "--workers",
         type=int,
@@ -740,6 +843,8 @@ def main(argv: list[str] | None = None) -> int:
         years=parse_years(args.years),
         tickers=parse_tickers(args.tickers),
         limit=args.limit,
+        include_h1=not args.no_h1,
+        h1_recent_years=args.h1_recent_years,
     )
     rows = extract_reports(reports, max_workers=args.workers)
     company_outputs = write_company_outputs(rows, companies_dir)

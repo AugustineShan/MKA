@@ -1,5 +1,14 @@
 ﻿# MKA - A股财务数据拉取与校验系统
 
+## 🔴 核心假设.md 编辑归档铁律（所有 /ka、/frontend-edit 路径必须遵守）
+
+**任何对 `核心假设.md` 的编辑——无论是 /ka 的 init/modify、还是 /frontend-edit——都禁止原地覆盖旧稿。** 落盘必须按下面两步，顺序不能反：
+
+1. **先归档旧稿**：在把新稿第一次写入磁盘之前，先运行 `py scripts/ka_archive.py "<旧稿完整路径>"`，把旧稿移到 `companies\{公司}\Agent\KAhistory\`（tracked 文件 `git mv` 保历史，KAhistory 已有同名则自动加 `-HHMMSS` 后缀防覆盖；只移动不改内容）。
+2. **再写今日新稿**：把成果 Write 到 `companies\{公司}\{公司名}-{今日YYYYMMDD}-核心假设.md`（参考稿则 `…核心假设参考.md`）。**文件名日期必须是今日，不沿用旧稿文件名里的旧日期。** 根目录始终只剩最新一份今日稿，旧稿全在 KAhistory。
+
+**禁止行为**：① 直接 Edit 旧稿文件；② Write 覆盖旧稿路径；③ 新稿沿用旧文件名的旧日期。同日重跑（base 就是今天的文件）也照这两步：先归档（撞名加后缀），再写新的同名今日文件。
+
 两阶段流水线：① 从 TuShare Pro API 拉取三表数据 → 标准化 → 入库 SQLite；② 从 SQLite 读取原始数据 → 透视宽表 → 严格配平校验 → 写入 SQLite clean 表。
 
 ## 🧭 会计问题入口(改字段分类/排序/标签先看这里)
@@ -25,7 +34,8 @@
 - `raw_tushare` 永不被修改；补全只进年度 clean 宽表，并写入 `clean_adjustments`/`clean_warnings` 审计，全程可追溯。
 - 美的集团 `lending_funds`（发放贷款和垫款）、比亚迪 BS 3.1 流动负债缺明细，都是这一类，都由 reconciler 解决。
 - 遇到 `target_gt_calc` 类年度缺口，**默认动作就是让 reconciler 拉年报补全**，不要问"要不要保持失败/要不要人工"——那是对项目使命的误解。
-- 唯一例外：`target_lt_calc`（明细和 > 合计，即 clean.py 自己重复计数/误分类），这是 clean.py 的 bug，应修字段分类，**不是** reconciler 的活。
+- 唯一例外：`target_lt_calc`（明细和 > 合计，即 clean.py 自己重复计数/误分类），这是 clean.py 的 bug，应修字段分类，**不是** reconciler 的活。**IS 1.2 营业利润的 target_lt_calc 例外于此**——常因 TuShare 缺失负值 operating_adjustment（`asset_disp_income` 资产处置收益为负）致 calc 偏大，非 clean.py 重复计数，仍属 TuShare 缺口走 reconciler（见下「IS operating_adjustment TuShare-NULL 盲区」）。
+- **IS operating_adjustment TuShare-NULL 盲区（2026-06-24 修复）**：`oth_income`/`credit_impa_loss`/`asset_disp_income`/`oth_impair_loss_assets`/`net_expo_hedging_benefits`/`forex_gain` 等 optional 调整项，TuShare 对部分公司（新乳业 002946）全年返回 NULL。`pivot.fillna(0.0)` 把 NULL 抹成 0，`missing_optional_is_adjustments` 误判"公司未披露该可选项"而信任官方 subtotal 放行，缺口被静默吞掉、reconciler 永不触发。修复：`pivot_to_wide` 在 fillna 前捕获 `null_fields_by_period`（income 端 NULL 字段集→`wide.attrs["null_fields_by_period"]`），`missing_optional` 只放行"raw 非 NULL 且值≈0"的字段、排除 NULL；`check_is` IS 1.2 在残差>0 且存在 NULL optional 时**硬失败**（同期有 reported-0 optional 也不被绑架放行），强制进 reconciler 闭环。reconciler `collect_failures` 同步从 `wide.attrs` 取 null_fields 传给 `check_is`（否则看到的 IS 1.2 仍是放行、闭环断裂）；`llm_override_suggestions` 加联合闭合分支（单字段都不闭合残差时，若 Σ(proposed values)≈signed_residual 则批准整组），处理 IS 1.2 多字段联合缺失。新乳业实测：IS 1.2 2016-2025 共 10 期硬失败→reconciler 接收→LLM 识别 oth_income/credit_impa_loss/asset_disp_income 三字段联合闭合（53.88+8.57-87.24=-24.79=残差）。
 
 ## 技术栈
 
@@ -43,6 +53,7 @@ MKA/
 │   ├── init.py               # 一键编排入口
 │   ├── data_fetcher.py       # 阶段①：TuShare拉取+标准化+入库（~1250行）
 │   ├── clean.py              # 阶段②：EAV→宽表+配平校验+SQLite clean表写入
+│   ├── core_metrics_overview.py # clean_annual → Agent/core_metrics_overview.* 年度事实速览
 │   ├── field_registry.py     # field_registry.yaml loader:三表字段元数据唯一真源
 │   ├── field_registry.yaml   # 全程序会计科目唯一真源(分类/会计序/标签/resolve/sign);clean.py 校验 + workbench 渲染 + 数据格式参考.md 同源
 │   ├── report_downloader.py  # 巨潮资讯网年报 PDF + Markdown 批量下载
@@ -67,9 +78,11 @@ MKA/
 │       ├── 公司判断和最新观点.md
 │       ├── Agent业务讨论.md   # /brkd 产出：业务预理解参考
 │       ├── *核心假设*.md
-│       ├── active_vore/      # 活跃收集，外部模型和当前材料，不移动
-│       │   ├── 核心假设生成（模型放在这里）/  # /ka 读取外部模型
-│       │   └── 业务理解器（研报和纪要放在这里）/ # /brkd 读取研报/纪要
+│       ├── Skills素材包/      # 活跃收集，外部模型和当前材料，不移动
+│       │   ├── LOAD外部EXCEL模型理解器（一次最多一个）/  # /load、/ka 读取外部 Excel 模型
+│       │   ├── BRKD业务理解器（研报和纪要放在这里）/    # /brkd 读取研报/纪要
+│       │   ├── 最高权重材料-放Agent最应对齐的材料/      # Agent 最应对齐的材料（占位，暂无消费方）
+│       │   └── ADJ增量信息（用来改模型的边际信息）/      # 改模型的边际信息（占位，暂无消费方）
 │       ├── WEBCLAUDE/        # 高频打包区，供网页 Claude 上传使用
 │       ├── 公告/
 │       │   ├── 年报/         # 年度报告 PDF + Markdown
@@ -79,8 +92,14 @@ MKA/
 │       ├── 纪要/
 │       ├── 收集/
 │       ├── 重要文件/
+│       ├── 内部报告/         # 内部研究报告：评级/跟踪/深度/其他
+│       │   ├── 评级报告/
+│       │   ├── 跟踪报告/
+│       │   ├── 深度报告/
+│       │   └── 其他材料/
 │       └── Agent/            # 建模 Agent 运行区
 │           ├── data.db       # SQLite（raw_tushare/meta/clean_annual/clean_quarterly）
+│           ├── core_metrics_overview.md/json/csv # /init clean 后年度核心指标事实速览
 │           ├── defaults.yaml # 唯一 YAML2：机器平推底座
 │           ├── financial_expense.yaml
 │           ├── yaml1*.yaml   # compiler 输出：人的判断覆盖层
@@ -109,6 +128,9 @@ companies/{公司名}_{代码}/Agent/data.db
     ↓ clean.py（阶段②）
 SQLite data.db: clean_annual / clean_quarterly
   （宽表：行=period，列=统一 331 数据字段，严格配平并保留 warning）
+    ↓ core_metrics_overview.py（clean 后事实速览）
+companies/{公司名}_{代码}/Agent/core_metrics_overview.md/json/csv
+  （年度利润表主链路：收入同比、毛利率、费用率、利润率、税率、净利率、波动项；只读 clean_annual，不含预测）
     ↓ financial_expense_analyzer.py（可选增强）
 companies/{公司名}_{代码}/Agent/financial_expense.yaml
   （按年份归档的年报财务费用附注拆解：components / derived / checks / status）
@@ -130,8 +152,8 @@ companies/{公司名}_{代码}/Agent/forecast/
          discernment   fidelity         翻译
 ```
 
-- `/brkd`（业务预理解器）：读 `active_vore/业务理解器（研报和纪要放在这里）/` 下的研报和纪要，产出 `Agent业务讨论.md`（公司根目录），作为 `/ka` 的业务预理解参考。
-- `/ka`（核心假设生成）：消费 `Agent业务讨论.md` + `active_vore/核心假设生成（模型放在这里）/` 中的外部模型，产出 `*核心假设*.md`。
+- `/brkd`（业务预理解器）：读 `Skills素材包/BRKD业务理解器（研报和纪要放在这里）/` 下的研报和纪要，产出 `Agent业务讨论.md`（公司根目录），作为 `/ka` 的业务预理解参考。
+- `/ka`（核心假设生成）：消费 `Agent业务讨论.md` + `Skills素材包/LOAD外部EXCEL模型理解器（一次最多一个）/` 中的外部模型，产出 `*核心假设*.md`。
 - `/comp`（yaml1 编译器）：把 `核心假设.md` 编译为 `yaml1*.yaml`。
 
 ## DCF 运行规则（必须遵守）
@@ -295,6 +317,7 @@ python -m src.annual_report_reconciler --ticker {ticker} --db {data.db} --max-fa
    - `BS 2.2` / `noncurrent_asset` / `use_right_assets`（使用权资产，新租赁准则，A+H 2019 起执行；房地产/租赁密集公司体量数百亿）
    - `BS 3.2` / `noncurrent_liab` / `lease_liab`（租赁负债，新租赁准则，与 `use_right_assets` 成对出现；取非流动部分，流动部分在“一年内到期的非流动负债”勿重复计）
    - 2018/2019 前这些科目真值为 0（准则未生效），TuShare 的 NULL 恰好≈真值不产生残差；故 BS 2.2 失败从 2018、BS 3.2 从 2019 起。单字段闭合不了时考虑 2-3 项之和（如紫金 BS 2.2 2025 = 三项联合闭合）。确认案例：万科A 000002（2018-2025）、紫金矿业 601899。
+5. **IS operating_adjustment 系统性 NULL（跨公司，2026-06-24 修复）**——`IS 1.2` 营业利润 `target_lt_calc` 失败时优先查这几个 optional 调整项，TuShare 对部分公司全年返回 NULL（年报却披露了）：`oth_income`（其他收益）/`credit_impa_loss`（信用减值损失）/`asset_disp_income`（资产处置收益，常为负，缺失致 calc 偏大→target_lt_calc）/`oth_impair_loss_assets`/`net_expo_hedging_benefits`/`forex_gain`。这类缺口曾被 `missing_optional_is_adjustments` 静默放行（NULL 被 `fillna(0)` 误当"公司未披露"），现由 `null_fields_by_period` provenance 捕获、IS 1.2 硬失败进 reconciler。常需**多字段联合闭合**（如新乳业 2024 = oth_income+credit_impa_loss+asset_disp_income 三项联合），reconciler `llm_override_suggestions` 已支持联合闭合。确认案例：新乳业 002946（2016-2025）。
 
 这些来自确认案例，但不能作为自动补数依据，仍须年报片段金额 + LLM high confidence 确认。
 
@@ -378,6 +401,7 @@ python -m src.clean --ticker 002946.SZ --verbose              # 调试日志
 - **软校验**（仅 warning）：跨表 7.2-7.3, 方向合理性 10.1, 量级合理性 10.2, 折旧vs固定资产 10.3, 毛利率范围 10.4
 - **容差**：残差 < 1（百万元）
 - **年度失败处理**：annual hard check 失败会默认强触发 `annual_report_reconciler.py`；这只生成 evidence/override，不修改 raw，不静默放行 clean
+- **IS 1.2 optional 调整项放行与 NULL provenance**：`missing_optional_is_adjustments` 只对"raw 非 NULL 且值≈0"的 optional 调整项（`oth_income`/`credit_impa_loss`/`asset_disp_income` 等）信任官方 subtotal 放行；`pivot_to_wide` 在 `fillna(0.0)` 前捕获 income 端 NULL 字段集 `null_fields_by_period`（存 `wide.attrs["null_fields_by_period"]`），传给 `check_is`/`check_soft`。残差>0 且存在 NULL optional 时 IS 1.2 **硬失败**（reported-0 optional 不绑架放行），让 TuShare-NULL 缺口进 reconciler 闭环而非被静默吞掉。reconciler `collect_failures` 同步从 `wide.attrs` 取 null_fields 传给 `check_is`，保证看到与 clean 一致的失败。
 
 ### 合并科目 resolve 规则
 
@@ -497,7 +521,7 @@ py -m src.report_downloader --ticker 000333.SZ --list-only
   - **`docs/ARCHITECTURE.md` 写"当前状态"**：新增/修改的模块、数据模型、校验规则、设计决策（第 10 节）、已验证公司口径教训（第 9 节）。改架构时直接改对应章节。第 11 节已改为指向 CHANGELOG 的指针，不再在此维护条目。
   - **`docs/CHANGELOG.md` 写"发生了什么"**：按日期倒序的里程碑变更条目。每次开发完成后在表首追加一行（日期 + 里程碑摘要），**不修改既有历史条目**。完整逐条仍以 `git log` 为准，本表只留里程碑级。
   - 判断口径：描述"系统现在长什么样"→ ARCHITECTURE；记录"这次改了什么"→ CHANGELOG。两者都要，不二选一。
-- **凡是修改数据流水线，必须同步更新 `docs/数据流水线.md`**：包括 `data_fetcher.py`、`clean.py`、`financial_expense_analyzer.py` / `financial_expense.yaml`、`defaults_gen.py`、`yaml1_cleaner.py`、`calc.py`、`forecast.py`、`workbench.py` 中任何影响取数、clean、YAML 合并、DCF、历史预测拼接或输出目录契约的变化。
+- **凡是修改数据流水线，必须同步更新 `docs/数据流水线.md`**：包括 `data_fetcher.py`、`clean.py`、`core_metrics_overview.py` / `core_metrics_overview.*`、`financial_expense_analyzer.py` / `financial_expense.yaml`、`defaults_gen.py`、`yaml1_cleaner.py`、`calc.py`、`forecast.py`、`workbench.py` 中任何影响取数、clean、事实速览、YAML 合并、DCF、历史预测拼接或输出目录契约的变化。
 
 ## 运行注意
 
