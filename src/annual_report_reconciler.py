@@ -2088,6 +2088,83 @@ def empty_override_hint(total_failures: int, write_overrides: bool) -> str | Non
     )
 
 
+def detect_prepaid_sign_normalize(
+    wide,
+    present_by_period,
+    failures,
+    ticker,
+    raw_total_cogs_by_period: dict[str, float],
+):
+    """Opt 4: 确定性检测 pre-2019 assets_impair_loss 符号坑，返回 sign_normalize override。
+
+    背景：pre-2019 旧准则下 TuShare 把"资产减值损失"记正号且列入营业总成本；clean.py
+    IS 1.2 公式把 assets_impair_loss 当 +adjustment，与 total_cogs 内的同一笔双重计入，
+    致 IS 1.2 残差。reconciler/bridge 的 add_override 守卫拒绝非 0 old_value，故此前只能
+    agent 手工写翻符号 override。本探测器自动化该手工步骤。
+
+    判据（逐年，避开"跨年符号约定不一致"的回退坑）：
+      - IS 1.2 失败的 pre-2019 年、assets_impair_loss > 0（旧口径损失记正号）；
+      - raw total_cogs 含该字段：raw_total_cogs − adapted_total_cogs ≈ assets_impair_loss
+        （adaptation 把 total_cogs 改成明细和=剔除 assets_impair_loss；raw−adapted 即被剔除
+         的那一笔）。会稽山 2018 total_cogs 不含→raw−adapted≈0→不翻（+5.36 正确）。
+    满足则翻符号（new_value = −old_value，delta = −2×old_value），写 source=glm override；
+    clean.py apply_annual_overrides 不校验 old_value 非 0，照应用。剩余残差由 LLM fallback
+    （Opt 1 干净段上下文）补 NULL operating_adjustment 闭合。
+    """
+    overrides: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for failure in failures:
+        if failure.code != "IS 1.2" or failure.statement != "income":
+            continue
+        year = str(failure.period)
+        m = re.match(r"(\d{4})", year)
+        if not m or int(m.group(1)) >= 2019:
+            continue
+        if year in seen or year not in wide.index:
+            continue
+        seen.add(year)
+        row = wide.loc[year].to_dict() if hasattr(wide.loc[year], "to_dict") else dict(wide.loc[year])
+        impair = clean.get_income_value(row, "assets_impair_loss")
+        if impair <= clean.TOLERANCE:
+            continue
+        raw_total_cogs = float(raw_total_cogs_by_period.get(year, 0.0))
+        adapted_total_cogs = clean.get_income_value(row, "total_cogs")
+        removed = raw_total_cogs - adapted_total_cogs
+        if abs(removed - impair) > clean.TOLERANCE:
+            continue  # total_cogs 不含 assets_impair_loss → 不翻（会稽山 2018 形态）
+        overrides.append({
+            "status": "approved",
+            "approved_by": "glm:high_confidence",
+            "ticker": ticker,
+            "period": year,
+            "endpoint": "income",
+            "field": "assets_impair_loss",
+            "old_value_million_cny": impair,
+            "new_value_million_cny": -impair,
+            "delta_million_cny": -2.0 * impair,
+            "failure_code": "IS 1.2",
+            "failure_message": failure.message,
+            "annual_report_item": "资产减值损失(符号归一化·pre-2019旧口径损失记正号)",
+            "annual_report_value_raw": impair * 1_000_000.0,
+            "annual_report_unit": "元人民币",
+            "confidence": "high",
+            "source": "glm",
+            "evidence_lines": (
+                f"raw total_cogs({raw_total_cogs:.4f}) − adapted total_cogs({adapted_total_cogs:.4f}) "
+                f"= {removed:.4f} ≈ assets_impair_loss({impair:.4f}) → 旧口径 total_cogs 含该字段"
+                f"(损失记正号),clean.py IS 1.2 当 +adjustment 双重计入;翻符号 +{impair:.4f}→−{impair:.4f} 复原年报口径"
+            ),
+            "reason": (
+                "Opt 4 确定性符号坑探测器:pre-2019 assets_impair_loss 在 raw total_cogs 内(旧口径),"
+                "clean.py IS 1.2 公式又作 +adjustment 双重计入,翻符号复原。"
+                "clean.py apply_annual_overrides 不校验 old_value 非 0,照应用。"
+                "剩余残差由 LLM fallback(Opt 1 干净段)补 NULL operating_adjustment 闭合。"
+            ),
+            "clean_category": None,
+        })
+    return overrides
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     if args.no_kimi:
@@ -2112,6 +2189,11 @@ def main(argv: list[str] | None = None) -> int:
     # （贵州茅台 2019/2022/2024 实测：脏 override 把 adaptation 修好的 total_cogs
     # 覆盖成"信用减值损失"值，反而在 clean 重跑时制造 IS 1.1 失败）。复用 clean 自己
     # 的 adaptation，保证 reconciler 看到的失败 = clean.py 实际会遇到的失败。
+    # Opt 4: 捕获 adaptation 前的 raw total_cogs（adaptation 会把 total_cogs 改成明细和，
+    # 剔除 assets_impair_loss；符号坑探测器用 raw−adapted 判定 total_cogs 是否含该字段）。
+    raw_total_cogs_by_period = {
+        str(p): float(wide.loc[p, "total_cogs"] or 0.0) for p in wide.index
+    }
     clean.apply_annual_income_subtotal_adaptations(wide, present_by_period, ticker)
 
     # Two-round support: apply already-approved overrides from prior rounds
@@ -2137,6 +2219,34 @@ def main(argv: list[str] | None = None) -> int:
         only_code=args.only_code,
         pre_ipo_year=clean.earliest_annual_md_year(db_path) if db_path else None,
     )
+
+    # Opt 4: pre-2019 assets_impair_loss 符号坑确定性探测器——在 Phase A 前翻符号，
+    # 让后续失败/residual 反映翻转后状态，LLM fallback(Opt 1)闭合剩余 NULL operating_adjustment。
+    sign_overrides = detect_prepaid_sign_normalize(
+        wide, present_by_period, failures, ticker, raw_total_cogs_by_period
+    )
+    if sign_overrides:
+        clean.apply_annual_overrides(wide, present_by_period, ticker, sign_overrides)
+        sign_file_obj = {
+            "version": EVIDENCE_VERSION,
+            "ticker": ticker,
+            "adjustments": sign_overrides,
+            "source": "annual_report_reconciler.py:sign_normalize",
+        }
+        merged = merge_existing_overrides(override_path, sign_file_obj, ticker)
+        write_json(override_path, merged)
+        print(
+            f"Opt 4: 翻符号 {len(sign_overrides)} 条 pre-2019 assets_impair_loss override"
+            f"（符号坑），重收集失败 ...",
+            file=sys.stderr,
+        )
+        failures = collect_failures(
+            wide,
+            present_by_period,
+            only_period=args.only_year,
+            only_code=args.only_code,
+            pre_ipo_year=clean.earliest_annual_md_year(db_path) if db_path else None,
+        )
 
     total_failures = len(failures)
     failures = failures[: max(args.max_failures, 0)]
