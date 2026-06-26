@@ -406,9 +406,14 @@ def _unique_dst(dst_dir: Path, name: str) -> Path:
     dst = dst_dir / name
     if not dst.exists():
         return dst
-    stamp = time.strftime("%H%M%S")
     base, _, ext = name.rpartition(".")
-    return dst_dir / f"{base}-{stamp}.{ext}"
+    stamp = time.strftime("%H%M%S")
+    candidate = dst_dir / f"{base}-{stamp}.{ext}"
+    counter = 1
+    while candidate.exists():
+        candidate = dst_dir / f"{base}-{stamp}-{counter}.{ext}"
+        counter += 1
+    return candidate
 
 
 def _model_vintage_key(path: Path) -> str:

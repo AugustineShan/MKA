@@ -121,7 +121,7 @@ def test_signals_no_yaml1_date_null(tmp_path: Path) -> None:
     assert signals["root_models"]["archive_eligible"] is False
 
 
-from src.workbench import _archive_models
+from src.workbench import _archive_models, _unique_dst
 
 
 def test_archive_yaml1_keeps_latest_moves_rest(tmp_path: Path) -> None:
@@ -190,3 +190,24 @@ def test_archive_guard_forecast_not_touched(tmp_path: Path) -> None:
     (fc / "dcf_summary.json").write_text("{}")
     _archive_models(company)
     assert (fc / "dcf_summary.json").exists()
+
+
+def test_unique_dst_no_collision_on_same_second(tmp_path: Path) -> None:
+    d = tmp_path / "hist"
+    d.mkdir()
+    # First call: base name free → returns base name
+    first = _unique_dst(d, "yaml1_x_20260626.yaml")
+    assert first == d / "yaml1_x_20260626.yaml"
+    # Simulate the base name now exists (e.g. an earlier archive landed there)
+    first.write_text("base archive same second")
+    # Simulate that the stamped second is already taken (same-second collision)
+    base, _, ext = "yaml1_x_20260626.yaml".rpartition(".")
+    import time as _time
+    stamp = _time.strftime("%H%M%S")
+    preplaced = d / f"{base}-{stamp}.{ext}"
+    preplaced.write_text("earlier archive same second")
+    # Now base exists AND stamped exists → must NOT return preplaced; must append counter
+    result = _unique_dst(d, "yaml1_x_20260626.yaml")
+    assert result != preplaced
+    assert not result.exists()  # caller will create it
+    assert result.name.startswith(f"{base}-{stamp}")
