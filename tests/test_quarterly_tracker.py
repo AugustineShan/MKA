@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import csv
 import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from conftest import copy_fixture_company
+from src import forecast as forecast_mod, yaml1_cleaner
 from src.workbench import app
 from src.quarterly_tracker import (
     check_q4_band,
@@ -25,6 +28,18 @@ from src.quarterly_tracker import (
 COMPANY_DIR = next((Path(__file__).resolve().parents[1] / "companies").glob("*002946"))
 DB = COMPANY_DIR / "Agent" / "data.db"
 CLIENT = TestClient(app)
+
+
+def _forecast_start_year() -> int:
+    """Earliest period in the real 新乳业 forecast_is.csv.
+
+    The quarterly view's default year = min(forecast periods). The real dir's
+    forecast rolls forward when clean_annual gains a new actual year, so tests
+    must not hardcode the year — derive it from the forecast file.
+    """
+    p = COMPANY_DIR / "Agent" / "forecast" / "forecast_is.csv"
+    with open(p, encoding="utf-8-sig") as f:
+        return min(int(row["period"]) for row in csv.DictReader(f))
 
 
 def test_override_crud_roundtrip(tmp_path):
@@ -359,9 +374,20 @@ def test_derive_subtotals_reuses_income_statement_buckets():
     assert sub["n_income_attr_p"] == 250.0
 
 
-def test_compute_quarterly_view_time_machine_default_year():
-    clear_override(DB, "002946.SZ", "2025Q2")
-    view = compute_quarterly_view(db=DB, ticker="002946.SZ", company_dir=COMPANY_DIR)
+def test_compute_quarterly_view_time_machine_default_year(tmp_path, monkeypatch):
+    # Use the frozen fixture (data ends 2024, forecast starts 2025) so the view's
+    # default year (2025) and Q1=inherit state stay stable. The real dir's forecast
+    # rolls forward when clean_annual gains actuals, which would break these
+    # hardcoded-2025 assertions. Generate the forecast in the tmp copy (freezing
+    # forecast_is.csv in the fixture would break test_forecast_pipeline's mkdir).
+    # Workbench endpoints (other two tests) can't be fixture-isolated, so they
+    # derive the year dynamically instead.
+    company_dir = copy_fixture_company(tmp_path)
+    monkeypatch.setattr(yaml1_cleaner, "COMPANIES_DIR", tmp_path / "companies")
+    forecast_mod.run_company_forecast(ticker="002946.SZ")
+    db = company_dir / "Agent" / "data.db"
+    clear_override(str(db), "002946.SZ", "2025Q2")
+    view = compute_quarterly_view(db=str(db), ticker="002946.SZ", company_dir=str(company_dir))
 
     assert view["year"] == 2025
     assert view["periods"] == [
@@ -434,41 +460,44 @@ def test_q4_band_no_flag_in_range():
 
 def test_quarterly_workbench_endpoints_roundtrip():
     company_id = COMPANY_DIR.name
-    CLIENT.delete(f"/api/companies/{company_id}/quarterly/override/2025Q2")
+    fs = _forecast_start_year()
+    q2 = f"{fs}Q2"
+    CLIENT.delete(f"/api/companies/{company_id}/quarterly/override/{q2}")
 
-    response = CLIENT.get(f"/api/companies/{company_id}/quarterly?year=2025")
+    response = CLIENT.get(f"/api/companies/{company_id}/quarterly?year={fs}")
     assert response.status_code == 200
     view = response.json()
-    assert view["year"] == 2025
+    assert view["year"] == fs
     assert view["quarter_states"]["2"] == "inherit"
 
     response = CLIENT.put(
         f"/api/companies/{company_id}/quarterly/override",
-        json={"period": "2025Q2", "param": "gpm", "value": 0.31},
+        json={"period": q2, "param": "gpm", "value": 0.31},
     )
     assert response.status_code == 200
 
-    response = CLIENT.get(f"/api/companies/{company_id}/quarterly?year=2025")
+    response = CLIENT.get(f"/api/companies/{company_id}/quarterly?year={fs}")
     assert response.status_code == 200
     view = response.json()
     assert view["quarter_states"]["2"] == "manual"
     gross_profit = next(row for row in view["rows"] if row["field"] == "oper_cost")
-    assert gross_profit["states"]["2025Q2"] == "manual"
+    assert gross_profit["states"][q2] == "manual"
 
-    response = CLIENT.delete(f"/api/companies/{company_id}/quarterly/override/2025Q2")
+    response = CLIENT.delete(f"/api/companies/{company_id}/quarterly/override/{q2}")
     assert response.status_code == 200
-    response = CLIENT.get(f"/api/companies/{company_id}/quarterly?year=2025")
+    response = CLIENT.get(f"/api/companies/{company_id}/quarterly?year={fs}")
     assert response.json()["quarter_states"]["2"] == "inherit"
 
 
 def test_read_company_includes_quarterly_view():
+    fs = _forecast_start_year()
     response = CLIENT.get(f"/api/companies/{COMPANY_DIR.name}")
     assert response.status_code == 200
     data = response.json()
-    assert data["quarterly_view"]["year"] == 2025
+    assert data["quarterly_view"]["year"] == fs
     assert data["rating_report"] == {
-        "data_start_year": 2023,
-        "data_end_year": 2025,
-        "forecast_start_year": 2026,
-        "forecast_end_year": 2028,
+        "data_start_year": fs - 3,
+        "data_end_year": fs - 1,
+        "forecast_start_year": fs,
+        "forecast_end_year": fs + 2,
     }

@@ -303,6 +303,8 @@ def test_light_mode_bit_exact_unchanged(tmp_path, monkeypatch):
     company_dir = copy_fixture_company(tmp_path)
     monkeypatch.setattr(yaml1_cleaner, "COMPANIES_DIR", tmp_path / "companies")
     run = forecast_mod.run_company_forecast(ticker="002946.SZ")
-    # 锁定轻资产 DCF 基线(任何重资产分支泄漏到轻资产路径都会改变此值)
-    assert run.summary["per_share_value"] == pytest.approx(17.581593506785847, abs=1e-6)
+    # 锁定轻资产 DCF 基线(任何重资产分支泄漏到轻资产路径都会改变此值)。
+    # 基线 2026-06-26 更新:DA feature 合并(cf3e12c,other_depreciating_assets 等)使轻资产
+    # 路径 per_share 17.58→18.99;da_series 仍 absent(重资产分支零激活,主守卫不变)。
+    assert run.summary["per_share_value"] == pytest.approx(18.98582634060922, abs=1e-6)
     assert "da_series" not in _read_params(company_dir)
