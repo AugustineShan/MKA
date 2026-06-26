@@ -13,6 +13,7 @@ import csv
 import json
 import os
 import re
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -387,6 +388,73 @@ def _folder_overview_signals(company_dir: Path) -> dict[str, Any]:
         },
         "workbench_materials": workbench_materials,
         "agent_materials": agent_materials,
+    }
+
+
+def _git_mv(src: Path, dst: Path) -> None:
+    """git mv 保历史；非 tracked 回退 shutil.move。dst 的父目录须已存在。"""
+    try:
+        subprocess.run(
+            ["git", "mv", str(src), str(dst)],
+            cwd=BASE_DIR, check=True, capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        shutil.move(str(src), str(dst))
+
+
+def _unique_dst(dst_dir: Path, name: str) -> Path:
+    dst = dst_dir / name
+    if not dst.exists():
+        return dst
+    stamp = time.strftime("%H%M%S")
+    base, _, ext = name.rpartition(".")
+    return dst_dir / f"{base}-{stamp}.{ext}"
+
+
+def _model_vintage_key(path: Path) -> str:
+    m = _MODEL_DATE_RE.search(path.stem)
+    return m.group(1) if m else "000000"
+
+
+def _archive_models(company_dir: Path) -> dict[str, Any]:
+    agent = agent_dir(company_dir)
+    yaml1history = agent / "yaml1history"
+    modelhistory = agent / "Modelhistory"
+
+    archived_yaml1: list[str] = []
+    latest_yaml1 = _latest_yaml1(company_dir)
+    if latest_yaml1 is not None:
+        yaml1s = sorted(agent.glob("yaml1*.yaml"))
+        if len(yaml1s) > 1:
+            yaml1history.mkdir(parents=True, exist_ok=True)
+            for p in yaml1s:
+                if p.resolve() == latest_yaml1.resolve():
+                    continue
+                dst = _unique_dst(yaml1history, p.name)
+                _git_mv(p, dst)
+                archived_yaml1.append(p.name)
+
+    archived_models: list[str] = []
+    excels = [p for p in company_dir.glob("*.xlsx") if not p.name.startswith("~$")]
+    if len(excels) > 1:
+        modelhistory.mkdir(parents=True, exist_ok=True)
+        newest = max(excels, key=_model_vintage_key)
+        for p in excels:
+            if p.resolve() == newest.resolve():
+                continue
+            dst = _unique_dst(modelhistory, p.name)
+            _git_mv(p, dst)
+            archived_models.append(p.name)
+
+    deleted_locks: list[str] = []
+    for lock in company_dir.glob("~$*.xlsx"):
+        lock.unlink()
+        deleted_locks.append(lock.name)
+
+    return {
+        "archived_yaml1": archived_yaml1,
+        "archived_models": archived_models,
+        "deleted_locks": deleted_locks,
     }
 
 

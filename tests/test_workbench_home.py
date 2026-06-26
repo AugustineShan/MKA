@@ -119,3 +119,74 @@ def test_signals_no_yaml1_date_null(tmp_path: Path) -> None:
     assert signals["yaml1_date"] is None
     assert signals["yaml1_versions"] == 0
     assert signals["root_models"]["archive_eligible"] is False
+
+
+from src.workbench import _archive_models
+
+
+def test_archive_yaml1_keeps_latest_moves_rest(tmp_path: Path) -> None:
+    import os, time
+    company = _make_company(tmp_path)
+    agent = company / "Agent"
+    agent.mkdir()
+    old = agent / "yaml1_测试公司_20260624.yaml"
+    new = agent / "yaml1_测试公司_20260626.yaml"
+    old.write_text("old")
+    new.write_text("new")
+    os.utime(old, (time.time() - 100, time.time() - 100))
+
+    result = _archive_models(company)
+
+    assert new.exists() and new.read_text() == "new"
+    assert not old.exists()
+    assert (agent / "yaml1history" / old.name).exists()
+    assert result["archived_yaml1"] == [old.name]
+
+
+def test_archive_models_keeps_latest_moves_rest_deletes_locks(tmp_path: Path) -> None:
+    company = _make_company(tmp_path)
+    agent = company / "Agent"
+    agent.mkdir()
+    old_model = company / "测试公司Model-260624.xlsx"
+    new_model = company / "测试公司Model-260626.xlsx"
+    lock = company / "~$测试公司Model-260624.xlsx"
+    old_model.write_bytes(b"old")
+    new_model.write_bytes(b"new")
+    lock.write_bytes(b"lock")
+
+    result = _archive_models(company)
+
+    assert new_model.exists()
+    assert not old_model.exists()
+    assert (agent / "Modelhistory" / old_model.name).exists()
+    assert not lock.exists()
+    assert result["archived_models"] == [old_model.name]
+    assert result["deleted_locks"] == [lock.name]
+
+
+def test_archive_guard_latest_yaml1_untouched(tmp_path: Path) -> None:
+    company = _make_company(tmp_path)
+    agent = company / "Agent"
+    agent.mkdir()
+    only = agent / "yaml1_测试公司_20260626.yaml"
+    only.write_text("only")
+    result = _archive_models(company)
+    assert only.exists()
+    assert result["archived_yaml1"] == []
+
+
+def test_archive_guard_no_models_no_locks(tmp_path: Path) -> None:
+    company = _make_company(tmp_path)
+    result = _archive_models(company)
+    assert result == {"archived_yaml1": [], "archived_models": [], "deleted_locks": []}
+
+
+def test_archive_guard_forecast_not_touched(tmp_path: Path) -> None:
+    company = _make_company(tmp_path)
+    agent = company / "Agent"
+    agent.mkdir()
+    fc = agent / "forecast"
+    fc.mkdir()
+    (fc / "dcf_summary.json").write_text("{}")
+    _archive_models(company)
+    assert (fc / "dcf_summary.json").exists()
