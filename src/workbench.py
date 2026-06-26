@@ -375,7 +375,7 @@ def _folder_overview_signals(company_dir: Path) -> dict[str, Any]:
         "root_models": {
             "excel_count": len(excels),
             "lock_count": len(locks),
-            "archive_eligible": len(excels) > 1 or len(locks) > 0,
+            "archive_eligible": len(excels) > 1,
         },
         "workbench_materials": workbench_total,
         "forecast": _forecast_snapshot(company_dir),
