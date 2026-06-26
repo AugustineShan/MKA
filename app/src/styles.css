@@ -6672,18 +6672,7 @@ p {
 .home-item { margin-bottom: 0.5rem; }
 .home-item .company-code { color: var(--blue, #003d7a); }
 
-.folder-overview-table th.company-col,
 .folder-overview-table td { text-align: center; vertical-align: middle; }
-.folder-overview-table .signal-label { text-align: left; font-weight: 600; background: #f7f8fa; }
-.folder-overview-table .company-col .company-name { display: block; }
-.folder-overview-table .company-col .company-code { display: block; font-size: 0.75rem; color: #888; }
-
-.stage-cell { font-weight: 600; }
-.stage-0 { color: var(--red, #b42318); }
-.stage-1 { color: #8a6d3b; }
-.stage-2 { color: #6c757d; }
-.stage-3 { color: var(--blue, #003d7a); }
-.stage-4 { color: #2f7d32; }
 
 .archive-btn {
   margin-left: 0.5rem; padding: 0.1rem 0.5rem; font-size: 0.75rem;
@@ -6692,13 +6681,86 @@ p {
 }
 .archive-btn:disabled { opacity: 0.5; cursor: default; }
 
-.folder-overview-rows th,
-.folder-overview-rows td { text-align: left; vertical-align: middle; padding: 0.75rem 1rem; }
-.folder-overview-rows thead th { font-size: 0.8rem; color: #6c757d; font-weight: 600; }
-.folder-overview-rows .company-cell .company-name { display: block; font-weight: 600; }
-.folder-overview-rows .company-cell .company-code { display: block; font-size: 0.75rem; color: #888; }
-.folder-overview-rows .stage-cell { font-weight: 600; }
+/* 首页·文件夹总览 — 投行风 */
+.folder-overview-rows {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  font-size: 0.85rem;
+}
+.folder-overview-rows thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f2f4f7;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #6c757d;
+  letter-spacing: 0.02em;
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid #e3e6ea;
+  text-align: right;
+  white-space: nowrap;
+}
+.folder-overview-rows thead tr.group-header-row th {
+  text-align: center;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #8a9199;
+  background: #eceef1;
+  font-weight: 700;
+}
+.folder-overview-rows thead th.col-company,
+.folder-overview-rows thead th.col-actions {
+  text-align: left;
+}
+.folder-overview-rows thead th.forecast-start {
+  border-left: 1px solid #e3e6ea;
+}
+.folder-overview-rows tbody td {
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid #eef0f3;
+  vertical-align: middle;
+}
+.folder-overview-rows tbody td.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  white-space: nowrap;
+}
+.folder-overview-rows tbody td.dcf-date { color: #4a525a; }
+.folder-overview-rows tbody tr:nth-child(even) td { background: #fafbfc; }
+.folder-overview-rows tbody tr:hover td { background: #f0f6ff; }
+.folder-overview-rows tbody td.forecast-start { border-left: 1px solid #e3e6ea; }
+.folder-overview-rows .company-cell .company-name {
+  display: block;
+  font-weight: 600;
+  color: #1a1f24;
+}
+.folder-overview-rows .company-cell .company-code {
+  display: block;
+  font-size: 0.72rem;
+  color: #98a0a8;
+  letter-spacing: 0.04em;
+}
+.folder-overview-rows .negative { color: var(--red, #b42318); }
 .folder-overview-rows .actions-cell { white-space: nowrap; display: flex; gap: 0.5rem; }
+
+/* stage pill */
+.stage-pill {
+  display: inline-block;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.stage-pill.stage-0 { background: #fdecea; color: var(--red, #b42318); }
+.stage-pill.stage-1 { background: #fdf3e2; color: #8a6d3b; }
+.stage-pill.stage-2 { background: #eef0f3; color: #6c757d; }
+.stage-pill.stage-3 { background: #e6efff; color: var(--blue, #003d7a); }
+.stage-pill.stage-4 { background: #e6f4ea; color: #2f7d32; }
 .ghost-btn {
   padding: 0.25rem 0.75rem; font-size: 0.8rem; border: 1px solid #d0d4d9;
   color: #333; background: transparent; border-radius: 4px; cursor: pointer;

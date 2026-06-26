@@ -15,6 +15,7 @@ import type {
   EditableAssumption,
   EditableAssumptionCell,
   HomeFolderOverview,
+  HomeForecastSnapshot,
   HomeTab,
   PipelineStage,
   QuarterlyRow,
@@ -4364,6 +4365,13 @@ const STAGE_TONE: Record<PipelineStage, string> = {
   "建模完毕且有DA表": "stage-4",
 };
 
+const fmtMv = (v: number | null | undefined) =>
+  typeof v === "number" && !Number.isNaN(v) ? formatYiFromMillion(v, 1) : "";
+const fmtYoy = (v: number | null | undefined) =>
+  typeof v === "number" && !Number.isNaN(v) ? formatSignedPercent(v, 1) : "";
+const fmtPe = (v: number | null | undefined) =>
+  typeof v === "number" && !Number.isNaN(v) ? formatMultiple(v, 1) : "";
+
 function FolderOverview({ onOpenTutorial }: { onOpenTutorial: () => void }) {
   const [rows, setRows] = useState<HomeFolderOverview[]>([]);
   const [loading, setLoading] = useState(true);
@@ -4434,31 +4442,54 @@ function FolderOverview({ onOpenTutorial }: { onOpenTutorial: () => void }) {
         <div className="table-scroll workbook-scroll">
           <table className="financial-table folder-overview-table folder-overview-rows">
             <thead>
+              <tr className="group-header-row">
+                <th rowSpan={2} className="col-company">公司</th>
+                <th colSpan={4} className="group-status">建模状态</th>
+                <th colSpan={7} className="group-forecast">预测与估值</th>
+                <th rowSpan={2} className="col-actions">操作</th>
+              </tr>
               <tr>
-                <th>公司</th>
-                <th>建模管线推进</th>
+                <th>管线推进</th>
                 <th>DCF建模日期</th>
                 <th>历史版本</th>
                 <th>工作台素材</th>
-                <th>操作</th>
+                <th className="forecast-start">最新市值(亿)</th>
+                <th>26营收</th>
+                <th>27营收</th>
+                <th>26利润</th>
+                <th>27利润</th>
+                <th>26 PE</th>
+                <th>27 PE</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => {
                 const s = r.signals;
+                const f = s?.forecast ?? null;
                 const archiveEligible = Boolean(s && (s.yaml1_archive_eligible || s.root_models.archive_eligible));
+                const rev26 = f?.revenue_yoy["2026"] ?? null;
+                const rev27 = f?.revenue_yoy["2027"] ?? null;
+                const prof26 = f?.profit_yoy["2026"] ?? null;
+                const prof27 = f?.profit_yoy["2027"] ?? null;
                 return (
                   <tr key={r.company_id}>
                     <td className="company-cell">
                       <span className="company-name">{r.name}</span>
                       <span className="company-code">{r.code}</span>
                     </td>
-                    <td className={`stage-cell ${s ? STAGE_TONE[s.pipeline_stage] : ""}`}>
-                      {s?.pipeline_stage ?? "读取失败"}
+                    <td>
+                      {s ? <span className={`stage-pill ${STAGE_TONE[s.pipeline_stage]}`}>{s.pipeline_stage}</span> : "读取失败"}
                     </td>
-                    <td className="numeric">{s?.yaml1_date ?? "尚未完整建模"}</td>
-                    <td className="numeric">{s ? s.yaml1_versions : "-"}</td>
-                    <td className="numeric">{s ? s.workbench_materials : "-"}</td>
+                    <td className="numeric dcf-date">{s?.yaml1_date ?? "尚未完整建模"}</td>
+                    <td className="numeric">{s ? s.yaml1_versions : ""}</td>
+                    <td className="numeric">{s ? s.workbench_materials : ""}</td>
+                    <td className="numeric forecast-start">{fmtMv(f?.market_cap)}</td>
+                    <td className={`numeric ${rev26 != null && rev26 < 0 ? "negative" : ""}`}>{fmtYoy(rev26)}</td>
+                    <td className={`numeric ${rev27 != null && rev27 < 0 ? "negative" : ""}`}>{fmtYoy(rev27)}</td>
+                    <td className={`numeric ${prof26 != null && prof26 < 0 ? "negative" : ""}`}>{fmtYoy(prof26)}</td>
+                    <td className={`numeric ${prof27 != null && prof27 < 0 ? "negative" : ""}`}>{fmtYoy(prof27)}</td>
+                    <td className="numeric">{fmtPe(f?.pe["2026"] ?? null)}</td>
+                    <td className="numeric">{fmtPe(f?.pe["2027"] ?? null)}</td>
                     <td className="actions-cell">
                       <button className="ghost-btn" onClick={() => openFolder(r.company_id)} type="button">打开目录</button>
                       {archiveEligible ? (

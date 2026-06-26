@@ -506,6 +506,13 @@ export type PipelineStage =
   | "建模完毕"
   | "建模完毕且有DA表";
 
+export type HomeForecastSnapshot = {
+  market_cap: number | null;
+  revenue_yoy: { "2026": number | null; "2027": number | null };
+  profit_yoy: { "2026": number | null; "2027": number | null };
+  pe: { "2026": number | null; "2027": number | null };
+};
+
 export type HomeFolderOverviewSignals = {
   pipeline_stage: PipelineStage;
   yaml1_date: string | null;
@@ -513,6 +520,7 @@ export type HomeFolderOverviewSignals = {
   yaml1_archive_eligible: boolean;
   root_models: { excel_count: number; lock_count: number; archive_eligible: boolean };
   workbench_materials: number;
+  forecast: HomeForecastSnapshot | null;
 };
 
 export type HomeFolderOverview = {
