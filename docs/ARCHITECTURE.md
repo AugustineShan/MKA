@@ -231,19 +231,21 @@ python -m src.webload 688775.SH --overwrite
 2. **正式假设选择门**：只在公司根目录非递归选 `状态: official` 的当前核心假设；排除参考稿、草稿、`Agent/Load/` 沙箱稿和任意子目录产物。
 3. **先跑年份门禁**：用选中的正式稿执行 `src.assumption_staleness`；若 clean 实际年覆盖预测起点或 defaults 基期落后，立即停并提示 `/annual-update`。
 4. **动态加载最新版 `yaml1compiler` skill**：扫描 `D:\MKA\skills\`，匹配 `yaml1compiler_v*.md`，取版本号最大。
-5. 再读取五份输入材料：
+5. 再读取六份输入材料：
    - 第二步选中的根目录 `状态: official` 核心假设（语义层：判断、历史、旋钮、时间轴、覆盖项）
    - `companies/{公司}/Agent/defaults.yaml`（目标命名空间）
    - `docs/数据格式参考.md`（中文科目 ↔ TuShare 字段字典）
    - `docs/yaml1算法模板契约.md`（cleaner/calc 支持的算法模板硬边界）
    - `docs/knobs块契约.md`（核心假设末尾 `knobs` 机器自报清单与 fidelity block-diff 真源）
+   - `docs/yaml1前端展示契约.md`（`display` 展示语义，决定 B 类 stash 在主表、副拆分、Reference 中的去向）
 6. 按加载到的 compiler skill 执行编译。
 7. 输出：`companies/{公司}/Agent/yaml1_公司名_YYYYMMDD.yaml`。
 
 **关键纪律**：
 - 所有 skill 均不读取 PDF。
 - `defaults.yaml` 是目标命名空间，compiler 只把 `核心假设.md` 的覆盖项落到 `defaults.yaml` 已有的真实路径上。
-- `docs/数据格式参考.md` 和 `docs/yaml1算法模板契约.md` 是只读契约，compiler 不能改写。
+- `docs/数据格式参考.md`、`docs/yaml1算法模板契约.md` 和 `docs/yaml1前端展示契约.md` 是只读契约，compiler 不能改写。
+- `display` 只管工作台展示，不改变 DCF、不替代 knobs；新 yaml1 应生成或保留顶层 `display`，旧 yaml1 由 workbench 走保守 fallback。
 
 **退出码语义**：
 
@@ -498,6 +500,8 @@ companies/{公司名}_{代码}/
 DCF tab 额外提供三个实时 sensitivity 滑块（WACC、terminal growth、terminal CAPEX / D&A ratio），调用 `POST /api/companies/{id}/dcf-sensitivity` 即时刷新每股价值，无需重跑三表。视觉遵循 Apple HIG / SF Pro：白/灰系统底色、单一 #0071E3 交互蓝、轻边框和轻阴影；金融表格数字右对齐、SF Mono、负数红色、轻 zebra；YAML 面板是唯一允许多语法色的区域。
 
 第 7 个顶级 tab「重资产排程」为**条件 tab**：仅当 `GET /api/companies/{id}` 返回 `da_view` 非 null（`Agent/da_schedule.yaml` 存在且 `enabled:true`）才渲染。`da_view` 由 `workbench._da_view()` 只读装配 `da_schedule.yaml` + `recon/da_facts_latest.json` + `.modelking/forecast_params.yaml["da_series"]` 三个磁盘文件，重算每类 `policy_dep` 与 `scale` 并调用 `da_roll.normalization_gate`。四段只读展示（存量快照 / 扩张排程+转固 / da_series 结果 / 历史证据折叠），类别名全部来自 `da_schedule.ppe.categories[].name`，N 类 N 行零公司特判；改假设走 `/da`，前端不写回。轻资产公司 `da_view=null`，tab 不可见。
+
+**首页模式（全局跨公司视图）**：Sidebar 顶部「首页」条目作为"特殊的公司"，选中时主区不再是某家公司的 tabs，而是首页自己的 subtab。第一个 subtab「文件夹总览」用一张表（行=信号、列=公司）展示所有公司的文件夹健康度：建模管线推进（未初始化/初始化完毕/核心假设完毕/建模完毕/建模完毕且有DA表）、yaml1 日期（以 yaml1 为准）、yaml1 历史版本数、根目录模型文件数（含 `~$` 锁文件）、工作台素材数（研报/纪要/收集/重要文件）、Agent技能素材数（Skills素材包 5 子目录）。数据来自只读端点 `GET /api/home/folder-overview`（`_folder_overview_signals`，单公司异常不拖垮整表）。每家公司列头有「一键归档」按钮（当 yaml1 多版本或根目录多 Excel/有锁文件时显示），调用 `POST /api/companies/{id}/archive-models`：`_archive_models` 把旧 yaml1 移入 `Agent/yaml1history/`、根目录旧 Excel 移入 `Agent/Modelhistory/`、`~$` 锁文件删除，各留最新一份（`git mv` 保历史，非 tracked 回退 `shutil.move`，撞名加 `-HHMMSS`）。点任一公司退出首页进公司视图。
 
 运行：
 ```bash
@@ -1170,6 +1174,7 @@ MKA/
 | NULL vs 0 provenance | `null_fields_by_period`（`wide.attrs`，fillna 前捕获 income 端 NULL 字段） | `fillna(0.0)` 把 TuShare NULL 抹成 0，validator 无法区分"数据源缺口"与"公司真报 0"。provenance 只喂 validator（compute 路径仍吃 fillna 后数字），让 IS 1.2 的 operating_adjustment NULL 缺口硬失败进 reconciler，而非被 `missing_optional` 静默放行。reconciler `collect_failures` 同步取此 provenance 传 `check_is`，`llm_override_suggestions` 加联合闭合处理多字段联合缺失 |
 | IS check 候选窄化 + bridge IS 1.2 闭合 + 抓错列验证 | `failure_candidate_fields` 按 check 公式窄化；`_effective_bucket` 补查 IS/CF 分类；`_verify_llm_value_in_consolidated_statement` 紧容差重抽 | 防"非公式字段进候选→联合闭合 Σ≈残差批准→对 calc 零影响→制造下游 check 失败"脏 override（会稽山 2022 int_income）。每个 IS check 候选只含其公式 category 字段，Σ(proposed)≡calc 模拟（in-formula +1 符号）。bridge `_effective_bucket` 原本 BS-only 致 IS 1.2 提案全 reject，补查 IS/CF 分类后 Σ 闭合生效，重跑 clean 兜底。抓错列：LLM 提议值用合并利润表 statement snippet（裁到母公司表前）`find_alias_amount_matches` 确定性重抽，紧容差 0.05 百万匹配，挡 LLM 把附注/母公司表同名字段值当主表值（会稽山 2022 oth_income 7.88 vs 主表 10.54）。详见 CLAUDE.md「三层防脏守卫」第四层 +「IS 1.2 升级通道与符号坑」 |
 | IS sign-questionable 字段 regime 数据驱动 | `resolve_is_signs` 按"字段是否在 total_cogs 内"逐年判定(`raw_total_cogs − stable_cost_sum ≈ field` → 旧口径 → semantic −1；否则 +1) | 2017→2019 三版报表修订(财会30/15/6号)让 assets_impair_loss/credit_impa_loss/oth_impair_loss_assets 口径随公司/年份变，旧 `<2019` 一刀切致旧口径年(impair 正数损失记在 total_cogs 内)走 check_is else 分支双计 +2×impair、靠 Opt 4 sign-flip override 打补丁。现 regime 检测在 `resolve_is_signs` 直接闭合旧口径年 IS 1.2，Opt 4 探测器(`detect_prepaid_sign_normalize`)已删。数据感知(非年份感知)解决跨年/跨公司不一致：会稽山 2018(impair 不在 total_cogs→+1)与新乳业 2018(impair 在 total_cogs→−1)同年不同 regime 都对。`raw_total_cogs` 在 adaptation 前存 `wide.attrs["raw_total_cogs_by_period"]`，reconciler `collect_failures` 镜像 validate_wide 传 sign_map，残差 = clean.py 实际残差。NULL 缺口(oth_income/asset_disp 等)仍走 reconciler 不变 |
+| reconciler 闭合 trial-apply oracle + 段定位器通用化 | `trial_apply_closes` 试应用 override 到 row 副本重跑 clean.py check 作闭合裁判；`find_statement_header_line` 跳目录页码引用；`_locate_consolidated_statement_section` 支持单表并列布局 | 原 `llm_override_suggestions` 加法闸门 `Σ(value)≈signed_residual` 识别不了符号翻转型闭合（补 NULL 字段触发另一字段 sign 翻转，Σ≠残差但 check 过），且 LLM 常误诊 `suspected_tushare_issue=False`/`fix_classification`（把 NULL 字段当公式缺失）被 action_gate 整组丢弃，致 IS 1.2 残差需 subagent 升级通道+人工补 override。现：有 wide 表时单字段+整组试应用重跑 check 作 oracle（不盲信 LLM `residual_difference_million_cny`，青岛啤酒 2018 LLM 把 asset_disp diff 错填 0 致单字段快路径误返 1 字段），放宽诊断闸门交 oracle 裁决；无 wide（单测/重建）保留加法严格守卫。段定位器原 `find_line` 首匹配取目录"合并及公司利润表 81"页码引用（真表头在 800 行后），900 行 snippet 窗口从目录起切掉数据→LLM 0 items；改用前向 60 行内容关键词（营业收入/流动资产）区分真表头 vs 目录条目，结束边界支持"合并及公司利润表"单表布局（无母公司表头→回退下一张报表）。wide 表列名混合 bare（oth_income）与前缀（income.credit_impa_loss），`get_income_value` 优先读前缀键，trial-apply 须同设两键。init round-2 skip 补 LLM-error 边角（429/超时失败强触发重试） |
 | 年报文件命名 | `{年份}_年度报告.pdf/.md` / `{年份}_年度报告_修订版.pdf/.md` | 同年份原始版与修订版可并存，文件已存在时跳过 |
 
 ---
