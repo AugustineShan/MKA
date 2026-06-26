@@ -15,7 +15,6 @@ import type {
   EditableAssumption,
   EditableAssumptionCell,
   HomeFolderOverview,
-  HomeForecastSnapshot,
   HomeTab,
   PipelineStage,
   QuarterlyRow,
