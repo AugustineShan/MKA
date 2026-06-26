@@ -2884,6 +2884,12 @@ def _reverse_dcf_base_pack(company_dir: Path) -> dict[str, Any]:
     }
 
 
+@app.post("/api/companies/{company_id}/archive-models")
+def archive_models(company_id: str) -> dict[str, Any]:
+    company_dir = _company_dir(company_id)
+    return _archive_models(company_dir)
+
+
 @app.get("/api/companies/{company_id}/reverse-dcf-base")
 def read_reverse_dcf_base(company_id: str) -> dict[str, Any]:
     return _reverse_dcf_base_pack(_company_dir(company_id))
