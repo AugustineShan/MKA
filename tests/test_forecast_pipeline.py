@@ -92,10 +92,10 @@ def test_run_company_forecast_hides_intermediates_and_rebuilds_forecast(tmp_path
     assert workbook.properties.creator == "ModelKing"
     assert workbook.properties.lastModifiedBy == "ModelKing"
     assert "Summary" in workbook.sheetnames
-    assert len(workbook.worksheets) == 8
+    assert len(workbook.worksheets) == 9
     assert not any(title in {"点评模板", "\ub4d0\ud300\uce5c\uacbc"} for title in workbook.sheetnames)
     assert "半年度收入拆分" not in workbook.sheetnames
-    assert {"核心假设", "完整利润表", "完整资产负债表", "完整现金流量表", "半年度利润表"}.issubset(
+    assert {"核心假设", "完整利润表", "完整资产负债表", "完整现金流量表", "季度利润表", "半年度利润表"}.issubset(
         set(workbook.sheetnames)
     )
     formula_cells = [
