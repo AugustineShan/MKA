@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type {
   AnnualRevenueBreakdownRow,
+  ArchiveModelsResult,
   AssumptionPatch,
   AssumptionPreview,
   AssumptionsKnob,
@@ -9,8 +10,13 @@ import type {
   CompanySummary,
   DcfDetailRow,
   DerivedMetrics,
+  DisplayBlock,
+  DisplayWarning,
   EditableAssumption,
   EditableAssumptionCell,
+  HomeFolderOverview,
+  HomeTab,
+  PipelineStage,
   QuarterlyRow,
   QuarterlyView,
   RatingReportSettings,
@@ -21,6 +27,7 @@ import type {
   TabKey,
   TerminalView,
   Yaml1AssumptionsView,
+  Yaml1DisplayContract,
   Yaml1Presentation,
   Yaml1RevenueSegment,
   Yaml1RevenueView,
@@ -37,6 +44,7 @@ import {
   referenceIntersection,
   referencePointForTargetG2,
   modelSegmentCagr,
+  solveWaccForModelG1Parity,
 } from "./reverseDcf";
 import type { ModelSegmentCagr, ReverseDcfInputs, ReverseDcfPoint } from "./reverseDcf";
 
@@ -213,11 +221,15 @@ function Sidebar({
   selectedId,
   onSelect,
   loading,
+  homeActive,
+  onSelectHome,
 }: {
   companies: CompanySummary[];
   selectedId?: string;
   onSelect: (id: string) => void;
   loading: boolean;
+  homeActive: boolean;
+  onSelectHome: () => void;
 }) {
   return (
     <aside className="sidebar">
@@ -225,12 +237,20 @@ function Sidebar({
         <div className="brand-title">ModelKing</div>
         <div className="brand-subtitle">Buy-side workbench</div>
       </div>
+      <button
+        className={`company-item home-item ${homeActive ? "selected" : ""}`}
+        onClick={onSelectHome}
+        type="button"
+      >
+        <span className="company-name">首页</span>
+        <span className="company-code">Home</span>
+      </button>
       <div className="sidebar-section-label">Companies</div>
       <div className="company-list">
         {loading ? <div className="activity">Loading companies</div> : null}
         {companies.map((company) => (
           <button
-            className={`company-item ${selectedId === company.id ? "selected" : ""}`}
+            className={`company-item ${!homeActive && selectedId === company.id ? "selected" : ""}`}
             key={company.id}
             onClick={() => onSelect(company.id)}
             type="button"
@@ -860,6 +880,14 @@ const STASH_TYPE_LABEL: Record<StashBlock["type"], string> = {
   kv: "其它",
 };
 
+const DISPLAY_BADGE_LABELS: Record<string, string> = {
+  deprecated: "弃用/复盘",
+  check_only: "核对项",
+  missing_disclosure: "未披露",
+  conflict: "冲突",
+  technical: "技术",
+};
+
 function StashBlockBody({ block, depth = 0 }: { block: StashBlock; depth?: number }) {
   const seriesItems = block.items.filter(isSeriesItem);
   const textItems = block.items.filter(isTextItem);
@@ -920,13 +948,17 @@ function StashBlockBody({ block, depth = 0 }: { block: StashBlock; depth?: numbe
   );
 }
 
-function StashBlockView({ block, depth = 0 }: { block: StashBlock; depth?: number }) {
+function StashBlockView({ block, depth = 0, display }: { block: StashBlock; depth?: number; display?: DisplayBlock }) {
   const open = block.type === "series_table" || block.type === "attr_table";
+  const title = display?.title && display.title !== block.path ? display.title : block.name;
+  const badgeKey = display && display.status !== "reference" ? display.status : display?.role;
+  const badgeLabel = badgeKey ? DISPLAY_BADGE_LABELS[badgeKey] : "";
   return (
     <details className={`stash-block depth-${depth}`} open={open}>
       <summary className="stash-block-header">
-        <span className="stash-block-name">{block.name}</span>
+        <span className="stash-block-name">{title}</span>
         <span className="stash-type-badge">{STASH_TYPE_LABEL[block.type]}</span>
+        {badgeLabel ? <span className={`stash-display-badge status-${badgeKey}`}>{badgeLabel}</span> : null}
         <span className="stash-block-count">{block.items.length}</span>
         {block.unit ? <span className="stash-unit">{block.unit}</span> : null}
       </summary>
@@ -1409,8 +1441,8 @@ type AxisRow = {
   driver?: boolean;
   editablePath?: string;
   // int=整数金额(百万元) · num2=2位小数(参考项通用) · decimal=小数比率×100+%(旋钮) ·
-  // signedDecimal=带符号同比% · volume=1位小数(万吨)
-  format?: "int" | "num2" | "decimal" | "decimal1" | "signedDecimal" | "volume";
+  // percent1=无符号百分比1位 · signedDecimal=带符号同比% · volume=1位小数(万吨)
+  format?: "int" | "num2" | "decimal" | "decimal1" | "percent1" | "signedDecimal" | "volume";
 };
 
 type AssumptionInlineEdit = {
@@ -1433,6 +1465,8 @@ function formatAxisCell(v: number | null | undefined, format: AxisRow["format"])
     case "decimal":
       return formatPercent(v, 2);
     case "decimal1":
+      return formatPercent(v, 1);
+    case "percent1":
       return formatPercent(v, 1);
     case "signedDecimal":
       return formatSignedPercent(v, 1);
@@ -1483,6 +1517,132 @@ function yoySeries(history: Record<string, number | null> | undefined): Record<s
   return out;
 }
 
+function ratioSeries(
+  numerator: Record<string, number | null> | undefined,
+  denominator: Record<string, number | null> | undefined,
+): Record<string, number | null> {
+  const values: Record<string, number | null> = {};
+  const years = unionYears([Object.keys(numerator ?? {}), Object.keys(denominator ?? {})]);
+  for (const year of years) {
+    const n = numerator?.[year];
+    const d = denominator?.[year];
+    values[year] = typeof n === "number" && typeof d === "number" && d !== 0 ? n / d : null;
+  }
+  return values;
+}
+
+function normalizeBusinessLabel(value: string): string {
+  return value.replace(/[（）()及与和、/\\\s·_\-:：]/g, "").toLowerCase();
+}
+
+function matchRevenueSegment(label: string, segments: Yaml1RevenueSegment[]): Yaml1RevenueSegment | null {
+  const target = normalizeBusinessLabel(label);
+  if (!target) return null;
+  const scored = segments
+    .map((segment) => {
+      const names = [segment.name, segment.key].map((item) => normalizeBusinessLabel(String(item))).filter(Boolean);
+      const matched = names.some((name) => target === name);
+      const score = matched ? Math.max(...names.map((name) => name.length)) : 0;
+      return { segment, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return scored[0]?.segment ?? null;
+}
+
+function seriesEquivalentOnSharedYears(
+  candidate: Record<string, number | null> | undefined,
+  baseline: Record<string, number | null> | undefined,
+  tolerance = 0.5,
+): boolean {
+  if (!candidate || !baseline) return false;
+  const years = Object.keys(candidate).filter((year) => typeof candidate[year] === "number" && typeof baseline[year] === "number");
+  if (!years.length) return false;
+  return years.every((year) => Math.abs((candidate[year] as number) - (baseline[year] as number)) <= tolerance);
+}
+
+function stashPath(block: StashBlock): string {
+  return block.path || `stash.${block.name}`;
+}
+
+function displayBlockMap(contract?: Yaml1DisplayContract | null): Map<string, DisplayBlock> {
+  return new Map((contract?.blocks ?? []).filter((block) => block.path).map((block) => [block.path, block]));
+}
+
+function displayWarningsByPath(contract?: Yaml1DisplayContract | null): Map<string, DisplayWarning[]> {
+  const map = new Map<string, DisplayWarning[]>();
+  for (const warning of contract?.warnings ?? []) {
+    const path = warning.path || "";
+    if (!path) continue;
+    const rows = map.get(path) ?? [];
+    rows.push(warning);
+    map.set(path, rows);
+  }
+  return map;
+}
+
+function displayForStash(block: StashBlock, blocks: Map<string, DisplayBlock>): DisplayBlock | undefined {
+  return blocks.get(stashPath(block));
+}
+
+function displayMetricLabel(metric?: string | null): string | null {
+  switch (metric) {
+    case "revenue":
+      return "收入";
+    case "yoy":
+      return "同比";
+    case "gross_margin":
+      return "毛利率";
+    case "cost":
+      return "成本";
+    case "volume":
+      return "销量";
+    case "price":
+      return "价格";
+    case "rate":
+      return "比率";
+    case "amount":
+      return "金额";
+    default:
+      return null;
+  }
+}
+
+function segmentAttachedFormat(block: StashBlock, display?: DisplayBlock): AxisRow["format"] {
+  if (display?.metric === "gross_margin" || display?.metric === "rate" || display?.metric === "yoy") return display.metric === "yoy" ? "signedDecimal" : "percent1";
+  if (display?.metric === "revenue" || display?.metric === "cost" || display?.metric === "amount") return "int";
+  if (display?.metric === "volume") return "volume";
+  const text = `${block.name} ${block.unit ?? ""}`.toLowerCase();
+  if (/率|占比|ratio|pct|margin|%/.test(text)) return "percent1";
+  if (/收入|成本|金额|百万元|million|cny/.test(text)) return "int";
+  if (/销量|volume|万吨/.test(text)) return "volume";
+  return "num2";
+}
+
+function segmentAttachedMetricLabel(block: StashBlock, display?: DisplayBlock): string {
+  const declared = displayMetricLabel(display?.metric);
+  if (declared && declared !== "收入") return declared;
+  const name = block.name
+    .replace(/^分线[_\s-]?/, "")
+    .replace(/^业务线[_\s-]?/, "")
+    .replace(/历史观测/g, "")
+    .replace(/参考/g, "")
+    .replace(/ratio|pct|series/gi, "")
+    .trim();
+  return name || block.name;
+}
+
+function attachableSegmentBlock(block: StashBlock, segments: Yaml1RevenueSegment[]): boolean {
+  if (!blockIsYearSeries(block)) return false;
+  const items = block.items.filter(isSeriesItem);
+  if (!items.length) return false;
+  const matched = items.filter((item) => matchRevenueSegment(item.label, segments));
+  if (!matched.length) return false;
+  if (matched.length === items.length) return true;
+  if (block.name.includes("副拆分")) return false;
+  return /分线|业务线/.test(block.name) && matched.length / items.length >= 0.8;
+}
+
 // 一个 stash block 是否为纯年份序列表（值键全为年份）→ 可并入统一年份轴表
 function blockIsYearSeries(block: StashBlock): boolean {
   if (block.type !== "series_table" && block.type !== "attr_table") return false;
@@ -1494,6 +1654,17 @@ function blockIsYearSeries(block: StashBlock): boolean {
     }
   }
   return true;
+}
+
+function stashBlockYears(block: StashBlock): string[] {
+  const years = new Set<string>();
+  for (const item of block.items.filter(isSeriesItem)) {
+    for (const key of Object.keys(item.values)) {
+      const year = key.match(/^(\d{4})/)?.[1];
+      if (year && isYearKeyStr(year)) years.add(year);
+    }
+  }
+  return [...years];
 }
 
 function UnifiedYearTable({
@@ -1746,23 +1917,33 @@ const REVENUE_DRIVER_LABELS: Record<string, string> = {
   margin: "毛利率",
 };
 
-function revenueDriversForSegment(editable: EditableAssumption[], segmentName: string): EditableAssumption[] {
-  const prefix = `income.revenue.${segmentName}.`;
+// 只有量价族才有"销量"概念；growth/abs 族不应出现销量行（避免乳业"万吨"残留硬编码到服装等公司）。
+const VOLUME_FAMILIES = new Set(["factor_product", "vol_price", "vol_price_margin", "driver_rate"]);
+// 销量单位从 leaf base.unit.volume 通用映射，不硬编码"万吨"。
+const VOLUME_UNIT_LABELS: Record<string, string> = {
+  "10k_ton": "万吨",
+  ton: "吨",
+  "10k_unit": "万件",
+  unit: "件",
+};
+
+function revenueDriversForSegment(editable: EditableAssumption[], segmentKey: string): EditableAssumption[] {
+  const prefix = `income.revenue.${segmentKey}.`;
   const rank: Record<string, number> = { revenue_yoy: 0, volume: 1, price: 2, margin: 3 };
   return editable
     .filter((row) => row.group === "revenue_driver" && row.path.startsWith(prefix))
-    .sort((a, b) => (rank[revenueDriverKey(a, segmentName)] ?? 99) - (rank[revenueDriverKey(b, segmentName)] ?? 99) || a.label.localeCompare(b.label, "zh-Hans-CN"));
+    .sort((a, b) => (rank[revenueDriverKey(a, segmentKey)] ?? 99) - (rank[revenueDriverKey(b, segmentKey)] ?? 99) || a.label.localeCompare(b.label, "zh-Hans-CN"));
 }
 
-function revenueDriverKey(row: EditableAssumption, segmentName: string): string {
-  const prefix = `income.revenue.${segmentName}.`;
+function revenueDriverKey(row: EditableAssumption, segmentKey: string): string {
+  const prefix = `income.revenue.${segmentKey}.`;
   return row.path.startsWith(prefix) ? row.path.slice(prefix.length) : (row.family ?? "");
 }
 
-function revenueDriverAxisRow(row: EditableAssumption, segmentName: string): AxisRow {
+function revenueDriverAxisRow(row: EditableAssumption, segmentKey: string, segmentName: string): AxisRow {
   const values: Record<string, number | null> = {};
   for (const cell of row.cells) values[cell.year] = cell.value;
-  const key = revenueDriverKey(row, segmentName);
+  const key = revenueDriverKey(row, segmentKey);
   const label = REVENUE_DRIVER_LABELS[key] ?? row.label.replace(`${segmentName} · `, "");
   return {
     label: `${segmentName} · ${label}`,
@@ -1775,10 +1956,92 @@ function revenueDriverAxisRow(row: EditableAssumption, segmentName: string): Axi
   };
 }
 
+function metricFromAttrKey(key: string): { label: string; format: AxisRow["format"] } {
+  const raw = key.replace(/^\d{4}[_-]?/, "").toLowerCase();
+  if (/gpm|gross_margin|margin|毛利/.test(raw)) return { label: "毛利率", format: "percent1" };
+  if (/yoy|同比/.test(raw)) return { label: "同比", format: "signedDecimal" };
+  if (/ton_cost|unit_cost|吨成本/.test(raw)) return { label: "吨成本", format: "num2" };
+  if (/cost|成本/.test(raw)) return { label: "成本", format: "int" };
+  if (/price|吨价|单价/.test(raw)) return { label: "价格", format: "num2" };
+  if (/volume|销量/.test(raw)) return { label: "销量", format: "volume" };
+  return { label: raw || key, format: "num2" };
+}
+
+function normalizeAttachedValue(value: number | null | undefined, format: AxisRow["format"], unit?: string | null): number | null {
+  if (typeof value !== "number") return null;
+  if ((format === "percent1" || format === "decimal" || format === "decimal1" || format === "signedDecimal") && Math.abs(value) > 1 && /pct|%/.test(unit ?? "")) {
+    return value / 100;
+  }
+  return value;
+}
+
+function segmentAttachedRowsFromStash(segment: Yaml1RevenueSegment, blocks: StashBlock[], skipMetrics: Set<string> = new Set(), displayBlocks: Map<string, DisplayBlock> = new Map()): AxisRow[] {
+  const rows: AxisRow[] = [];
+  const seen = new Set<string>();
+  const segmentRevenueValues: Record<string, number | null> = { ...(segment.history_revenues ?? {}), ...segment.revenues };
+  for (const block of blocks) {
+    const blockDisplay = displayForStash(block, displayBlocks);
+    const sources = [block, ...(block.extras ?? [])].filter(blockIsYearSeries);
+    for (const source of sources) {
+      const sourceDisplay = displayForStash(source, displayBlocks) ?? blockDisplay;
+      const metric = segmentAttachedMetricLabel(source, sourceDisplay);
+      if (skipMetrics.has(metric)) continue;
+      const format = segmentAttachedFormat(source, sourceDisplay);
+      for (const item of source.items.filter(isSeriesItem)) {
+        const matched = matchRevenueSegment(item.label, [segment]);
+        if (!matched) continue;
+        if (source === block && seriesEquivalentOnSharedYears(item.values, segmentRevenueValues)) continue;
+        const key = `${metric}:${JSON.stringify(item.values)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push({
+          label: `${segment.name} · ${metric}`,
+          values: item.values,
+          note: [block.note, source.note, item.note].filter(Boolean).join("\n"),
+          muted: true,
+          format,
+        });
+      }
+    }
+    if (block.type === "attr_table") {
+      const rowsByMetric = new Map<string, AxisRow>();
+      for (const item of block.items.filter(isSeriesItem)) {
+        const matched = matchRevenueSegment(item.label, [segment]);
+        if (!matched) continue;
+        for (const [key, rawValue] of Object.entries(item.values)) {
+          const year = key.match(/^(\d{4})/)?.[1];
+          if (!year) continue;
+          const metric = metricFromAttrKey(key);
+          if (skipMetrics.has(metric.label)) continue;
+          const rowKey = `${segment.name}:${metric.label}`;
+          const row = rowsByMetric.get(rowKey) ?? {
+            label: `${segment.name} · ${metric.label}`,
+            values: {},
+            note: [block.note, item.note].filter(Boolean).join("\n"),
+            muted: true,
+            format: metric.format,
+          };
+          row.values[year] = normalizeAttachedValue(rawValue, metric.format, block.unit);
+          rowsByMetric.set(rowKey, row);
+        }
+      }
+      for (const [key, row] of rowsByMetric) {
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push(row);
+      }
+    }
+  }
+  return rows;
+}
+
 function buildRevenueGroups(
   view: Yaml1RevenueView,
   presentation: Yaml1Presentation | null | undefined,
   secondaryBlocks: StashBlock[],
+  segmentAttachedBlocks: StashBlock[] = [],
+  displayBlocks: Map<string, DisplayBlock> = new Map(),
+  displayWarnings: Map<string, DisplayWarning[]> = new Map(),
   editable: EditableAssumption[] = [],
   fullStatementSheets?: StatementSheet[],
   previewStatementSheets?: StatementSheet[],
@@ -1817,34 +2080,73 @@ function buildRevenueGroups(
     : view.segments;
   const segRows: AxisRow[] = [];
   for (const seg of orderedSegments) {
-    const segmentDrivers = revenueDriversForSegment(editable, seg.name);
-    const revenueYoyDriver = segmentDrivers.find((row) => revenueDriverKey(row, seg.name) === "revenue_yoy");
-    const inlineDriverRows = segmentDrivers.filter((row) => row !== revenueYoyDriver);
+    const segmentDrivers = revenueDriversForSegment(editable, seg.key);
+    const revenueYoyDriver = segmentDrivers.find((row) => revenueDriverKey(row, seg.key) === "revenue_yoy");
+    // abs 族用 revenue_abs 作为可编辑收入输入（收入行可编辑）；growth 族用 revenue_yoy 作为可编辑同比输入。
+    // 两者都不进 inlineDriverRows，避免与收入/同比行重复显示。
+    const revenueAbsDriver = segmentDrivers.find((row) => revenueDriverKey(row, seg.key) === "revenue_abs");
+    const inlineDriverRows = segmentDrivers.filter((row) => row !== revenueYoyDriver && row !== revenueAbsDriver);
     const revValues: Record<string, number | null> = { ...(seg.history_revenues ?? {}), ...seg.revenues };
-    segRows.push({ label: `${seg.name} · 收入`, values: revValues, note: seg.note, format: "int" });
+    segRows.push({ label: `${seg.name} · 收入`, values: revValues, note: seg.note, format: "int", editablePath: revenueAbsDriver?.path });
     const yoyValues: Record<string, number | null> = { ...yoySeries(seg.history_revenues), ...seg.yoys };
     if (revenueYoyDriver) {
       for (const cell of revenueYoyDriver.cells) yoyValues[cell.year] = cell.value;
     }
     segRows.push({ label: `${seg.name} · 同比`, muted: true, values: yoyValues, format: "signedDecimal", editablePath: revenueYoyDriver?.path });
-    if (seg.history_volumes || seg.volumes) {
+    if (seg.history_costs && Object.keys(seg.history_costs).length > 0) {
+      segRows.push({ label: `${seg.name} · 成本`, muted: true, values: seg.history_costs, format: "int" });
+      segRows.push({
+        label: `${seg.name} · 毛利率`,
+        muted: true,
+        values: ratioSeries(
+          Object.fromEntries(Object.entries(seg.history_costs).map(([year, cost]) => {
+            const revenue = seg.history_revenues?.[year];
+            return [year, typeof revenue === "number" && typeof cost === "number" ? revenue - cost : null];
+          })),
+          seg.history_revenues,
+        ),
+        format: "percent1",
+      });
+    }
+    const derivedMetrics = new Set<string>();
+    if (seg.history_costs && Object.keys(seg.history_costs).length > 0) derivedMetrics.add("毛利率");
+    for (const row of segmentAttachedRowsFromStash(seg, segmentAttachedBlocks, derivedMetrics, displayBlocks)) {
+      segRows.push(row);
+    }
+    if (VOLUME_FAMILIES.has(seg.family)) {
       const volValues: Record<string, number | null> = { ...(seg.history_volumes ?? {}), ...(seg.volumes ?? {}) };
-      segRows.push({ label: `${seg.name} · 销量(万吨)`, muted: true, values: volValues, format: "volume" });
+      const volUnit = VOLUME_UNIT_LABELS[seg.volume_unit ?? ""] ?? "销量";
+      segRows.push({ label: `${seg.name} · 销量(${volUnit})`, muted: true, values: volValues, format: "volume" });
     }
     for (const driver of inlineDriverRows) {
-      segRows.push(revenueDriverAxisRow(driver, seg.name));
+      segRows.push(revenueDriverAxisRow(driver, seg.key, seg.name));
     }
   }
   groups.push({ title: "主拆分 · 业务线", unit: "百万元", rows: segRows });
-  // 副拆分
+  // 副拆分：收入行 + 可选毛利率/同比行（来自同块 extras 里的"毛利率"/"同比" series 子块）
   for (const b of secondaryBlocks) {
-    const sub = b.name.replace(/^副拆分[_]?/, "") || b.name;
+    const display = displayForStash(b, displayBlocks);
+    const sub = (display?.title || b.name.replace(/^副拆分[_]?/, "") || b.name).replace(/^副拆分\s*·\s*/, "");
+    const gmItems = b.extras?.find((e) => e.name.includes("毛利率"))?.items.filter(isSeriesItem) ?? [];
+    const yoyItems = b.extras?.find((e) => e.name.includes("同比"))?.items.filter(isSeriesItem) ?? [];
+    const gmMap = new Map(gmItems.map((it) => [it.label, it.values]));
+    const yoyMap = new Map(yoyItems.map((it) => [it.label, it.values]));
+    const rows: AxisRow[] = [];
+    const warnings = displayWarnings.get(stashPath(b)) ?? [];
+    const warningText = warnings.map((warning) => warning.message).join("\n");
+    for (const it of b.items.filter(isSeriesItem)) {
+      rows.push({ label: `${it.label} · 收入`, values: it.values, note: it.note, format: "int" });
+      const gm = gmMap.get(it.label);
+      if (gm) rows.push({ label: `${it.label} · 毛利率`, values: gm, muted: true, format: "decimal" });
+      const yy = yoyMap.get(it.label);
+      if (yy) rows.push({ label: `${it.label} · 同比`, values: yy, muted: true, format: "signedDecimal" });
+    }
     groups.push({
       title: `副拆分 · ${sub}`,
       unit: b.unit,
-      caveat: b.caveat,
+      caveat: [b.caveat, warningText].filter(Boolean).join("\n"),
       note: b.note,
-      rows: b.items.filter(isSeriesItem).map((it) => ({ label: it.label, values: it.values, note: it.note, format: "int" })),
+      rows,
     });
   }
   return groups;
@@ -2074,18 +2376,44 @@ function EditableAssumptionsTable({
   );
 }
 
-function buildReferenceGroups(refBlocks: StashBlock[]): { groups: AxisGroup[]; rest: StashBlock[] } {
+function referenceFormat(block: StashBlock, display?: DisplayBlock): AxisRow["format"] {
+  if (display?.metric === "gross_margin" || display?.metric === "rate" || display?.metric === "yoy") return display.metric === "yoy" ? "signedDecimal" : "decimal";
+  if (display?.metric === "revenue" || display?.metric === "cost" || display?.metric === "amount") return "int";
+  const text = `${block.name} ${block.unit ?? ""}`.toLowerCase();
+  if (/pct|ratio|率|%/.test(text) && !/\/|mixed/.test(text)) return "decimal";
+  if (/百万元|收入|成本|金额/.test(text)) return "int";
+  return "num2";
+}
+
+function normalizeReferenceValues(values: Record<string, number | null>, format: AxisRow["format"], unit?: string | null): Record<string, number | null> {
+  const normalized: Record<string, number | null> = {};
+  for (const [key, value] of Object.entries(values)) {
+    normalized[key] = normalizeAttachedValue(value, format, unit);
+  }
+  return normalized;
+}
+
+function referenceTitle(block: StashBlock, display?: DisplayBlock): string {
+  const title = display?.title || block.name;
+  if (display?.role === "deprecated" || display?.status === "deprecated") return `弃用/复盘 · ${title}`;
+  if (display?.role === "check_only" || display?.status === "check_only") return `核对项 · ${title}`;
+  if (display?.role === "technical") return `技术附注 · ${title}`;
+  return title;
+}
+
+function buildReferenceGroups(refBlocks: StashBlock[], displayBlocks: Map<string, DisplayBlock> = new Map()): { groups: AxisGroup[]; rest: StashBlock[] } {
   const groups: AxisGroup[] = [];
   const rest: StashBlock[] = [];
   for (const b of refBlocks) {
+    const display = displayForStash(b, displayBlocks);
     if (blockIsYearSeries(b)) {
+      const format = referenceFormat(b, display);
       groups.push({
-        title: b.name,
+        title: referenceTitle(b, display),
         unit: b.unit,
         caveat: b.caveat,
         note: b.note,
-        // 参考项单位混杂（百万元/pct/甚至同行不同单位如液体乳核对项），统一 2 位小数保留精度，单位在组头显示
-        rows: b.items.filter(isSeriesItem).map((it) => ({ label: it.label, values: it.values, note: it.note, format: "num2" as const })),
+        rows: b.items.filter(isSeriesItem).map((it) => ({ label: it.label, values: normalizeReferenceValues(it.values, format, b.unit), note: it.note, format })),
       });
     } else {
       rest.push(b);
@@ -2448,6 +2776,7 @@ function YamlWorkbook({
   statementSheets,
   fullStatementSheets,
   stashView,
+  displayContract,
   assumptionsView,
   editableAssumptions,
   annualRevenueBreakdown,
@@ -2460,6 +2789,7 @@ function YamlWorkbook({
   statementSheets?: StatementSheet[];
   fullStatementSheets?: StatementSheet[];
   stashView?: StashBlock[];
+  displayContract?: Yaml1DisplayContract | null;
   assumptionsView?: Yaml1AssumptionsView | null;
   editableAssumptions?: EditableAssumption[];
   annualRevenueBreakdown?: AnnualRevenueBreakdownRow[];
@@ -2592,8 +2922,22 @@ function YamlWorkbook({
 
   // 三区一轴：每区一张表、一个共享年份轴，缺数据留空。约定分派，非公司特判。
   const allStash = stashView ?? [];
-  const secondaryBlocks = allStash.filter((b) => b.name.includes("拆分"));
-  const refBlocks = allStash.filter((b) => !b.name.includes("拆分"));
+  const displayBlocks = displayBlockMap(displayContract);
+  const displayWarnings = displayWarningsByPath(displayContract);
+  const segmentAttachedBlocks = allStash.filter((b) => {
+    const display = displayForStash(b, displayBlocks);
+    if (display) return display.role === "primary_attachment" && display.placement === "model_table";
+    return revenueView?.segments?.length ? attachableSegmentBlock(b, revenueView.segments) : false;
+  });
+  const segmentAttachedBlockSet = new Set(segmentAttachedBlocks);
+  const secondaryBlocks = allStash.filter((b) => {
+    if (segmentAttachedBlockSet.has(b)) return false;
+    const display = displayForStash(b, displayBlocks);
+    if (display) return display.role === "secondary_split" && display.placement === "secondary_table";
+    return b.name.includes("拆分");
+  });
+  const secondaryBlockSet = new Set(secondaryBlocks);
+  const refBlocks = allStash.filter((b) => !segmentAttachedBlockSet.has(b) && !secondaryBlockSet.has(b));
 
   // ① 收入拆分区
   const revenueBase = revenueView ? Number(revenueView.base_year) : 0;
@@ -2601,11 +2945,12 @@ function YamlWorkbook({
     ? unionYears([
         ...revenueView.segments.map((s) => Object.keys(s.history_revenues ?? {})),
         revenueView.years,
-        ...secondaryBlocks.map((b) => b.items.filter(isSeriesItem).flatMap((it) => Object.keys(it.values))),
+        ...secondaryBlocks.map(stashBlockYears),
+        ...segmentAttachedBlocks.map(stashBlockYears),
         [String(revenueView.base_year)],
       ])
     : [];
-  const revenueGroups = revenueView ? buildRevenueGroups(revenueView, presentation, secondaryBlocks, editableRows, fullStatementSheets, preview?.statement_sheets) : [];
+  const revenueGroups = revenueView ? buildRevenueGroups(revenueView, presentation, secondaryBlocks, segmentAttachedBlocks, displayBlocks, displayWarnings, editableRows, fullStatementSheets, preview?.statement_sheets) : [];
 
   // ② 关键假设区
   const asmBase = assumptionsView ? Number(assumptionsView.base_period) : 0;
@@ -2633,16 +2978,16 @@ function YamlWorkbook({
 
   // ③ 参考区
   const refBase = revenueBase || asmBase;
-  const { groups: refGroups, rest: refRest } = buildReferenceGroups(refBlocks);
+  const { groups: refGroups, rest: refRest } = buildReferenceGroups(refBlocks, displayBlocks);
   const refYears = unionYears(refGroups.map((g) => g.rows.flatMap((r) => Object.keys(r.values))));
   const revenueLastYear = revenueView?.years.length ? revenueView.years[revenueView.years.length - 1] : null;
-  const overrideCount = editableRows.length;
   const yamlHeroStats = [
     { label: "BASE", value: String(revenueBase || asmBase || "-") },
     { label: "FORECAST", value: revenueView?.years.length ? `${revenueView.years[0]}-${revenueLastYear}` : "-" },
     { label: "SEGMENTS", value: String(revenueView?.segments.length ?? 0) },
-    { label: "EDITABLE", value: String(overrideCount) },
+    { label: "DISPLAY", value: displayContract?.mode ?? "-" },
   ];
+  const displayWarningItems = displayContract?.warnings ?? [];
 
   return (
     <div className="view-stack yaml1-spec">
@@ -2666,6 +3011,13 @@ function YamlWorkbook({
           </div>
         </div>
       </section>
+
+      {displayWarningItems.length ? (
+        <div className="yaml-display-warnings">
+          <strong>展示契约提示</strong>
+          <span>{displayWarningItems.slice(0, 4).map((item) => item.message).join("；")}</span>
+        </div>
+      ) : null}
 
       <nav className="yaml-subtabs sheet-tabs compact-tabs" role="tablist" aria-label="核心假设展示子页面">
         {[
@@ -2842,8 +3194,8 @@ function YamlWorkbook({
           ) : null}
           {refRest.length > 0 ? (
             <div className="stash-blocks stash-rest">
-              {refRest.map((b, i) => (
-                <StashBlockView block={b} key={i} />
+          {refRest.map((b, i) => (
+                <StashBlockView block={b} display={displayForStash(b, displayBlocks)} key={i} />
               ))}
             </div>
           ) : null}
@@ -3448,6 +3800,12 @@ function ReverseDcfTool({ base }: { base: ReverseDcfBase }) {
   const curve = useMemo(() => generateIsoCurve(base, inputs), [base, inputs]);
   const modelCagr = useMemo(() => modelSegmentCagr(base, inputs.n1, inputs.n2), [base, inputs.n1, inputs.n2]);
   const modelPoint = modelCagr.g1 != null && modelCagr.g2 != null ? { g1: modelCagr.g1, g2: modelCagr.g2 } : null;
+  const g1ParityWacc = useMemo(() => solveWaccForModelG1Parity(base, inputs), [base, inputs.n1, inputs.n2, inputs.terminalGrowth, inputs.referenceDecay]);
+  const waccAnchorHint = g1ParityWacc == null
+    ? "当前参数无法在 WACC 边界内让 g1：模型 - 市场 = 0，已使用默认折现率。"
+    : Math.abs(inputs.wacc - g1ParityWacc) < 0.0005
+      ? `默认 WACC 已校准到 g1：模型 - 市场 = 0（${formatPercent(g1ParityWacc, 1)}）。`
+      : `当前分段的 g1 对齐 WACC 参考值：${formatPercent(g1ParityWacc, 1)}。`;
   const autoReferencePoint = useMemo(
     () => referencePointForTargetG2(base, inputs, modelCagr.g2),
     [base, inputs, modelCagr.g2],
@@ -3494,6 +3852,7 @@ function ReverseDcfTool({ base }: { base: ReverseDcfBase }) {
           <div className="eyebrow">钉死假设</div>
           <ReverseSlider label="WACC" value={inputs.wacc} min={base.bounds.wacc[0]} max={base.bounds.wacc[1]} step={0.0025} format={(value) => formatPercent(value, 1)} onChange={(wacc) => updateInputs({ wacc })} />
           <ReverseSlider label="远期增长 g∞" value={inputs.terminalGrowth} min={base.bounds.terminal_growth[0]} max={Math.min(base.bounds.terminal_growth[1], inputs.wacc - 0.001)} step={0.0025} format={(value) => formatPercent(value, 1)} onChange={(terminalGrowth) => updateInputs({ terminalGrowth })} />
+          <div className="reverse-anchor-note">{waccAnchorHint}</div>
         </div>
       </section>
 
@@ -3979,6 +4338,7 @@ function DetailView({
         statementSheets={detail.statement_sheets}
         fullStatementSheets={detail.full_statement_sheets}
         stashView={detail.yaml1_stash_view}
+        displayContract={detail.yaml1_display_contract}
         assumptionsView={detail.yaml1_assumptions_view}
         editableAssumptions={detail.editable_assumptions}
         annualRevenueBreakdown={detail.annual_revenue_breakdown}
@@ -3992,6 +4352,143 @@ function DetailView({
   return <Overview detail={detail} />;
 }
 
+const HOME_TABS: Array<{ key: HomeTab; label: string }> = [
+  { key: "folder-overview", label: "文件夹总览" },
+];
+
+const STAGE_TONE: Record<PipelineStage, string> = {
+  "未初始化": "stage-0",
+  "初始化完毕": "stage-1",
+  "核心假设完毕": "stage-2",
+  "建模完毕": "stage-3",
+  "建模完毕且有DA表": "stage-4",
+};
+
+function FolderOverview() {
+  const [rows, setRows] = useState<HomeFolderOverview[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const [archiving, setArchiving] = useState<string | null>(null);
+  const [homeTab, setHomeTab] = useState<HomeTab>("folder-overview");
+
+  async function load() {
+    setLoading(true);
+    setError(undefined);
+    try {
+      setRows(await apiGet<HomeFolderOverview[]>("/api/home/folder-overview"));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { void load(); }, []);
+
+  async function archive(companyId: string, kind: "yaml1" | "models") {
+    const msg = kind === "yaml1" ? "归档历史 yaml1？只留最新一份。" : "归档根目录历史模型文件并删除锁文件？";
+    if (!window.confirm(msg)) return;
+    setArchiving(companyId);
+    try {
+      await apiPost<ArchiveModelsResult>(`/api/companies/${encodeURIComponent(companyId)}/archive-models`);
+      await load();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setArchiving(null);
+    }
+  }
+
+  return (
+    <div className="view-stack folder-overview-page">
+      <header className="topbar">
+        <div>
+          <div className="eyebrow">Home</div>
+          <h1>文件夹总览</h1>
+        </div>
+      </header>
+      <nav className="tabbar">
+        {HOME_TABS.map((t) => (
+          <button key={t.key} className={homeTab === t.key ? "active" : ""} onClick={() => setHomeTab(t.key)} type="button">{t.label}</button>
+        ))}
+      </nav>
+      {error ? <div className="error-banner">{error}</div> : null}
+      {loading ? <div className="activity content-activity">Loading folder overview</div> : null}
+      {!loading && homeTab === "folder-overview" ? (
+        <div className="table-scroll workbook-scroll">
+          <table className="financial-table folder-overview-table">
+            <thead>
+              <tr>
+                <th>信号</th>
+                {rows.map((r) => (
+                  <th key={r.company_id} className="company-col">
+                    <span className="company-name">{r.name}</span>
+                    <span className="company-code">{r.code}</span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="signal-label">建模管线推进</td>
+                {rows.map((r) => (
+                  <td key={r.company_id} className={`stage-cell ${r.signals ? STAGE_TONE[r.signals.pipeline_stage] : ""}`}>
+                    {r.signals?.pipeline_stage ?? "读取失败"}
+                  </td>
+                ))}
+              </tr>
+              <tr>
+                <td className="signal-label">yaml1 日期</td>
+                {rows.map((r) => (
+                  <td key={r.company_id} className="numeric">{r.signals?.yaml1_date ?? "-"}</td>
+                ))}
+              </tr>
+              <tr>
+                <td className="signal-label">yaml1 历史版本</td>
+                {rows.map((r) => (
+                  <td key={r.company_id} className="numeric">
+                    {r.signals?.yaml1_versions ?? "-"}
+                    {r.signals?.yaml1_archive_eligible ? (
+                      <button className="archive-btn" disabled={archiving === r.company_id} onClick={() => archive(r.company_id, "yaml1")} type="button">归档</button>
+                    ) : null}
+                  </td>
+                ))}
+              </tr>
+              <tr>
+                <td className="signal-label">根目录模型文件</td>
+                {rows.map((r) => (
+                  <td key={r.company_id} className="numeric">
+                    {r.signals ? `${r.signals.root_models.excel_count} (${r.signals.root_models.lock_count} 锁)` : "-"}
+                    {r.signals?.root_models.archive_eligible ? (
+                      <button className="archive-btn" disabled={archiving === r.company_id} onClick={() => archive(r.company_id, "models")} type="button">归档</button>
+                    ) : null}
+                  </td>
+                ))}
+              </tr>
+              <tr>
+                <td className="signal-label">工作台素材数</td>
+                {rows.map((r) => (
+                  <td key={r.company_id} className="numeric">
+                    {r.signals ? `研${r.signals.workbench_materials.reports} 纪${r.signals.workbench_materials.notes} 收${r.signals.workbench_materials.collected} 重${r.signals.workbench_materials.important}` : "-"}
+                  </td>
+                ))}
+              </tr>
+              <tr>
+                <td className="signal-label">Agent技能素材数</td>
+                {rows.map((r) => (
+                  <td key={r.company_id} className="numeric">
+                    {r.signals ? `L${r.signals.agent_materials.load} B${r.signals.agent_materials.brkd} 权${r.signals.agent_materials.top_weight} A${r.signals.agent_materials.adj} P${r.signals.agent_materials.pjbg}` : "-"}
+                  </td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function App() {
   const [companies, setCompanies] = useState<CompanySummary[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -4002,6 +4499,7 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string>();
   const [showTutorial, setShowTutorial] = useState(false);
+  const [homeActive, setHomeActive] = useState(true);
 
   async function loadCompanies() {
     setLoading(true);
@@ -4009,7 +4507,6 @@ export default function App() {
     try {
       const result = await apiGet<CompanySummary[]>("/api/companies");
       setCompanies(result);
-      setSelectedId((current) => current ?? result[0]?.id);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -4064,38 +4561,51 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar companies={companies} loading={loading} onSelect={setSelectedId} selectedId={selectedId} />
+      <Sidebar
+        companies={companies}
+        loading={loading}
+        onSelect={(id) => { setSelectedId(id); setHomeActive(false); }}
+        selectedId={selectedId}
+        homeActive={homeActive}
+        onSelectHome={() => { setHomeActive(true); setSelectedId(undefined); }}
+      />
       <main className="main-pane">
-        <header className="topbar">
-          <div>
-            <div className="eyebrow">Workbench</div>
-            <h1>{selectedCompany?.name ?? "Company folder"}</h1>
-          </div>
-          <div className="topbar-right">
-            <div className="topbar-stats">
-              {headerStats.map(([label, value]) => (
-                <div className="topbar-stat" key={label}>
-                  <span>{label}</span>
-                  <strong>{value}</strong>
+        {homeActive ? (
+          <FolderOverview />
+        ) : (
+          <>
+            <header className="topbar">
+              <div>
+                <div className="eyebrow">Workbench</div>
+                <h1>{selectedCompany?.name ?? "Company folder"}</h1>
+              </div>
+              <div className="topbar-right">
+                <div className="topbar-stats">
+                  {headerStats.map(([label, value]) => (
+                    <div className="topbar-stat" key={label}>
+                      <span>{label}</span>
+                      <strong>{value}</strong>
+                    </div>
+                  ))}
                 </div>
+                <button className="tutorial-btn" onClick={() => setShowTutorial(true)} type="button">配置和教程</button>
+              </div>
+            </header>
+
+            <nav className="tabbar">
+              {tabs.filter((item) => item.key !== "da" || Boolean(detail?.da_view)).map((item) => (
+                <button className={tab === item.key ? "active" : ""} key={item.key} onClick={() => setTab(item.key)} type="button">
+                  {item.label}
+                </button>
               ))}
-            </div>
-            <button className="tutorial-btn" onClick={() => setShowTutorial(true)} type="button">配置和教程</button>
-          </div>
-        </header>
+            </nav>
 
-        <nav className="tabbar">
-          {tabs.filter((item) => item.key !== "da" || Boolean(detail?.da_view)).map((item) => (
-            <button className={tab === item.key ? "active" : ""} key={item.key} onClick={() => setTab(item.key)} type="button">
-              {item.label}
-            </button>
-          ))}
-        </nav>
-
-        {error ? <div className="error-banner">{error}</div> : null}
-        {detailLoading ? <div className="activity content-activity">Loading company model</div> : null}
-        {!detailLoading && detail ? <DetailView detail={detail} tab={tab} /> : null}
-        {!detailLoading && !detail && !error ? <EmptyState title="No company selected" body="Select a company from the sidebar to inspect its model folder." /> : null}
+            {error ? <div className="error-banner">{error}</div> : null}
+            {detailLoading ? <div className="activity content-activity">Loading company model</div> : null}
+            {!detailLoading && detail ? <DetailView detail={detail} tab={tab} /> : null}
+            {!detailLoading && !detail && !error ? <EmptyState title="No company selected" body="Select a company from the sidebar to inspect its model folder." /> : null}
+          </>
+        )}
       </main>
       {showTutorial ? <Tutorial onClose={() => setShowTutorial(false)} onSaved={loadCompanies} /> : null}
     </div>

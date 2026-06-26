@@ -37,9 +37,11 @@ export type Yaml1RevenueSegment = {
   base_year: number;
   base_volume?: number | null;
   base_price?: number | null;
+  volume_unit?: string | null;
   base_revenue: number;
   unit_factor: number;
   history_revenues?: Record<string, number>;
+  history_costs?: Record<string, number>;
   history_volumes?: Record<string, number>;
   revenues: Record<string, number>;
   yoys: Record<string, number>;
@@ -200,6 +202,7 @@ export type AnnualRevenueBreakdownRow = {
 // ───────── stash type-dispatch (universal: any company shape) ─────────
 export type StashBlock = {
   name: string;
+  path?: string | null;
   type: "list" | "series_table" | "attr_table" | "text_dict" | "scalar_table" | "kv";
   note?: string | null;
   unit?: string | null;
@@ -213,6 +216,43 @@ export type StashItem =
   | { key?: string; label: string; values: Record<string, number | null>; note?: string | null }
   | { label: string; text: string }
   | { label: string; value: number | string };
+
+export type DisplayRole = "primary_model" | "primary_attachment" | "secondary_split" | "reference" | "check_only" | "deprecated" | "technical" | string;
+export type DisplayPlacement = "model_table" | "secondary_table" | "reference_tab" | "technical_tab" | string;
+export type DisplayDimension = "business_line" | "product" | "region" | "channel" | "subsidiary" | "customer" | "metric" | "text" | "other" | string;
+export type DisplayMetric = "revenue" | "yoy" | "gross_margin" | "cost" | "volume" | "price" | "rate" | "amount" | "text" | "mixed" | string;
+export type DisplayStatus = "active" | "reference" | "deprecated" | "check_only" | "missing_disclosure" | "conflict" | string;
+export type DisplayDuplicatePolicy = "show" | "skip_if_equal" | "prefer_derived_and_warn" | "reference_only" | string;
+export type DisplayMatchPolicy = "exact_or_declared_alias" | "declared_path" | "none" | string;
+
+export type DisplayBlock = {
+  path: string;
+  role: DisplayRole;
+  placement: DisplayPlacement;
+  dimension?: DisplayDimension;
+  metric?: DisplayMetric;
+  metrics?: DisplayMetric[];
+  status?: DisplayStatus;
+  duplicate_policy?: DisplayDuplicatePolicy;
+  match_policy?: DisplayMatchPolicy;
+  attach_to?: string | null;
+  title?: string | null;
+};
+
+export type DisplayWarning = {
+  code: string;
+  message: string;
+  path?: string | null;
+  severity?: "info" | "warning" | "error" | string;
+};
+
+export type Yaml1DisplayContract = {
+  schema_version: number;
+  mode: "declared" | "inferred" | string;
+  primary_dimension?: DisplayDimension;
+  blocks: DisplayBlock[];
+  warnings: DisplayWarning[];
+};
 
 // ───────── assumptions view ─────────
 export type AssumptionsKnob = {
@@ -366,6 +406,7 @@ export type CompanyDetail = {
   yaml1_text?: string | null;
   yaml1_revenue_view?: Yaml1RevenueView | null;
   yaml1_presentation?: Yaml1Presentation | null;
+  yaml1_display_contract?: Yaml1DisplayContract | null;
   yaml1_sheets?: WorkbookSheet[];
   yaml1_stash_view?: StashBlock[];
   yaml1_assumptions_view?: Yaml1AssumptionsView | null;
@@ -457,3 +498,36 @@ export type AppSettings = {
   validation: SettingsValidation;
   rating_report?: RatingReportSettings;
 };
+
+export type PipelineStage =
+  | "未初始化"
+  | "初始化完毕"
+  | "核心假设完毕"
+  | "建模完毕"
+  | "建模完毕且有DA表";
+
+export type HomeFolderOverviewSignals = {
+  pipeline_stage: PipelineStage;
+  yaml1_date: string | null;
+  yaml1_versions: number;
+  yaml1_archive_eligible: boolean;
+  root_models: { excel_count: number; lock_count: number; archive_eligible: boolean };
+  workbench_materials: { reports: number; notes: number; collected: number; important: number };
+  agent_materials: { load: number; brkd: number; top_weight: number; adj: number; pjbg: number };
+};
+
+export type HomeFolderOverview = {
+  company_id: string;
+  name: string;
+  code: string;
+  signals: HomeFolderOverviewSignals | null;
+  error: string | null;
+};
+
+export type ArchiveModelsResult = {
+  archived_yaml1: string[];
+  archived_models: string[];
+  deleted_locks: string[];
+};
+
+export type HomeTab = "folder-overview";
