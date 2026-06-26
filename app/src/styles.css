@@ -6686,45 +6686,38 @@ p {
   border-collapse: separate;
   border-spacing: 0;
   width: 100%;
-  font-size: 0.85rem;
+  font-family: inherit;
+  font-size: 0.95rem;
 }
 .folder-overview-rows thead th {
   position: sticky;
   top: 0;
   z-index: 1;
   background: #f2f4f7;
-  font-size: 0.72rem;
+  font-size: 0.8rem;
   font-weight: 600;
   color: #6c757d;
-  letter-spacing: 0.02em;
-  padding: 0.6rem 0.9rem;
+  padding: 0.55rem 0.6rem;
   border-bottom: 1px solid #e3e6ea;
-  text-align: right;
+  text-align: center;
   white-space: nowrap;
 }
 .folder-overview-rows thead tr.group-header-row th {
-  text-align: center;
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-size: 0.78rem;
+  font-weight: 700;
   color: #8a9199;
   background: #eceef1;
-  font-weight: 700;
-}
-.folder-overview-rows thead th.col-company,
-.folder-overview-rows thead th.col-actions {
-  text-align: left;
 }
 .folder-overview-rows thead th.forecast-start {
   border-left: 1px solid #e3e6ea;
 }
 .folder-overview-rows tbody td {
-  padding: 0.7rem 0.9rem;
+  padding: 0.5rem 0.6rem;
   border-bottom: 1px solid #eef0f3;
   vertical-align: middle;
+  text-align: center;
 }
 .folder-overview-rows tbody td.numeric {
-  text-align: right;
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
   white-space: nowrap;
@@ -6740,27 +6733,26 @@ p {
 }
 .folder-overview-rows .company-cell .company-code {
   display: block;
-  font-size: 0.72rem;
+  font-size: 0.8rem;
   color: #98a0a8;
-  letter-spacing: 0.04em;
 }
 .folder-overview-rows .negative { color: var(--red, #b42318); }
-.folder-overview-rows .actions-cell { white-space: nowrap; display: flex; gap: 0.5rem; }
+.folder-overview-rows .actions-cell { white-space: nowrap; display: flex; gap: 0.4rem; justify-content: center; }
 
-/* stage pill */
+/* stage pill: 未初始化=红 / 初始化完毕=灰 / 核心假设完毕=黄 / 建模完毕=蓝 / 建模完毕且有DA表=同蓝 */
 .stage-pill {
   display: inline-block;
-  padding: 0.18rem 0.6rem;
+  padding: 0.22rem 0.7rem;
   border-radius: 999px;
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 600;
   white-space: nowrap;
 }
 .stage-pill.stage-0 { background: #fdecea; color: var(--red, #b42318); }
-.stage-pill.stage-1 { background: #fdf3e2; color: #8a6d3b; }
-.stage-pill.stage-2 { background: #eef0f3; color: #6c757d; }
+.stage-pill.stage-1 { background: #eef0f3; color: #6c757d; }
+.stage-pill.stage-2 { background: #fdf3e2; color: #8a6d3b; }
 .stage-pill.stage-3 { background: #e6efff; color: var(--blue, #003d7a); }
-.stage-pill.stage-4 { background: #e6f4ea; color: #2f7d32; }
+.stage-pill.stage-4 { background: #e6efff; color: var(--blue, #003d7a); }
 .ghost-btn {
   padding: 0.25rem 0.75rem; font-size: 0.8rem; border: 1px solid #d0d4d9;
   color: #333; background: transparent; border-radius: 4px; cursor: pointer;
