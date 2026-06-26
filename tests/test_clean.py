@@ -113,6 +113,24 @@ class TestIncomeStatementChecks:
         errors = clean.check_is(row, present, "2024")
         assert errors == []
 
+    def test_check_is_closes_old_regime_2018_via_regime_sign_map(self):
+        """新乳业 2018 形态: pre-2019 assets_impair_loss(正数损失)在 total_cogs 内。
+        resolve_is_signs regime 判定 → sign_map{assets_impair_loss:-1} → IS 1.2 闭合,
+        无需 Opt 4 / sign-flip override。回收 Opt 4 的回归保护。"""
+        row = self._minimal_is_row(
+            assets_impair_loss=10.49,
+            total_cogs=710.49,        # 稳定成本明细 700 + impair 10.49 (impair 在 total_cogs 内)
+            operate_profit=339.51,    # 1000 − 710.49 + 50(invest): 旧口径官方营业利润
+            total_profit=344.51,      # 339.51 + 10 − 5
+            n_income=255.76,          # 344.51 − 88.75
+            minority_gain=5.76,       # 255.76 − 250
+        )
+        present = {k for k, v in row.items() if v != 0.0}
+        sign_map, _ = clean.resolve_is_signs(row, present, "2018", raw_total_cogs=710.49)
+        assert sign_map == {"assets_impair_loss": -1}
+        errors = clean.check_is(row, present, "2018", sign_map=sign_map, null_fields=set())
+        assert not any("IS 1.2" in e for e in errors), errors
+
     def test_check_is_fails_when_total_profit_mismatches(self):
         row = self._minimal_is_row(total_profit=999.0)
         present = {k for k, v in row.items() if v != 0.0}
@@ -273,6 +291,37 @@ class TestResolveIsSigns:
 
         assert sign_map == {"assets_impair_loss": -1, "credit_impa_loss": 1}
         assert any("overrode semantic signs" in warning for warning in warnings)
+
+    def test_resolve_is_signs_old_regime_impair_inside_total_cogs(self):
+        """pre-2019 旧口径: assets_impair_loss 正数损失记在 total_cogs 内。
+        regime 检测 raw_total_cogs − stable_cost_sum ≈ impair → semantic −1,
+        IS 1.2 直接闭合。回收 Opt 4 的核心回归保护。"""
+        row = self._row(assets_impair_loss=10.49, operate_profit=339.51)
+        row["total_cogs"] = 710.49  # stable_cost_sum(700) + impair(10.49): impair 在 total_cogs 内
+        present = self._present(row)
+        sign_map, warnings = clean.resolve_is_signs(
+            row, present, "2018", raw_total_cogs=710.49
+        )
+        assert sign_map == {"assets_impair_loss": -1}
+        assert any("semantic" in w for w in warnings)
+
+    def test_resolve_is_signs_new_regime_impair_outside_total_cogs(self):
+        """2019+ 新口径: assets_impair_loss 负号损失, 不在 total_cogs 内。
+        regime 检测 raw_total_cogs ≈ stable_cost_sum → semantic +1 (保留披露负号)。"""
+        row = self._row(assets_impair_loss=-5.0, operate_profit=345.0)
+        row["total_cogs"] = 700.0  # = stable_cost_sum: impair 不在 total_cogs 内
+        present = self._present(row)
+        sign_map, warnings = clean.resolve_is_signs(
+            row, present, "2020", raw_total_cogs=700.0
+        )
+        assert sign_map == {"assets_impair_loss": 1}
+        assert any("semantic" in w for w in warnings)
+
+    def test_resolve_is_signs_empty_when_no_questionable_field_present(self):
+        """无 sign-questionable 字段在场 → 空 sign_map, check_is 走 else 分支。"""
+        row = self._row()  # 所有 questionable 字段为 0
+        sign_map, warnings = clean.resolve_is_signs(row, self._present(row), "2018")
+        assert sign_map == {}
 
 
 class TestBalanceSheetChecks:

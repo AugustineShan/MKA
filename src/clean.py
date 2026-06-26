@@ -806,11 +806,15 @@ def resolve_is_signs(
     present: set[str],
     year: str,
     tolerance: float = TOLERANCE,
+    raw_total_cogs: float | None = None,
 ) -> tuple[dict[str, int] | None, list[str]]:
-    """Resolve signs for impairment-like fields in modern years.
+    """Resolve signs for impairment-like fields, per-year data-driven regime.
 
-    Only enabled for 2019+ periods, when the modern income-statement format is
-    expected to be stable. Earlier years are flagged as 口径断点 and skipped.
+    The 2017→2019 三版报表格式修订（财会30号/15号/6号）让 sign-questionable 字段
+    的口径随公司/年份而变，不是单一全局断点：assets_impair_loss 旧口径(pre-6号)以
+    正数损失记在 total_cogs 内，6号起改为"损失以'-'号填列"的独立调整项；credit_impair_loss
+    /oth_impair_loss_assets 出生即为独立调整项。故 regime 按"该字段是否在 total_cogs
+    内"逐年逐字段判定，不硬编码年份。
 
     The identity used is:
         operate_profit = revenue_base
@@ -818,10 +822,15 @@ def resolve_is_signs(
                          + sum(operating_adjustment fields)
                          + sum(sign_f * value_f for f in questionable fields)
 
-    Modern reports usually state "losses are presented with a minus sign".
-    Therefore the semantic default is to preserve the reported sign (``+1``).
-    Exhaustive residual minimisation is only allowed to override that default
-    when the improvement is large enough to exceed small-item noise.
+    Regime detection: ``raw_total_cogs − stable_cost_sum`` 是 total_cogs 中超出
+    稳定成本明细的部分。若某 questionable 字段值 ≈ 该残差，说明它被记在 total_cogs
+    内（旧口径）→ semantic sign −1（正数损失应作负调整）；否则 +1（保留披露符号，新
+    口径损失已为负）。``raw_total_cogs`` 必须是 adaptation 前的官方值（adaptation 会
+    把 total_cogs 改成明细和、剔除 impair，破坏信号）；调用方从
+    ``wide.attrs["raw_total_cogs_by_period"]`` 传入，未传则回退 row["total_cogs"]。
+
+    Exhaustive residual minimisation is only allowed to override the regime
+    default when the improvement is large enough to exceed small-item noise.
 
     All inputs come from the same TuShare income table, so residuals are a
     sanity check on internal consistency, not an independent cross-validation.
@@ -830,10 +839,6 @@ def resolve_is_signs(
     resolved. Warnings are emitted instead of errors; callers decide whether
     to hard-fail. The residual is never absorbed into a plug field.
     """
-    year_match = re.match(r"(\d{4})", str(year))
-    if not year_match or int(year_match.group(1)) < 2019:
-        return None, [f"IS sign {year} skipped: 口径断点，2019年前不启用动态符号验证"]
-
     revenue = get_income_value(row, "revenue")
     total_revenue = get_income_value(row, "total_revenue")
     other_revenue = (
@@ -874,7 +879,20 @@ def resolve_is_signs(
             best_signed_residual = residual
             best_signs = signs
 
-    semantic_signs = tuple(1 for _ in Q_present)
+    # Regime detection: which questionable fields sit inside total_cogs (旧口径,
+    # 损失记正号)? raw_total_cogs must be the pre-adaptation official value
+    # (caller threads it via wide.attrs["raw_total_cogs_by_period"]); fall back
+    # to row["total_cogs"] when not supplied (direct tests, quarterly mode
+    # where total_cogs is never adapted).
+    cogs_for_regime = (
+        raw_total_cogs if raw_total_cogs is not None
+        else get_income_value(row, "total_cogs")
+    )
+    cogs_residual = cogs_for_regime - stable_cost_sum
+    semantic_signs = tuple(
+        -1 if abs(cogs_residual - get_income_value(row, f)) <= tolerance else 1
+        for f in Q_present
+    )
     semantic_residual = next(residual for signs, residual in candidates if signs == semantic_signs)
     semantic_abs_residual = abs(semantic_residual)
     values_str = ", ".join(f"{f}={get_income_value(row, f):.4f}" for f in Q_present)
@@ -1740,8 +1758,11 @@ def validate_wide(
         period_errors: list[str] = []
         period_warnings: list[str] = []
 
-        # Dynamic sign resolution for impairment-like fields (modern years only).
-        sign_map, sign_warnings = resolve_is_signs(row, present, period)
+        # Dynamic sign resolution for impairment-like fields. Regime is detected
+        # per-year from raw_total_cogs (pre-adaptation) vs stable cost detail;
+        # annual mode threads it via attrs, quarterly/tests fall back to row.
+        raw_tc = wide.attrs.get("raw_total_cogs_by_period", {}).get(period)
+        sign_map, sign_warnings = resolve_is_signs(row, present, period, raw_total_cogs=raw_tc)
         period_warnings.extend(sign_warnings)
 
         if label == "quarterly":
@@ -2283,6 +2304,14 @@ def clean_dataset(
             warning_records.extend(cf_cash_warnings)
             warning_records.extend(bs_plug_warnings)
     elif mode == "annual":
+        # Capture official total_cogs BEFORE adaptation mutates it (adaptation
+        # rebuilds total_cogs from cost details, dropping impair). resolve_is_signs
+        # needs the pre-adaptation value to detect whether a sign-questionable
+        # field sits inside total_cogs (旧口径 regime). Quarterly mode never
+        # adapts, so row["total_cogs"] is already raw there.
+        wide.attrs["raw_total_cogs_by_period"] = {
+            str(p): float(wide.loc[p, "total_cogs"] or 0.0) for p in wide.index
+        }
         income_adaptation_warnings = apply_annual_income_subtotal_adaptations(wide, present_by_period, ticker)
         if warning_records is not None:
             warning_records.extend(income_adaptation_warnings)
