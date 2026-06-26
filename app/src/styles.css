@@ -2486,6 +2486,29 @@ p {
   padding: 1px 6px;
 }
 
+.stash-display-badge {
+  font-size: 11px;
+  color: #0b4a7a;
+  background: #eef6ff;
+  border: 1px solid #bfd9f4;
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.stash-display-badge.status-deprecated {
+  color: #805600;
+  background: #fff7df;
+  border-color: #ead291;
+}
+
+.stash-display-badge.status-conflict,
+.stash-display-badge.status-missing_disclosure {
+  color: #9f2d20;
+  background: #fff0ed;
+  border-color: #efbbb1;
+}
+
 .stash-block-count {
   font-size: 12px;
   color: var(--tertiary, #8a8a8a);
@@ -3197,6 +3220,29 @@ p {
   color: var(--red);
 }
 
+.yaml-display-warnings {
+  align-items: flex-start;
+  background: #fffafa;
+  border: 1px solid #ffd0cc;
+  border-radius: 8px;
+  color: var(--secondary);
+  display: flex;
+  gap: 12px;
+  line-height: 1.55;
+  padding: 10px 12px;
+}
+
+.yaml-display-warnings strong {
+  color: var(--red);
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.yaml-display-warnings span {
+  font-size: 13px;
+}
+
 .unified-table tr.key-row td {
   font-weight: 800;
   background: #f5f6f8;
@@ -3604,6 +3650,16 @@ p {
   width: 100%;
   accent-color: var(--reverse-line);
   cursor: pointer;
+}
+
+.reverse-anchor-note {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--reverse-border);
+  color: var(--reverse-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+  padding-top: 10px;
 }
 
 .reverse-context-strip {
@@ -6611,3 +6667,27 @@ p {
     text-align: left;
   }
 }
+
+/* ===== 首页·文件夹总览 ===== */
+.home-item { margin-bottom: 0.5rem; }
+.home-item .company-code { color: var(--blue, #003d7a); }
+
+.folder-overview-table th.company-col,
+.folder-overview-table td { text-align: center; vertical-align: middle; }
+.folder-overview-table .signal-label { text-align: left; font-weight: 600; background: #f7f8fa; }
+.folder-overview-table .company-col .company-name { display: block; }
+.folder-overview-table .company-col .company-code { display: block; font-size: 0.75rem; color: #888; }
+
+.stage-cell { font-weight: 600; }
+.stage-0 { color: var(--red, #b42318); }
+.stage-1 { color: #8a6d3b; }
+.stage-2 { color: #6c757d; }
+.stage-3 { color: var(--blue, #003d7a); }
+.stage-4 { color: #2f7d32; }
+
+.archive-btn {
+  margin-left: 0.5rem; padding: 0.1rem 0.5rem; font-size: 0.75rem;
+  border: 1px solid var(--blue, #003d7a); color: var(--blue, #003d7a);
+  background: transparent; border-radius: 4px; cursor: pointer;
+}
+.archive-btn:disabled { opacity: 0.5; cursor: default; }
