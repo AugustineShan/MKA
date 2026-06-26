@@ -506,7 +506,7 @@ npm run build
 py -m src.workbench
 ```
 
-Windows 双击入口为 `first_use.cmd`（首次自动装依赖、之后每次双击直接启动）。默认服务地址为 `http://127.0.0.1:8765`；如只验证前端构建，可运行 `npm run build`。
+Windows 双击入口为 `入口.cmd`（首次自动装依赖、之后每次双击直接启动）。默认服务地址为 `http://127.0.0.1:8765`；如只验证前端构建，可运行 `npm run build`。
 
 ### 3.6 vendor/use_cninfo（vendored cninfo 工具库）
 
@@ -1169,6 +1169,7 @@ MKA/
 | cninfo 接入 | vendored `rollysys/use_cninfo` | 直接复用成熟的 `hisAnnouncement/query`、orgId、PDF 下载封装，避免重复维护接口细节 |
 | NULL vs 0 provenance | `null_fields_by_period`（`wide.attrs`，fillna 前捕获 income 端 NULL 字段） | `fillna(0.0)` 把 TuShare NULL 抹成 0，validator 无法区分"数据源缺口"与"公司真报 0"。provenance 只喂 validator（compute 路径仍吃 fillna 后数字），让 IS 1.2 的 operating_adjustment NULL 缺口硬失败进 reconciler，而非被 `missing_optional` 静默放行。reconciler `collect_failures` 同步取此 provenance 传 `check_is`，`llm_override_suggestions` 加联合闭合处理多字段联合缺失 |
 | IS check 候选窄化 + bridge IS 1.2 闭合 + 抓错列验证 | `failure_candidate_fields` 按 check 公式窄化；`_effective_bucket` 补查 IS/CF 分类；`_verify_llm_value_in_consolidated_statement` 紧容差重抽 | 防"非公式字段进候选→联合闭合 Σ≈残差批准→对 calc 零影响→制造下游 check 失败"脏 override（会稽山 2022 int_income）。每个 IS check 候选只含其公式 category 字段，Σ(proposed)≡calc 模拟（in-formula +1 符号）。bridge `_effective_bucket` 原本 BS-only 致 IS 1.2 提案全 reject，补查 IS/CF 分类后 Σ 闭合生效，重跑 clean 兜底。抓错列：LLM 提议值用合并利润表 statement snippet（裁到母公司表前）`find_alias_amount_matches` 确定性重抽，紧容差 0.05 百万匹配，挡 LLM 把附注/母公司表同名字段值当主表值（会稽山 2022 oth_income 7.88 vs 主表 10.54）。详见 CLAUDE.md「三层防脏守卫」第四层 +「IS 1.2 升级通道与符号坑」 |
+| IS sign-questionable 字段 regime 数据驱动 | `resolve_is_signs` 按"字段是否在 total_cogs 内"逐年判定(`raw_total_cogs − stable_cost_sum ≈ field` → 旧口径 → semantic −1；否则 +1) | 2017→2019 三版报表修订(财会30/15/6号)让 assets_impair_loss/credit_impa_loss/oth_impair_loss_assets 口径随公司/年份变，旧 `<2019` 一刀切致旧口径年(impair 正数损失记在 total_cogs 内)走 check_is else 分支双计 +2×impair、靠 Opt 4 sign-flip override 打补丁。现 regime 检测在 `resolve_is_signs` 直接闭合旧口径年 IS 1.2，Opt 4 探测器(`detect_prepaid_sign_normalize`)已删。数据感知(非年份感知)解决跨年/跨公司不一致：会稽山 2018(impair 不在 total_cogs→+1)与新乳业 2018(impair 在 total_cogs→−1)同年不同 regime 都对。`raw_total_cogs` 在 adaptation 前存 `wide.attrs["raw_total_cogs_by_period"]`，reconciler `collect_failures` 镜像 validate_wide 传 sign_map，残差 = clean.py 实际残差。NULL 缺口(oth_income/asset_disp 等)仍走 reconciler 不变 |
 | 年报文件命名 | `{年份}_年度报告.pdf/.md` / `{年份}_年度报告_修订版.pdf/.md` | 同年份原始版与修订版可并存，文件已存在时跳过 |
 
 ---
