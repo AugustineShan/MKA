@@ -105,9 +105,7 @@ def test_signals_full(tmp_path: Path) -> None:
     assert signals["yaml1_versions"] == 2
     assert signals["yaml1_archive_eligible"] is True
     assert signals["root_models"] == {"excel_count": 2, "lock_count": 1, "archive_eligible": True}
-    assert signals["workbench_materials"] == {"reports": 1, "notes": 1, "collected": 1, "important": 1}
-    assert signals["agent_materials"]["load"] == 1
-    assert signals["agent_materials"]["pjbg"] == 1
+    assert signals["workbench_materials"] == 4
 
 
 def test_signals_no_yaml1_date_null(tmp_path: Path) -> None:

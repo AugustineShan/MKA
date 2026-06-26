@@ -47,26 +47,21 @@ from src.assumption_staleness import StaleAssumptionError, ensure_assumptions_fr
 from src.company_paths import (
     COMPANIES_DIR as DEFAULT_COMPANIES_DIR,
     active_vore_dir,
-    adj_increment_dir,
     agent_dir,
     annual_reports_dir,
-    brkd_material_dir,
     collection_dir,
     da_schedule_path,
     db_path as company_db_path,
     defaults_path as company_defaults_path,
     forecast_dir as company_forecast_dir,
     important_files_dir,
-    ka_model_dir,
     latest_yaml1_path,
     meeting_notes_dir,
     modelking_dir,
     official_breakdowns_dir,
-    pjbg_rating_report_dir,
     quarterly_reports_dir,
     recon_dir,
     research_reports_dir,
-    top_weight_material_dir,
 )
 from src.forecast import FidelityGateError, run_company_forecast
 from src.derived_metrics import DERIVED_METRICS_FILENAME, build_derived_metrics_from_frames
@@ -84,6 +79,9 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 COMPANIES_DIR = DEFAULT_COMPANIES_DIR
 APP_DIST = BASE_DIR / "app" / "dist"
 CORE_ASSUMPTION_NAMES = ("核心假设.md", "核心假设 (1).md")
+
+_FOLDER_OVERVIEW_TTL = 1.5
+_folder_overview_cache: dict[str, Any] = {"ts": 0.0, "rows": None}
 FORECAST_TABLES = (
     "forecast_is.csv",
     "forecast_bs.csv",
@@ -341,19 +339,14 @@ _WORKBENCH_MATERIAL_FNS = {
     "important": important_files_dir,
 }
 
-_AGENT_MATERIAL_FNS = {
-    "load": ka_model_dir,
-    "brkd": brkd_material_dir,
-    "top_weight": top_weight_material_dir,
-    "adj": adj_increment_dir,
-    "pjbg": pjbg_rating_report_dir,
-}
-
 
 def _count_files(path: Path) -> int:
     if not path.exists():
         return 0
-    return sum(1 for _ in path.rglob("*") if _.is_file())
+    total = 0
+    for _root, _dirs, files in os.walk(path):
+        total += len(files)
+    return total
 
 
 def _yaml1_date(path: Path) -> str | None:
@@ -371,10 +364,8 @@ def _folder_overview_signals(company_dir: Path) -> dict[str, Any]:
 
     excels = [p for p in company_dir.glob("*.xlsx") if not p.name.startswith("~$")]
     locks = list(company_dir.glob("~$*.xlsx"))
-    archive_eligible_models = len(excels) > 1 or len(locks) > 0
 
-    workbench_materials = {key: _count_files(fn(company_dir)) for key, fn in _WORKBENCH_MATERIAL_FNS.items()}
-    agent_materials = {key: _count_files(fn(company_dir)) for key, fn in _AGENT_MATERIAL_FNS.items()}
+    workbench_total = sum(_count_files(fn(company_dir)) for fn in _WORKBENCH_MATERIAL_FNS.values())
 
     return {
         "pipeline_stage": _pipeline_stage(company_dir),
@@ -384,10 +375,9 @@ def _folder_overview_signals(company_dir: Path) -> dict[str, Any]:
         "root_models": {
             "excel_count": len(excels),
             "lock_count": len(locks),
-            "archive_eligible": archive_eligible_models,
+            "archive_eligible": len(excels) > 1 or len(locks) > 0,
         },
-        "workbench_materials": workbench_materials,
-        "agent_materials": agent_materials,
+        "workbench_materials": workbench_total,
     }
 
 
@@ -2546,6 +2536,10 @@ def list_companies() -> list[dict[str, Any]]:
 
 @app.get("/api/home/folder-overview")
 def home_folder_overview() -> list[dict[str, Any]]:
+    now = time.time()
+    cached = _folder_overview_cache["rows"]
+    if cached is not None and now - _folder_overview_cache["ts"] < _FOLDER_OVERVIEW_TTL:
+        return cached
     out: list[dict[str, Any]] = []
     for company_dir in _company_dirs():
         meta = _read_meta(company_dir)
@@ -2565,6 +2559,8 @@ def home_folder_overview() -> list[dict[str, Any]]:
             "signals": signals,
             "error": error,
         })
+    _folder_overview_cache["rows"] = out
+    _folder_overview_cache["ts"] = now
     return out
 
 
@@ -2892,7 +2888,19 @@ def _reverse_dcf_base_pack(company_dir: Path) -> dict[str, Any]:
 @app.post("/api/companies/{company_id}/archive-models")
 def archive_models(company_id: str) -> dict[str, Any]:
     company_dir = _company_dir(company_id)
-    return _archive_models(company_dir)
+    result = _archive_models(company_dir)
+    _folder_overview_cache["ts"] = 0.0  # invalidate so next GET recomputes
+    return result
+
+
+@app.post("/api/companies/{company_id}/open-folder")
+def open_company_folder(company_id: str) -> dict[str, Any]:
+    company_dir = _company_dir(company_id)
+    try:
+        os.startfile(str(company_dir))  # Windows: opens Explorer at the company folder
+    except (OSError, AttributeError) as exc:
+        raise HTTPException(status_code=500, detail=f"无法打开目录: {exc}")
+    return {"ok": True, "path": _relative(company_dir)}
 
 
 @app.get("/api/companies/{company_id}/reverse-dcf-base")
