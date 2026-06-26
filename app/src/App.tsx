@@ -4385,8 +4385,8 @@ function FolderOverview() {
 
   useEffect(() => { void load(); }, []);
 
-  async function archive(companyId: string, kind: "yaml1" | "models") {
-    const msg = kind === "yaml1" ? "归档历史 yaml1？只留最新一份。" : "归档根目录历史模型文件并删除锁文件？";
+  async function archive(companyId: string) {
+    const msg = "一键归档历史模型？将：yaml1 旧版本移入 Agent/yaml1history、根目录旧 Excel 移入 Agent/Modelhistory、删除 ~$ 锁文件；各留最新一份。";
     if (!window.confirm(msg)) return;
     setArchiving(companyId);
     try {
@@ -4424,6 +4424,16 @@ function FolderOverview() {
                   <th key={r.company_id} className="company-col">
                     <span className="company-name">{r.name}</span>
                     <span className="company-code">{r.code}</span>
+                    {r.signals && (r.signals.yaml1_archive_eligible || r.signals.root_models.archive_eligible) ? (
+                      <button
+                        className="archive-btn"
+                        disabled={archiving === r.company_id}
+                        onClick={() => archive(r.company_id)}
+                        type="button"
+                      >
+                        {archiving === r.company_id ? "归档中…" : "一键归档"}
+                      </button>
+                    ) : null}
                   </th>
                 ))}
               </tr>
@@ -4446,23 +4456,13 @@ function FolderOverview() {
               <tr>
                 <td className="signal-label">yaml1 历史版本</td>
                 {rows.map((r) => (
-                  <td key={r.company_id} className="numeric">
-                    {r.signals?.yaml1_versions ?? "-"}
-                    {r.signals?.yaml1_archive_eligible ? (
-                      <button className="archive-btn" disabled={archiving === r.company_id} onClick={() => archive(r.company_id, "yaml1")} type="button">归档</button>
-                    ) : null}
-                  </td>
+                  <td key={r.company_id} className="numeric">{r.signals?.yaml1_versions ?? "-"}</td>
                 ))}
               </tr>
               <tr>
                 <td className="signal-label">根目录模型文件</td>
                 {rows.map((r) => (
-                  <td key={r.company_id} className="numeric">
-                    {r.signals ? `${r.signals.root_models.excel_count} (${r.signals.root_models.lock_count} 锁)` : "-"}
-                    {r.signals?.root_models.archive_eligible ? (
-                      <button className="archive-btn" disabled={archiving === r.company_id} onClick={() => archive(r.company_id, "models")} type="button">归档</button>
-                    ) : null}
-                  </td>
+                  <td key={r.company_id} className="numeric">{r.signals ? `${r.signals.root_models.excel_count} (${r.signals.root_models.lock_count} 锁)` : "-"}</td>
                 ))}
               </tr>
               <tr>
