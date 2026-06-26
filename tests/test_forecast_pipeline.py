@@ -226,3 +226,35 @@ def test_run_company_forecast_requires_annual_update_when_actual_overlaps_horizo
     assert status.forecast_start == 2025
     assert status.defaults_base_year == 2024
     assert sentinel.exists()
+
+
+def test_quarterly_is_sheet_in_company_excel(tmp_path, monkeypatch):
+    company_dir = _copy_new_hope_dairy(tmp_path)
+    monkeypatch.delenv(app_config.RESEARCHER_NAME_KEY, raising=False)
+    monkeypatch.setattr(app_config, "ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr(yaml1_cleaner, "COMPANIES_DIR", tmp_path / "companies")
+
+    run = run_company_forecast(ticker="002946.SZ")
+    manifest = json.loads((forecast_dir(company_dir) / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["company_excel_export_status"] == "written"
+    output_path = Path(manifest["company_excel_output_path"])
+    workbook = load_workbook(output_path, data_only=False)
+
+    assert "季度利润表" in workbook.sheetnames
+    ws = workbook["季度利润表"]
+    assert ws["A1"].value == "季度利润表"
+    assert ws["A2"].value == "单位：百万元"
+    # 表头：A3=科目，第4行季度标签，末列=年度
+    assert ws.cell(3, 1).value == "科目"
+    assert ws.cell(4, 2).value == "1Q"
+    max_col = ws.max_column
+    assert ws.cell(3, max_col).value == "年度"
+    # 冻结 B6（A 列 + 表头 5 行）
+    assert ws.freeze_panes == "B6"
+    # 数据行含营业收入 / 净利润（n_income 在 rows 里被 relabel 为"净利润"）
+    labels = [ws.cell(r, 1).value for r in range(6, ws.max_row + 1)]
+    assert any("营业收入" in (lbl or "") for lbl in labels)
+    assert any("净利润" in (lbl or "") for lbl in labels)
+    # 选定年 4 列在第 5 行有状态徽章（实/继/人/Q4 之一）
+    badges = [ws.cell(5, c).value for c in range(max_col - 4, max_col)]
+    assert any(b in {"实", "继", "人", "Q4"} for b in badges)

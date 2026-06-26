@@ -63,6 +63,13 @@ FULL_STATEMENT_SHEETS = (
 )
 SEMIANNUAL_IS_SHEET = "半年度利润表"
 SEMIANNUAL_REVENUE_SPLIT_SHEET = "半年度收入拆分"
+QUARTERLY_IS_SHEET = "季度利润表"
+QUARTERLY_STATE_BADGE: dict[str, tuple[str, str]] = {
+    "actual": ("实", MODEL_GREY),
+    "inherit": ("继", MODEL_GREY),
+    "manual": ("人", "8B1E2D"),
+    "q4": ("Q4", "D6A100"),
+}
 STATEMENT_KEY_ROWS: dict[str, set[str]] = {
     "is": {"revenue", "total_revenue", "operate_profit", "total_profit", "n_income", "n_income_attr_p"},
     "bs": {"money_cap", "total_assets", "total_liab", "total_hldr_eqy_inc_min_int", "total_hldr_eqy_exc_min_int"},
@@ -733,6 +740,26 @@ def _emphasize_row(ws: Any, row: int, max_col: int, *, forecast_start_col: int =
         if col < forecast_start_col:
             cell.fill = PatternFill("solid", fgColor=MODEL_SUBTLE_FILL)
         cell.border = border
+
+
+def _emphasize_quarterly_row(
+    ws: Any, row: int, periods: list[str], annual_col: int, selected_year: int
+) -> None:
+    """Bold a key row on the quarterly sheet (3-segment coloring)."""
+    border = Border(top=Side(style="thin", color=MODEL_GRID), bottom=Side(style="medium", color=MODEL_GRID))
+    ws.cell(row, 1).border = border
+    for idx, period in enumerate(periods):
+        col = 2 + idx
+        forecast = int(period[:4]) == selected_year
+        cell = ws.cell(row, col)
+        cell.font = Font(name=MODEL_FONT, bold=True, color=MODEL_BLUE_FONT if forecast else "000000", size=9)
+        if not forecast:
+            cell.fill = PatternFill("solid", fgColor=MODEL_SUBTLE_FILL)
+        cell.border = border
+    annual_cell = ws.cell(row, annual_col)
+    annual_cell.font = Font(name=MODEL_FONT, bold=True, color="000000", size=9)
+    annual_cell.fill = PatternFill("solid", fgColor=MODEL_SUBTLE_FILL)
+    annual_cell.border = border
 
 
 def _load_yaml1(company_dir: Path) -> dict[str, Any]:
@@ -1624,6 +1651,86 @@ def _fill_semiannual_sheets(workbook: Any, company_dir: Path, metrics: dict[str,
     _fill_semiannual_is_sheet(workbook, company_dir, metrics)
 
 
+def _fill_quarterly_is_sheet(workbook: Any, company_dir: Path, metrics: dict[str, Any]) -> None:
+    """Quarterly IS tracking sheet — mirrors frontend QuarterlyTable in three-statement style."""
+    from .quarterly_tracker import compute_quarterly_view
+
+    db_path = company_db_path(company_dir)
+    ticker = metrics.get("ticker") or _ticker_from_db(db_path)
+    try:
+        view = compute_quarterly_view(db=db_path, ticker=ticker, company_dir=company_dir, year=None)
+    except Exception:
+        return  # non-blocking: skip sheet if quarterly view unavailable (e.g. no forecast_is.csv)
+
+    periods = view["periods"]              # 12 "YYYYQq"
+    rows = view["rows"]                    # amount + metric rows, in field_order
+    annual = view["annual"]                # {field: value} (incl. metric fields via annual_out)
+    quarter_states = view["quarter_states"]  # {"1":..,"2":..,"3":..,"4":..}
+    selected_year = int(view["year"])
+
+    if not periods or not rows:
+        return
+
+    annual_col = 1 + len(periods) + 1      # 科目 + 12 季 + 年度
+    max_col = annual_col
+    ws = _fresh_sheet(workbook, QUARTERLY_IS_SHEET)
+    _style_report_sheet(ws, title=QUARTERLY_IS_SHEET, subtitle="单位：百万元", max_col=max_col)
+    ws.freeze_panes = "B6"                 # override _style_report_sheet's B4 (header is 5 rows)
+
+    # --- 3-row header ---
+    ws.merge_cells(start_row=3, start_column=1, end_row=5, end_column=1)
+    _header_style(ws.cell(3, 1, "科目"))
+    for group_idx, year in enumerate([selected_year - 2, selected_year - 1, selected_year]):
+        start = 2 + group_idx * 4
+        end = start + 3
+        ws.merge_cells(start_row=3, start_column=start, end_row=3, end_column=end)
+        label = f"{year}(选定)" if year == selected_year else str(year)
+        _header_style(ws.cell(3, start, label))
+    for idx, period in enumerate(periods):
+        _header_style(ws.cell(4, 2 + idx, f"{int(period[-1])}Q"))
+    ws.merge_cells(start_row=3, start_column=annual_col, end_row=5, end_column=annual_col)
+    _header_style(ws.cell(3, annual_col, "年度"))
+    # state badge row (row 5, selected-year 4 cols only)
+    for idx, period in enumerate(periods):
+        if int(period[:4]) != selected_year:
+            continue
+        q = int(period[-1])
+        state = quarter_states.get(str(q), "inherit")
+        badge, color = QUARTERLY_STATE_BADGE.get(state, ("", MODEL_GREY))
+        cell = ws.cell(5, 2 + idx, badge)
+        cell.font = Font(name=MODEL_FONT, color=color, size=9)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.fill = PatternFill("solid", fgColor=MODEL_FORECAST_FILL)
+    ws.row_dimensions[3].height = 20
+    ws.row_dimensions[4].height = 18
+    ws.row_dimensions[5].height = 16
+
+    # --- data rows from row 6 ---
+    row_index = 6
+    for row in rows:
+        role = row.get("role")
+        fmt = row.get("format", "number")
+        is_metric = role == "metric"
+        is_key = role == "total" or bool(row.get("highlight"))
+        _label_style(ws.cell(row_index, 1, row.get("label", "")), muted=is_metric, bold=is_key)
+        for idx, period in enumerate(periods):
+            col = 2 + idx
+            forecast = int(period[:4]) == selected_year
+            value = row.get("values", {}).get(period)
+            _data_style(ws.cell(row_index, col, value), forecast=forecast, number_format=_number_format(fmt))
+        annual_value = annual.get(row.get("field"))
+        annual_cell = ws.cell(row_index, annual_col, annual_value)
+        _data_style(annual_cell, forecast=False, number_format=_number_format(fmt))
+        annual_cell.fill = PatternFill("solid", fgColor=MODEL_SUBTLE_FILL)
+        if is_key:
+            _emphasize_quarterly_row(ws, row_index, periods, annual_col, selected_year)
+        row_index += 1
+
+    _auto_widths(ws, max_col)
+    for col in range(2, max_col + 1):
+        ws.column_dimensions[get_column_letter(col)].width = 11
+
+
 def _value(metrics: dict[str, Any], period: int | str, metric: str) -> Any:
     if metric == "gross_sell_spread":
         gross_margin = _value(metrics, period, "gross_margin")
@@ -1724,6 +1831,20 @@ def _quarterly_statement_records(company_dir: Path) -> dict[str, dict[str, Any]]
         period = str(row["period"])
         out[period] = {key: _num(row[key]) if key != "period" else row[key] for key in row.keys() if key != "period"}
     return out
+
+
+def _ticker_from_db(db_path: Path) -> str:
+    """Read ticker from meta table (fallback when metrics omits it)."""
+    if not db_path.exists():
+        return ""
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='ticker'").fetchone()
+        return str(row[0]) if row else ""
+    except sqlite3.Error:
+        return ""
+    finally:
+        conn.close()
 
 
 def _statement_value(statements: dict[str, dict[str, dict[str, Any]]], source: str, period: int | str, field: str) -> Any:
@@ -2429,6 +2550,7 @@ def export_company_excel(
     _remove_comment_sheets(workbook)
     _fill_core_assumptions_sheet(workbook, company_path, metrics, statements)
     _fill_full_statement_sheets(workbook, company_path, metrics)
+    _fill_quarterly_is_sheet(workbook, company_path, metrics)
     _fill_semiannual_sheets(workbook, company_path, metrics)
     _apply_output_identity(workbook, researcher_name)
 
