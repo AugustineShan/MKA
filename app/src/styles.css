@@ -6691,3 +6691,16 @@ p {
   background: transparent; border-radius: 4px; cursor: pointer;
 }
 .archive-btn:disabled { opacity: 0.5; cursor: default; }
+
+.folder-overview-rows th,
+.folder-overview-rows td { text-align: left; vertical-align: middle; padding: 0.75rem 1rem; }
+.folder-overview-rows thead th { font-size: 0.8rem; color: #6c757d; font-weight: 600; }
+.folder-overview-rows .company-cell .company-name { display: block; font-weight: 600; }
+.folder-overview-rows .company-cell .company-code { display: block; font-size: 0.75rem; color: #888; }
+.folder-overview-rows .stage-cell { font-weight: 600; }
+.folder-overview-rows .actions-cell { white-space: nowrap; display: flex; gap: 0.5rem; }
+.ghost-btn {
+  padding: 0.25rem 0.75rem; font-size: 0.8rem; border: 1px solid #d0d4d9;
+  color: #333; background: transparent; border-radius: 4px; cursor: pointer;
+}
+.ghost-btn:hover { background: #f7f8fa; }

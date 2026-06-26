@@ -512,8 +512,7 @@ export type HomeFolderOverviewSignals = {
   yaml1_versions: number;
   yaml1_archive_eligible: boolean;
   root_models: { excel_count: number; lock_count: number; archive_eligible: boolean };
-  workbench_materials: { reports: number; notes: number; collected: number; important: number };
-  agent_materials: { load: number; brkd: number; top_weight: number; adj: number; pjbg: number };
+  workbench_materials: number;
 };
 
 export type HomeFolderOverview = {

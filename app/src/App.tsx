@@ -4364,7 +4364,7 @@ const STAGE_TONE: Record<PipelineStage, string> = {
   "建模完毕且有DA表": "stage-4",
 };
 
-function FolderOverview() {
+function FolderOverview({ onOpenTutorial }: { onOpenTutorial: () => void }) {
   const [rows, setRows] = useState<HomeFolderOverview[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -4372,10 +4372,9 @@ function FolderOverview() {
   const [homeTab, setHomeTab] = useState<HomeTab>("folder-overview");
 
   async function load() {
-    setLoading(true);
-    setError(undefined);
     try {
       setRows(await apiGet<HomeFolderOverview[]>("/api/home/folder-overview"));
+      setError(undefined);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -4383,7 +4382,21 @@ function FolderOverview() {
     }
   }
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible") void load();
+    }, 3000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  async function openFolder(companyId: string) {
+    try {
+      await apiPost<{ ok: boolean }>(`/api/companies/${encodeURIComponent(companyId)}/open-folder`);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
 
   async function archive(companyId: string) {
     const msg = "一键归档历史模型？将：yaml1 旧版本移入 Agent/yaml1history、根目录旧 Excel 移入 Agent/Modelhistory、删除 ~$ 锁文件；各留最新一份。";
@@ -4406,6 +4419,9 @@ function FolderOverview() {
           <div className="eyebrow">Home</div>
           <h1>文件夹总览</h1>
         </div>
+        <div className="topbar-right">
+          <button className="tutorial-btn" onClick={onOpenTutorial} type="button">配置和教程</button>
+        </div>
       </header>
       <nav className="tabbar">
         {HOME_TABS.map((t) => (
@@ -4416,71 +4432,44 @@ function FolderOverview() {
       {loading ? <div className="activity content-activity">Loading folder overview</div> : null}
       {!loading && homeTab === "folder-overview" ? (
         <div className="table-scroll workbook-scroll">
-          <table className="financial-table folder-overview-table">
+          <table className="financial-table folder-overview-table folder-overview-rows">
             <thead>
               <tr>
-                <th>信号</th>
-                {rows.map((r) => (
-                  <th key={r.company_id} className="company-col">
-                    <span className="company-name">{r.name}</span>
-                    <span className="company-code">{r.code}</span>
-                    {r.signals && (r.signals.yaml1_archive_eligible || r.signals.root_models.archive_eligible) ? (
-                      <button
-                        className="archive-btn"
-                        disabled={archiving === r.company_id}
-                        onClick={() => archive(r.company_id)}
-                        type="button"
-                      >
-                        {archiving === r.company_id ? "归档中…" : "一键归档"}
-                      </button>
-                    ) : null}
-                  </th>
-                ))}
+                <th>公司</th>
+                <th>建模管线推进</th>
+                <th>DCF建模日期</th>
+                <th>历史版本</th>
+                <th>工作台素材</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr>
-                <td className="signal-label">建模管线推进</td>
-                {rows.map((r) => (
-                  <td key={r.company_id} className={`stage-cell ${r.signals ? STAGE_TONE[r.signals.pipeline_stage] : ""}`}>
-                    {r.signals?.pipeline_stage ?? "读取失败"}
-                  </td>
-                ))}
-              </tr>
-              <tr>
-                <td className="signal-label">yaml1 日期</td>
-                {rows.map((r) => (
-                  <td key={r.company_id} className="numeric">{r.signals?.yaml1_date ?? "-"}</td>
-                ))}
-              </tr>
-              <tr>
-                <td className="signal-label">yaml1 历史版本</td>
-                {rows.map((r) => (
-                  <td key={r.company_id} className="numeric">{r.signals?.yaml1_versions ?? "-"}</td>
-                ))}
-              </tr>
-              <tr>
-                <td className="signal-label">根目录模型文件</td>
-                {rows.map((r) => (
-                  <td key={r.company_id} className="numeric">{r.signals ? `${r.signals.root_models.excel_count} (${r.signals.root_models.lock_count} 锁)` : "-"}</td>
-                ))}
-              </tr>
-              <tr>
-                <td className="signal-label">工作台素材数</td>
-                {rows.map((r) => (
-                  <td key={r.company_id} className="numeric">
-                    {r.signals ? `研${r.signals.workbench_materials.reports} 纪${r.signals.workbench_materials.notes} 收${r.signals.workbench_materials.collected} 重${r.signals.workbench_materials.important}` : "-"}
-                  </td>
-                ))}
-              </tr>
-              <tr>
-                <td className="signal-label">Agent技能素材数</td>
-                {rows.map((r) => (
-                  <td key={r.company_id} className="numeric">
-                    {r.signals ? `L${r.signals.agent_materials.load} B${r.signals.agent_materials.brkd} 权${r.signals.agent_materials.top_weight} A${r.signals.agent_materials.adj} P${r.signals.agent_materials.pjbg}` : "-"}
-                  </td>
-                ))}
-              </tr>
+              {rows.map((r) => {
+                const s = r.signals;
+                const archiveEligible = Boolean(s && (s.yaml1_archive_eligible || s.root_models.archive_eligible));
+                return (
+                  <tr key={r.company_id}>
+                    <td className="company-cell">
+                      <span className="company-name">{r.name}</span>
+                      <span className="company-code">{r.code}</span>
+                    </td>
+                    <td className={`stage-cell ${s ? STAGE_TONE[s.pipeline_stage] : ""}`}>
+                      {s?.pipeline_stage ?? "读取失败"}
+                    </td>
+                    <td className="numeric">{s?.yaml1_date ?? "尚未完整建模"}</td>
+                    <td className="numeric">{s ? s.yaml1_versions : "-"}</td>
+                    <td className="numeric">{s ? s.workbench_materials : "-"}</td>
+                    <td className="actions-cell">
+                      <button className="ghost-btn" onClick={() => openFolder(r.company_id)} type="button">打开目录</button>
+                      {archiveEligible ? (
+                        <button className="archive-btn" disabled={archiving === r.company_id} onClick={() => archive(r.company_id)} type="button">
+                          {archiving === r.company_id ? "归档中…" : "一键归档"}
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -4571,7 +4560,7 @@ export default function App() {
       />
       <main className="main-pane">
         {homeActive ? (
-          <FolderOverview />
+          <FolderOverview onOpenTutorial={() => setShowTutorial(true)} />
         ) : (
           <>
             <header className="topbar">
