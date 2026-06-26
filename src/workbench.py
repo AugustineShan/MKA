@@ -330,6 +330,66 @@ def _pipeline_stage(company_dir: Path) -> str:
     return "初始化完毕"
 
 
+_YAML1_DATE_RE = re.compile(r"(\d{8})")
+_MODEL_DATE_RE = re.compile(r"(\d{6})")
+
+_WORKBENCH_MATERIAL_FNS = {
+    "reports": research_reports_dir,
+    "notes": meeting_notes_dir,
+    "collected": collection_dir,
+    "important": important_files_dir,
+}
+
+_AGENT_MATERIAL_FNS = {
+    "load": ka_model_dir,
+    "brkd": brkd_material_dir,
+    "top_weight": top_weight_material_dir,
+    "adj": adj_increment_dir,
+    "pjbg": pjbg_rating_report_dir,
+}
+
+
+def _count_files(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(1 for _ in path.rglob("*") if _.is_file())
+
+
+def _yaml1_date(path: Path) -> str | None:
+    matches = _YAML1_DATE_RE.findall(path.stem)
+    if not matches:
+        return None
+    s = matches[-1]
+    return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+
+
+def _folder_overview_signals(company_dir: Path) -> dict[str, Any]:
+    yaml1s = sorted(agent_dir(company_dir).glob("yaml1*.yaml"))
+    latest = _latest_yaml1(company_dir)
+    yaml1_date = _yaml1_date(latest) if latest else None
+
+    excels = [p for p in company_dir.glob("*.xlsx") if not p.name.startswith("~$")]
+    locks = list(company_dir.glob("~$*.xlsx"))
+    archive_eligible_models = len(excels) > 1 or len(locks) > 0
+
+    workbench_materials = {key: _count_files(fn(company_dir)) for key, fn in _WORKBENCH_MATERIAL_FNS.items()}
+    agent_materials = {key: _count_files(fn(company_dir)) for key, fn in _AGENT_MATERIAL_FNS.items()}
+
+    return {
+        "pipeline_stage": _pipeline_stage(company_dir),
+        "yaml1_date": yaml1_date,
+        "yaml1_versions": len(yaml1s),
+        "yaml1_archive_eligible": len(yaml1s) > 1,
+        "root_models": {
+            "excel_count": len(excels),
+            "lock_count": len(locks),
+            "archive_eligible": archive_eligible_models,
+        },
+        "workbench_materials": workbench_materials,
+        "agent_materials": agent_materials,
+    }
+
+
 def _forecast_summary(company_dir: Path) -> dict[str, Any]:
     return _read_json(company_forecast_dir(company_dir) / "dcf_summary.json")
 
@@ -2409,6 +2469,30 @@ def validate_settings(payload: SettingsPayload) -> dict[str, Any]:
 @app.get("/api/companies")
 def list_companies() -> list[dict[str, Any]]:
     return [_company_summary(path) for path in _company_dirs()]
+
+
+@app.get("/api/home/folder-overview")
+def home_folder_overview() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for company_dir in _company_dirs():
+        meta = _read_meta(company_dir)
+        name = meta.get("name") or company_dir.name.rsplit("_", 1)[0]
+        code = company_dir.name.rsplit("_", 1)[-1]
+        try:
+            signals = _folder_overview_signals(company_dir)
+        except Exception as exc:  # 单家公司异常不拖垮整表
+            signals = None
+            error = str(exc)
+        else:
+            error = None
+        out.append({
+            "company_id": company_dir.name,
+            "name": str(name),
+            "code": code,
+            "signals": signals,
+            "error": error,
+        })
+    return out
 
 
 @app.get("/api/companies/{company_id}")
