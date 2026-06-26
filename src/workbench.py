@@ -46,20 +46,26 @@ from src.assumption_staleness import StaleAssumptionError, ensure_assumptions_fr
 from src.company_paths import (
     COMPANIES_DIR as DEFAULT_COMPANIES_DIR,
     active_vore_dir,
+    adj_increment_dir,
+    agent_dir,
     annual_reports_dir,
+    brkd_material_dir,
     collection_dir,
     da_schedule_path,
     db_path as company_db_path,
     defaults_path as company_defaults_path,
     forecast_dir as company_forecast_dir,
     important_files_dir,
+    ka_model_dir,
     latest_yaml1_path,
     meeting_notes_dir,
     modelking_dir,
     official_breakdowns_dir,
+    pjbg_rating_report_dir,
     quarterly_reports_dir,
     recon_dir,
     research_reports_dir,
+    top_weight_material_dir,
 )
 from src.forecast import FidelityGateError, run_company_forecast
 from src.derived_metrics import DERIVED_METRICS_FILENAME, build_derived_metrics_from_frames
@@ -84,7 +90,16 @@ FORECAST_TABLES = (
 )
 FIELD_REFERENCE_NAME = "\u6570\u636e\u683c\u5f0f\u53c2\u8003.md"
 PRESENTATION_SCHEMA_VERSION = 1
+DISPLAY_SCHEMA_VERSION = 1
 COMPANY_DIR_RE = re.compile(r"^.+_\d{6}$")
+
+DISPLAY_ROLES = {"primary_model", "primary_attachment", "secondary_split", "reference", "check_only", "deprecated", "technical"}
+DISPLAY_PLACEMENTS = {"model_table", "secondary_table", "reference_tab", "technical_tab"}
+DISPLAY_DIMENSIONS = {"business_line", "product", "region", "channel", "subsidiary", "customer", "metric", "text", "other"}
+DISPLAY_METRICS = {"revenue", "yoy", "gross_margin", "cost", "volume", "price", "rate", "amount", "text", "mixed"}
+DISPLAY_STATUSES = {"active", "reference", "deprecated", "check_only", "missing_disclosure", "conflict"}
+DISPLAY_DUPLICATE_POLICIES = {"show", "skip_if_equal", "prefer_derived_and_warn", "reference_only"}
+DISPLAY_MATCH_POLICIES = {"exact_or_declared_alias", "declared_path", "none"}
 
 STATEMENT_META = {
     "forecast_is.csv": {"key": "is", "name": "IS", "title": "\u5229\u6da6\u8868",
@@ -299,6 +314,20 @@ def _core_assumption(company_dir: Path) -> Path | None:
             return path
     candidates = sorted(company_dir.glob("*核心假设*.md"), key=lambda item: item.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
+
+
+def _pipeline_stage(company_dir: Path) -> str:
+    """建模管线推进状态：未初始化 / 初始化完毕 / 核心假设完毕 / 建模完毕 / 建模完毕且有DA表。"""
+    agent = agent_dir(company_dir)
+    if not (agent / "data.db").exists() or not company_defaults_path(company_dir).exists():
+        return "未初始化"
+    if _latest_yaml1(company_dir) is not None:
+        if da_schedule_path(company_dir).exists():
+            return "建模完毕且有DA表"
+        return "建模完毕"
+    if _core_assumption(company_dir) is not None:
+        return "核心假设完毕"
+    return "初始化完毕"
 
 
 def _forecast_summary(company_dir: Path) -> dict[str, Any]:
@@ -778,6 +807,7 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
                 "base_year": segment_base_year,
                 "base_volume": _as_float(base.get("volume")) if family in {"vol_price", "vol_price_margin"} else None,
                 "base_price": _as_float(base.get("price")) if family in {"vol_price", "vol_price_margin"} else None,
+                "volume_unit": _cell(base.get("unit", {}).get("volume")) if isinstance(base.get("unit"), dict) else None,
                 "base_revenue": base_revenue,
                 "unit_factor": unit_factor,
                 "revenues": revenues,
@@ -787,6 +817,11 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
                     _numeric_year_series(history_series.get("revenue"))
                     or _numeric_year_series(base_series.get("revenue"))
                     or _numeric_year_series(payload_series.get("revenue"))
+                ),
+                "history_costs": (
+                    _numeric_year_series(history_series.get("cost"))
+                    or _numeric_year_series(base_series.get("cost"))
+                    or _numeric_year_series(payload_series.get("cost"))
                 ),
                 "history_volumes": (
                     _numeric_year_series(history_series.get("volume"))
@@ -933,7 +968,7 @@ def _yaml1_revenue_sheet(data: dict[str, Any], years: list[str]) -> dict[str, An
 def _yaml1_knob_sheet(data: dict[str, Any], years: list[str]) -> dict[str, Any]:
     columns = ["path", "kind", *years, "source", "note"]
     rows: list[dict[str, str]] = []
-    skip = {"meta", "terminal", "stash", "income.revenue"}
+    skip = {"meta", "terminal", "stash", "income.revenue", "display"}
     for path, payload in data.items():
         if path in skip or not isinstance(payload, dict):
             continue
@@ -1050,17 +1085,18 @@ def _stash_series_items(series: dict) -> tuple[list[dict], bool]:
     return items, is_year_table
 
 
-def _stash_block(name: str, payload: Any) -> dict:
+def _stash_block(name: str, payload: Any, path: str | None = None) -> dict:
     """Classify one stash block by JSON shape → typed block. Universal, never drops."""
+    block_path = path or name
     if isinstance(payload, list):
-        return {"name": name, "type": "list", "items": [x if isinstance(x, str) else _cell(x) for x in payload]}
+        return {"name": name, "path": block_path, "type": "list", "items": [x if isinstance(x, str) else _cell(x) for x in payload]}
     if not isinstance(payload, dict):
-        return {"name": name, "type": "kv", "items": [{"label": "value", "value": _cell(payload)}]}
+        return {"name": name, "path": block_path, "type": "kv", "items": [{"label": "value", "value": _cell(payload)}]}
 
     note = _cell(payload["note"]) if isinstance(payload.get("note"), str) else None
     unit = _cell(payload["unit"]) if isinstance(payload.get("unit"), str) else None
     caveat = _cell(payload["caveat"]) if isinstance(payload.get("caveat"), str) else None
-    base = {"name": name, "note": note, "unit": unit, "caveat": caveat}
+    base = {"name": name, "path": block_path, "note": note, "unit": unit, "caveat": caveat}
 
     series = payload.get("series")
     if isinstance(series, dict):
@@ -1071,7 +1107,7 @@ def _stash_block(name: str, payload: Any) -> dict:
             col_keys.update(it.get("values", {}).keys())
         col_labels = {k: _humanize_label(k) for k in col_keys}
         extras = [
-            _stash_block(str(k), v)
+            _stash_block(str(k), v, f"{block_path}.{k}")
             for k, v in payload.items()
             if k not in ("note", "unit", "caveat", "series")
         ]
@@ -1099,7 +1135,7 @@ def _stash_block(name: str, payload: Any) -> dict:
             scalar_items.append({"label": str(k), "value": v})
         else:
             has_other = True
-            sub_items.append(_stash_block(str(k), v))
+            sub_items.append(_stash_block(str(k), v, f"{block_path}.{k}"))
     if has_other or (has_string and has_scalar):
         return {**base, "type": "kv", "items": text_items + scalar_items + sub_items}
     if has_string:
@@ -1113,7 +1149,307 @@ def _yaml1_stash_view(data: dict[str, Any]) -> list[dict]:
     stash = data.get("stash")
     if not isinstance(stash, dict):
         return []
-    return [_stash_block(str(name), payload) for name, payload in stash.items()]
+    return [_stash_block(str(name), payload, f"stash.{name}") for name, payload in stash.items()]
+
+
+def _display_warning(code: str, message: str, path: str | None = None, severity: str = "warning") -> dict[str, Any]:
+    return {"code": code, "message": message, "path": path, "severity": severity}
+
+
+def _display_enum(value: Any, allowed: set[str], default: str, field: str, path: str, warnings: list[dict[str, Any]]) -> str:
+    text = _cell(value)
+    if text in allowed:
+        return text
+    if text:
+        warnings.append(_display_warning("invalid_display_enum", f"{path}.{field}={text} is not supported; fallback to {default}", path))
+    return default
+
+
+def _display_label_key(value: Any) -> str:
+    return re.sub(r"[（）()及与和、/\\\s·_\-:：]", "", str(value)).lower()
+
+
+def _revenue_segment_keys(revenue_view: dict[str, Any] | None) -> set[str]:
+    segments = revenue_view.get("segments") if isinstance(revenue_view, dict) else []
+    keys: set[str] = set()
+    if not isinstance(segments, list):
+        return keys
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        for value in (segment.get("name"), segment.get("key")):
+            normalized = _display_label_key(value)
+            if normalized:
+                keys.add(normalized)
+    return keys
+
+
+def _display_series_labels(block: dict[str, Any]) -> list[str]:
+    items = block.get("items") if isinstance(block, dict) else []
+    if not isinstance(items, list):
+        return []
+    labels: list[str] = []
+    for item in items:
+        if isinstance(item, dict) and item.get("label"):
+            labels.append(str(item["label"]))
+    return labels
+
+
+def _display_exact_segment_hit_count(block: dict[str, Any], segment_keys: set[str]) -> tuple[int, int]:
+    labels = _display_series_labels(block)
+    if not labels:
+        return 0, 0
+    hits = sum(1 for label in labels if _display_label_key(label) in segment_keys)
+    return hits, len(labels)
+
+
+def _display_dimension_from_name(name: str) -> str:
+    if any(token in name for token in ("地区", "地域", "境内", "境外")):
+        return "region"
+    if any(token in name for token in ("渠道", "销售模式", "B2C", "B2B")):
+        return "channel"
+    if "子公司" in name:
+        return "subsidiary"
+    if any(token in name for token in ("产品", "品类", "单品")):
+        return "product"
+    if "客户" in name:
+        return "customer"
+    if any(token in name for token in ("分线", "业务线")):
+        return "business_line"
+    return "other"
+
+
+def _display_metric_from_text(name: str, unit: str | None = None) -> str:
+    text = f"{name} {unit or ''}".lower()
+    if any(token in text for token in ("毛利率", "gpm", "margin")):
+        return "gross_margin"
+    if any(token in text for token in ("同比", "yoy")):
+        return "yoy"
+    if any(token in text for token in ("吨成本", "成本", "cost")):
+        return "cost"
+    if any(token in text for token in ("销量", "volume")):
+        return "volume"
+    if any(token in text for token in ("吨价", "单价", "price")):
+        return "price"
+    if any(token in text for token in ("收入", "revenue")):
+        return "revenue"
+    if any(token in text for token in ("率", "pct", "ratio", "%")):
+        return "rate"
+    if any(token in text for token in ("百万元", "金额", "amount", "mn")):
+        return "amount"
+    return "mixed"
+
+
+def _display_status_from_block(block: dict[str, Any]) -> str:
+    text = " ".join(_cell(block.get(key)) for key in ("name", "note", "caveat"))
+    if any(token in text for token in ("弃用", "废弃", "deprecated")):
+        return "deprecated"
+    if any(token in text for token in ("核对", "校验", "check")):
+        return "check_only"
+    return "reference"
+
+
+def _display_secondary_metrics(block: dict[str, Any]) -> list[str]:
+    metrics = ["revenue"]
+    extras = block.get("extras")
+    if isinstance(extras, list):
+        for extra in extras:
+            if not isinstance(extra, dict):
+                continue
+            metric = _display_metric_from_text(str(extra.get("name") or ""), _cell(extra.get("unit")))
+            if metric not in metrics:
+                metrics.append(metric)
+    return metrics
+
+
+def _display_partial_metric_warnings(block: dict[str, Any]) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    path = _cell(block.get("path"))
+    labels = set(_display_series_labels(block))
+    if not labels:
+        return warnings
+    extras = block.get("extras")
+    if not isinstance(extras, list):
+        return warnings
+    for extra in extras:
+        if not isinstance(extra, dict):
+            continue
+        metric_labels = set(_display_series_labels(extra))
+        if metric_labels and metric_labels != labels:
+            missing = sorted(labels - metric_labels)
+            if missing:
+                metric_name = str(extra.get("name") or "metric")
+                warnings.append(_display_warning(
+                    "partial_metric_disclosure",
+                    f"{block.get('name')} 的 {metric_name} 仅披露部分项目，缺失：{', '.join(missing)}",
+                    path,
+                ))
+    return warnings
+
+
+def _infer_display_block(block: dict[str, Any], revenue_view: dict[str, Any] | None) -> dict[str, Any]:
+    name = str(block.get("name") or "")
+    path = _cell(block.get("path")) or f"stash.{name}"
+    unit = _cell(block.get("unit"))
+    status = _display_status_from_block(block)
+    segment_keys = _revenue_segment_keys(revenue_view)
+    hits, total = _display_exact_segment_hit_count(block, segment_keys)
+
+    if status == "deprecated":
+        return {
+            "path": path,
+            "role": "deprecated",
+            "placement": "reference_tab",
+            "dimension": _display_dimension_from_name(name),
+            "metric": _display_metric_from_text(name, unit),
+            "status": "deprecated",
+            "duplicate_policy": "reference_only",
+            "match_policy": "none",
+            "title": name,
+        }
+
+    if status == "check_only":
+        return {
+            "path": path,
+            "role": "check_only",
+            "placement": "reference_tab",
+            "dimension": _display_dimension_from_name(name),
+            "metric": _display_metric_from_text(name, unit),
+            "status": "check_only",
+            "duplicate_policy": "reference_only",
+            "match_policy": "none",
+            "title": name,
+        }
+
+    if name.startswith("副拆分") or "副拆分" in name:
+        dimension = _display_dimension_from_name(name)
+        return {
+            "path": path,
+            "role": "secondary_split",
+            "placement": "secondary_table",
+            "dimension": dimension,
+            "metric": "revenue",
+            "metrics": _display_secondary_metrics(block),
+            "status": "reference",
+            "duplicate_policy": "show",
+            "match_policy": "declared_path",
+            "title": f"副拆分 · {name.replace('副拆分_', '').replace('副拆分', '').strip('_') or name}",
+        }
+
+    if block.get("type") == "series_table" and total and hits == total and any(token in name for token in ("分线", "业务线")):
+        return {
+            "path": path,
+            "role": "primary_attachment",
+            "placement": "model_table",
+            "attach_to": "income.revenue.segments",
+            "dimension": "business_line",
+            "metric": _display_metric_from_text(name, unit),
+            "status": "reference",
+            "duplicate_policy": "prefer_derived_and_warn",
+            "match_policy": "exact_or_declared_alias",
+            "title": name,
+        }
+
+    return {
+        "path": path,
+        "role": "reference",
+        "placement": "reference_tab",
+        "dimension": _display_dimension_from_name(name),
+        "metric": _display_metric_from_text(name, unit),
+        "status": "reference",
+        "duplicate_policy": "show",
+        "match_policy": "none",
+        "title": name,
+    }
+
+
+def _normalize_declared_display_block(raw: Any, warnings: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        warnings.append(_display_warning("invalid_display_block", "display.blocks item is not an object"))
+        return None
+    path = _cell(raw.get("path")).strip()
+    if not path:
+        warnings.append(_display_warning("missing_display_path", "display.blocks item has no path"))
+        return None
+    role = _display_enum(raw.get("role"), DISPLAY_ROLES, "reference", "role", path, warnings)
+    placement_default = "model_table" if role in {"primary_model", "primary_attachment"} else "secondary_table" if role == "secondary_split" else "reference_tab"
+    block = {
+        "path": path,
+        "role": role,
+        "placement": _display_enum(raw.get("placement"), DISPLAY_PLACEMENTS, placement_default, "placement", path, warnings),
+        "dimension": _display_enum(raw.get("dimension"), DISPLAY_DIMENSIONS, "other", "dimension", path, warnings),
+        "metric": _display_enum(raw.get("metric"), DISPLAY_METRICS, "mixed", "metric", path, warnings),
+        "status": _display_enum(raw.get("status"), DISPLAY_STATUSES, "reference", "status", path, warnings),
+        "duplicate_policy": _display_enum(raw.get("duplicate_policy"), DISPLAY_DUPLICATE_POLICIES, "show", "duplicate_policy", path, warnings),
+        "match_policy": _display_enum(raw.get("match_policy"), DISPLAY_MATCH_POLICIES, "exact_or_declared_alias", "match_policy", path, warnings),
+        "title": _cell(raw.get("title")) or path,
+    }
+    if raw.get("attach_to"):
+        block["attach_to"] = _cell(raw.get("attach_to"))
+    metrics = raw.get("metrics")
+    if isinstance(metrics, list):
+        block["metrics"] = [str(item) for item in metrics if str(item) in DISPLAY_METRICS]
+    return block
+
+
+def _yaml1_display_contract(data: dict[str, Any], revenue_view: dict[str, Any] | None, stash_view: list[dict[str, Any]]) -> dict[str, Any]:
+    warnings: list[dict[str, Any]] = []
+    declared = data.get("display") if isinstance(data, dict) else None
+    blocks: list[dict[str, Any]] = []
+    declared_paths: set[str] = set()
+    declared_by_path: dict[str, dict[str, Any]] = {}
+
+    if isinstance(declared, dict):
+        raw_blocks = declared.get("blocks")
+        if isinstance(raw_blocks, list):
+            for raw in raw_blocks:
+                block = _normalize_declared_display_block(raw, warnings)
+                if block:
+                    blocks.append(block)
+                    declared_paths.add(block["path"])
+                    declared_by_path[block["path"]] = block
+        else:
+            warnings.append(_display_warning("invalid_display_blocks", "display.blocks must be a list"))
+        mode = "declared"
+        primary_dimension = _display_enum(declared.get("primary_dimension"), DISPLAY_DIMENSIONS, "business_line", "primary_dimension", "display", warnings)
+    else:
+        mode = "inferred"
+        primary_dimension = "business_line"
+
+    if revenue_view and "income.revenue" not in declared_paths:
+        blocks.insert(0, {
+            "path": "income.revenue",
+            "role": "primary_model",
+            "placement": "model_table",
+            "dimension": "business_line",
+            "metric": "revenue",
+            "status": "active",
+            "duplicate_policy": "show",
+            "match_policy": "declared_path",
+            "title": "主拆分 · 业务线",
+        })
+
+    for stash_block in stash_view:
+        path = _cell(stash_block.get("path"))
+        if not path:
+            continue
+        declared_block = declared_by_path.get(path)
+        if declared_block:
+            if declared_block.get("role") in {"primary_attachment", "secondary_split"}:
+                warnings.extend(_display_partial_metric_warnings(stash_block))
+            continue
+        inferred = _infer_display_block(stash_block, revenue_view)
+        blocks.append(inferred)
+        if inferred.get("role") in {"primary_attachment", "secondary_split"}:
+            warnings.extend(_display_partial_metric_warnings(stash_block))
+
+    return {
+        "schema_version": DISPLAY_SCHEMA_VERSION,
+        "mode": mode,
+        "primary_dimension": primary_dimension,
+        "blocks": blocks,
+        "warnings": warnings,
+    }
 
 
 # ─────────────────────────── yaml1 assumptions view (universal knob grouping) ───────────────────────────
@@ -1172,7 +1508,7 @@ def _assumptions_traceability(data: dict[str, Any]) -> list[dict]:
 
 
 def _yaml1_assumptions_view(data: dict[str, Any], years: list[str]) -> dict:
-    skip = {"meta", "terminal", "stash", "income.revenue"}
+    skip = {"meta", "terminal", "stash", "income.revenue", "display"}
     by_section: dict[str, list[dict]] = {key: [] for key, _, _ in ASSUMPTION_SECTION_DEFS}
     other: list[dict] = []
     for path, payload in data.items():
@@ -1275,7 +1611,7 @@ def _values_cells(values: list[Any], years: list[str], pointer_segments: list[An
 
 def _editable_top_level_value_knobs(data: dict[str, Any], years: list[str]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    skip = {"meta", "terminal", "stash", "income.revenue"}
+    skip = {"meta", "terminal", "stash", "income.revenue", "display"}
     for path, payload in data.items():
         if path in skip or not isinstance(payload, dict):
             continue
@@ -2084,6 +2420,8 @@ def read_company(company_id: str) -> dict[str, Any]:
     forecast_dir = company_forecast_dir(company_dir)
     yaml1_data = _read_yaml(yaml1_path) if yaml1_path else {}
     yaml1_years = _years_from_yaml1(yaml1_data) if yaml1_data else []
+    yaml1_revenue_view = _yaml1_revenue_view(yaml1_path)
+    yaml1_stash_view = _yaml1_stash_view(yaml1_data) if yaml1_data else []
     tables = []
     for name in FORECAST_TABLES:
         path = forecast_dir / name
@@ -2094,9 +2432,10 @@ def read_company(company_id: str) -> dict[str, Any]:
         "core_assumption_md": _read_text(core_path) if core_path else None,
         "yaml1_path": _relative(yaml1_path) if yaml1_path else None,
         "yaml1_text": _read_text(yaml1_path) if yaml1_path else None,
-        "yaml1_revenue_view": _yaml1_revenue_view(yaml1_path),
+        "yaml1_revenue_view": yaml1_revenue_view,
         "yaml1_sheets": _yaml1_sheets(yaml1_path),
-        "yaml1_stash_view": _yaml1_stash_view(yaml1_data) if yaml1_data else [],
+        "yaml1_stash_view": yaml1_stash_view,
+        "yaml1_display_contract": _yaml1_display_contract(yaml1_data, yaml1_revenue_view, yaml1_stash_view) if yaml1_data else None,
         "yaml1_assumptions_view": _yaml1_assumptions_view(yaml1_data, yaml1_years) if yaml1_data else None,
         "editable_assumptions": _editable_assumptions(yaml1_data) if yaml1_data else [],
         "yaml1_presentation": _yaml1_presentation_cache(company_dir),
