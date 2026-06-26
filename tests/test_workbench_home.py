@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from src.workbench import _pipeline_stage
 
@@ -106,6 +109,7 @@ def test_signals_full(tmp_path: Path) -> None:
     assert signals["yaml1_archive_eligible"] is True
     assert signals["root_models"] == {"excel_count": 2, "lock_count": 1, "archive_eligible": True}
     assert signals["workbench_materials"] == 4
+    assert signals["forecast"] is None
 
 
 def test_signals_no_yaml1_date_null(tmp_path: Path) -> None:
@@ -209,3 +213,31 @@ def test_unique_dst_no_collision_on_same_second(tmp_path: Path) -> None:
     assert result != preplaced
     assert not result.exists()  # caller will create it
     assert result.name.startswith(f"{base}-{stamp}")
+
+
+def test_forecast_snapshot_extracts_metrics(tmp_path: Path) -> None:
+    from src.workbench import _forecast_snapshot
+    from src.company_paths import forecast_dir
+    from src.derived_metrics import DERIVED_METRICS_FILENAME
+    company = _make_company(tmp_path)
+    fc = forecast_dir(company)
+    fc.mkdir(parents=True)
+    (fc / DERIVED_METRICS_FILENAME).write_text(json.dumps({
+        "market_snapshot": {"total_mv": 15230.0},
+        "annual": {
+            "2026": {"revenue_yoy": 0.123, "n_income_attr_p_yoy": 0.15, "pe": 18.5},
+            "2027": {"revenue_yoy": 0.10, "n_income_attr_p_yoy": 0.12, "pe": 16.0},
+        },
+    }), encoding="utf-8")
+    snap = _forecast_snapshot(company)
+    assert snap is not None
+    assert snap["market_cap"] == 15230.0
+    assert snap["revenue_yoy"]["2026"] == pytest.approx(0.123)
+    assert snap["profit_yoy"]["2027"] == pytest.approx(0.12)
+    assert snap["pe"]["2026"] == pytest.approx(18.5)
+
+
+def test_forecast_snapshot_none_without_forecast(tmp_path: Path) -> None:
+    from src.workbench import _forecast_snapshot
+    company = _make_company(tmp_path)
+    assert _forecast_snapshot(company) is None

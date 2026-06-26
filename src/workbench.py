@@ -378,6 +378,7 @@ def _folder_overview_signals(company_dir: Path) -> dict[str, Any]:
             "archive_eligible": len(excels) > 1 or len(locks) > 0,
         },
         "workbench_materials": workbench_total,
+        "forecast": _forecast_snapshot(company_dir),
     }
 
 
@@ -710,6 +711,48 @@ def _derived_metrics(company_dir: Path) -> dict[str, Any] | None:
     except (json.JSONDecodeError, OSError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def _metric_for_year(annual: dict[str, Any], year: int, key: str) -> float | None:
+    row = annual.get(str(year))
+    if not isinstance(row, dict):
+        return None
+    raw = row.get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _forecast_snapshot(company_dir: Path) -> dict[str, Any] | None:
+    """预测与估值快照（来自 Agent/forecast/derived_metrics.json）。无 forecast 产物返回 None。"""
+    dm = _derived_metrics(company_dir)
+    if not isinstance(dm, dict):
+        return None
+    annual = dm.get("annual") if isinstance(dm.get("annual"), dict) else {}
+    market = dm.get("market_snapshot") if isinstance(dm.get("market_snapshot"), dict) else {}
+    market_cap: float | None = None
+    raw_mv = market.get("total_mv")
+    if raw_mv is not None and raw_mv != "":
+        try:
+            market_cap = float(raw_mv)
+        except (TypeError, ValueError):
+            market_cap = None
+    snap = {
+        "market_cap": market_cap,
+        "revenue_yoy": {"2026": _metric_for_year(annual, 2026, "revenue_yoy"), "2027": _metric_for_year(annual, 2027, "revenue_yoy")},
+        "profit_yoy": {"2026": _metric_for_year(annual, 2026, "n_income_attr_p_yoy"), "2027": _metric_for_year(annual, 2027, "n_income_attr_p_yoy")},
+        "pe": {"2026": _metric_for_year(annual, 2026, "pe"), "2027": _metric_for_year(annual, 2027, "pe")},
+    }
+    has_any = (
+        snap["market_cap"] is not None
+        or any(v is not None for v in snap["revenue_yoy"].values())
+        or any(v is not None for v in snap["profit_yoy"].values())
+        or any(v is not None for v in snap["pe"].values())
+    )
+    return snap if has_any else None
 
 
 def _cell(value: Any) -> str:
