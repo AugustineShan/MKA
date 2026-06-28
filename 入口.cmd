@@ -10,9 +10,9 @@ echo   之后每次双击：直接启动（已就绪项会跳过）
 echo ============================================================
 echo.
 
-REM ============================================================
-REM 1. 探测 Python —— 优先 py 启动器（绕开 WindowsApps 占位符）
-REM ============================================================
+:: ============================================================
+:: 1. Detect Python (prefer py launcher to bypass WindowsApps stub)
+:: ============================================================
 set "PY="
 where py >nul 2>nul
 if not errorlevel 1 (
@@ -20,7 +20,6 @@ if not errorlevel 1 (
   if not errorlevel 1 set "PY=py -3"
 )
 if not defined PY (
-  REM 退路：遍历 where python，排除 WindowsApps 占位符
   for /f "delims=" %%i in ('where python 2^>nul') do (
     set "CAND=%%i"
     set "SKIP="
@@ -41,12 +40,12 @@ if not defined PY (
 )
 for /f "delims=" %%v in ('%PY% --version 2^>^&1') do set "PY_VER=%%v"
 
-REM ============================================================
-REM 2. 依赖指纹 —— 没变就跳过整段检查（省掉重导入扫描）
-REM    指纹 = Python 版本 # requirements.txt 改时间 # package.json 改时间
-REM    另要求 node_modules / app\dist\index.html / .env 仍在，任一缺失则重查
-REM    想强制重查：删除 .workbench.deps.ok
-REM ============================================================
+:: ============================================================
+:: 2. Dependency fingerprint - skip the whole check block if unchanged.
+::    Fingerprint = python version # requirements.txt mtime # package.json mtime
+::    Also require node_modules / app\dist\index.html / .env to still exist.
+::    Force recheck: delete .workbench.deps.ok
+:: ============================================================
 set "REQ_TS="
 set "PKG_TS="
 for %%a in (requirements.txt) do set "REQ_TS=%%~ta"
@@ -65,9 +64,9 @@ if defined SKIP_DEPS (
   goto :launch
 )
 
-REM ============================================================
-REM 3. 探测 Node.js / npm（仅首次/变更后显示）
-REM ============================================================
+:: ============================================================
+:: 3. Detect Node.js / npm (only shown on first run / after change)
+:: ============================================================
 echo [OK] Python:
 echo !PY_VER!
 where npm >nul 2>nul
@@ -80,9 +79,9 @@ if errorlevel 1 (
 echo [OK] Node:
 call node --version
 
-REM ============================================================
-REM 4. .env —— 没有就从 .env.example 复制并打开记事本
-REM ============================================================
+:: ============================================================
+:: 4. .env - copy from .env.example and open notepad if missing
+:: ============================================================
 if not exist ".env" (
   if not exist ".env.example" (
     echo [X] 缺少 .env 和 .env.example，无法继续。
@@ -100,9 +99,9 @@ if not exist ".env" (
 )
 echo [OK] .env 已存在
 
-REM ============================================================
-REM 5. Python 依赖（缺才装，用清华镜像）
-REM ============================================================
+:: ============================================================
+:: 5. Python deps - install only if missing (tsinghua mirror)
+:: ============================================================
 echo.
 echo [*] 检查 Python 依赖...
 %PY% -c "import tushare, pandas, fastapi, uvicorn, fitz, yaml, openpyxl" >nul 2>nul
@@ -119,9 +118,9 @@ if errorlevel 1 (
   echo [OK] Python 依赖已就绪
 )
 
-REM ============================================================
-REM 6. 前端依赖（node_modules 缺才装）
-REM ============================================================
+:: ============================================================
+:: 6. Frontend deps - install only if node_modules missing
+:: ============================================================
 if not exist "node_modules" (
   echo.
   echo [*] 安装前端依赖（首次较慢）...
@@ -135,9 +134,9 @@ if not exist "node_modules" (
   echo [OK] node_modules 已就绪
 )
 
-REM ============================================================
-REM 7. 构建前端（app/dist 缺才 build）
-REM ============================================================
+:: ============================================================
+:: 7. Build frontend - only if app/dist missing
+:: ============================================================
 if not exist "app\dist\index.html" (
   echo.
   echo [*] 构建前端...
@@ -151,16 +150,16 @@ if not exist "app\dist\index.html" (
   echo [OK] app\dist 已就绪
 )
 
-REM ============================================================
-REM 8. 全部就绪，写指纹（下次双击直接跳到启动）
-REM ============================================================
+:: ============================================================
+:: 8. All ready - write fingerprint so next run skips straight to launch
+:: ============================================================
 >.workbench.deps.ok echo !CUR_FP!
 echo [OK] 依赖校验完成，下次双击将直接启动
 
 :launch
-REM ============================================================
-REM 9. 杀掉 8765 端口僵尸进程（避免上次没退干净导致启动失败）
-REM ============================================================
+:: ============================================================
+:: 9. Kill any zombie process on port 8765
+:: ============================================================
 echo.
 set "KILLED="
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765 " ^| findstr "LISTENING"') do (
@@ -170,9 +169,9 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765 " ^| findstr "LISTENIN
 )
 if not defined KILLED echo [OK] 8765 端口空闲
 
-REM ============================================================
-REM 10. 启动 Workbench
-REM ============================================================
+:: ============================================================
+:: 10. Launch Workbench
+:: ============================================================
 echo.
 echo ============================================================
 echo   启动 ModelKing Workbench
