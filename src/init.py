@@ -866,6 +866,25 @@ def run_one(
     if not report_status:
         report_status = reports_box.get("error", "⚠️ ② 阶段未产出状态")
 
+    # ③.5 proactive gap fill：clean 通过后，主动补 TuShare 留空但年报有据的缺口字段
+    #  （典型 oth_b_income：clean 硬校验不依赖，reconciler 不触发，否则缺口会静默携带
+    #   到 /comp 回测闸才暴露）。补的是 approved override → 重跑 clean 应用，raw 不动，
+    #   只进 clean_adjustments。失败不阻塞。
+    proactive_status = ""
+    if ok:
+        try:
+            from src.proactive_gap_fill import proactive_field_gap_fill
+            n_new = proactive_field_gap_fill(db_path, ticker)
+            if n_new > 0:
+                proactive_status = f"✅ proactive gap fill: {n_new} 条 override 已应用"
+                LOGGER.info("③.5 proactive gap fill: %d 条新 override，重跑 clean(annual) 应用", n_new)
+                _run_clean_inproc(ticker, db_path, mode="annual", allow_plug=False)
+            else:
+                proactive_status = "⏭️ proactive gap fill: 无缺口"
+        except Exception as exc:  # noqa: BLE001
+            proactive_status = f"⚠️ proactive gap fill 异常（不阻塞）: {exc}"
+            LOGGER.warning("③.5 proactive gap fill 异常（不阻塞）: %s", exc)
+
     if ok:
         t0 = time.monotonic()
         core_metrics_status = stage_core_metrics_overview(ticker, db_path, mode=mode)

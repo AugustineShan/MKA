@@ -798,7 +798,7 @@ def _collect_explicit_overlay(
             "note": "Derived from revenue leaf margins.",
         }
     for path, item_any in yaml1.items():
-        if path in {"meta", "income.revenue", "terminal", "stash", "formulas"}:
+        if path in {"meta", "income.revenue", "terminal", "stash", "formulas", "display"}:
             continue
         item = _require_mapping(item_any, path)
         kind = item.get("kind")
@@ -1017,6 +1017,60 @@ def _default_yearly_paths(yaml2: dict[str, Any]) -> list[str]:
     return sorted(set(paths))
 
 
+def _diagnose_revenue_residual(
+    anchor_residual: float,
+    segment_sum: float,
+    fold: FoldResult,
+    clean_annual: dict[int, dict[str, float]],
+) -> dict[str, Any]:
+    """Name a revenue leaf-sum vs clean_annual.revenue residual.
+
+    A 股口径：营业收入 = 主营业务收入(分产品 leaf 和) + 其他业务收入。年报"主营业务
+    分产品"表只拆主营业务收入，故取自分产品表的 leaf 集合求和 = 主营业务收入，必然
+    ≤ 营业收入。leaf 和 < revenue 的差额通常即 TuShare 漏录的 oth_b_income
+    (见 known_tushare_defects: income.revenue.oth_b_income.missing_or_zero)。
+    本函数把残差对 named account 试匹配，给出可操作诊断，避免误判为"口径/rounding 差"。
+    """
+    row = clean_annual.get(fold.base_year, {})
+    oth_b = float(row.get("oth_b_income", 0.0) or 0.0)
+    tushare_gap = abs(oth_b) < 1e-9
+    diag: dict[str, Any] = {
+        "clean_oth_b_income": oth_b,
+        "tushare_oth_b_income_is_zero": tushare_gap,
+    }
+    if anchor_residual < 0:
+        gap = -anchor_residual  # = revenue - segment_sum = 其他业务收入
+        diag["named_account"] = "其他业务收入"
+        diag["gap_million_cny"] = gap
+        diag["rationale"] = (
+            "营业收入 = 主营业务收入(分产品 leaf 和) + 其他业务收入；"
+            "leaf 和 < revenue 的差额即其他业务收入。"
+        )
+        if tushare_gap:
+            diag["tushare_disclosure_gap"] = True
+            diag["suggested_fix"] = (
+                f"TuShare oth_b_income=0（披露缺口，known_tushare_defects 同族）。"
+                f"补『其他业务收入』bridge leaf，base≈{gap:.2f} Mn；"
+                f"或 /ka 重裁收入 leaf 集合使其对齐 clean_annual.revenue。"
+            )
+        else:
+            diag["tushare_disclosure_gap"] = False
+            diag["suggested_fix"] = (
+                f"clean.oth_b_income={oth_b:.2f} 已有值；/ka 漏建 其他业务收入 leaf，"
+                f"建议补 bridge leaf base≈{oth_b:.2f} Mn。"
+            )
+    else:
+        diag["named_account"] = None
+        diag["gap_million_cny"] = anchor_residual
+        diag["rationale"] = (
+            "leaf 和 > revenue：leaf 集合可能包含 revenue 之外的项，或某 leaf base 抄错。"
+        )
+        diag["suggested_fix"] = (
+            "核对各 leaf base 是否取自年报分产品表（主营业务收入口径）；/ka 重裁 leaf 集合。"
+        )
+    return diag
+
+
 def _run_backtests(
     yaml1: dict[str, Any],
     clean_annual: dict[int, dict[str, float]],
@@ -1032,10 +1086,13 @@ def _run_backtests(
                 "stage": "backtest",
                 "path": "income.revenue",
                 "year": fold.base_year,
-                "message": "四线 base 加总未复现 clean_annual revenue",
+                "message": "收入 leaf base 加总未复现 clean_annual revenue",
                 "expected": fold.base_revenue,
                 "actual": segment_sum,
                 "residual": anchor_residual,
+                "diagnosis": _diagnose_revenue_residual(
+                    anchor_residual, segment_sum, fold, clean_annual
+                ),
             }
         )
 

@@ -244,6 +244,38 @@
           "note": "TuShare lease_liab 全 18 年为空；年报非流动负债段『租赁负债』逐年解释 BS 3.2 残差（7 期，2019 起对应新租赁准则 A+H 生效）。"
         }
       ]
+    },
+    {
+      "id": "income.revenue.oth_b_income.missing_or_zero",
+      "status": "active",
+      "endpoint": "income",
+      "check_code": null,
+      "bucket_or_scope": "revenue_decomposition",
+      "field": "oth_b_income",
+      "field_cn": "其他业务收入",
+      "trigger": {
+        "direction": "revenue_leaf_sum_lt_revenue",
+        "target_field": "revenue",
+        "field_value_pattern": "missing_or_zero",
+        "residual_should_match_annual_report_item": true,
+        "note": "不触发 clean.py 硬校验（revenue 本身正确，oth_b_income 不进任何 subtotal 公式）；残差在 yaml1_cleaner 回测闸（leaf base 和 vs clean_annual.revenue）暴露，proactive_gap_fill 用 clean.revenue − Σ OfficialBreakdowns 分产品收入 确定性补数。"
+      },
+      "llm_hint": {
+        "annual_report_statement": "营业收入构成 / 收入构成表",
+        "search_aliases": [
+          "其他业务收入"
+        ],
+        "unit_conversion": "年报通常为元；除以 1000000 换成百万元与 clean.py 残差比较。",
+        "diagnosis_hint": "A 股口径 营业收入 = 主营业务收入 + 其他业务收入。年报『主营业务分产品』表按定义只拆主营业务收入（不含其他业务收入）。当收入 leaf 取自分产品表、leaf base 和 < clean_annual.revenue 且差额≈年报『其他业务收入』时，差额即 TuShare 漏录的 oth_b_income（TuShare 对部分公司该字段全年返回 0）。修法：补『其他业务收入』bridge leaf（base=差额），而非重述既有 leaf 去凑 revenue。差额也可由 clean.revenue − Σ OfficialBreakdowns 分产品收入 确定（确定性，无需 LLM）。"
+      },
+      "confirmed_examples": [
+        {
+          "ticker": "600887.SH",
+          "company": "伊利股份",
+          "periods": "2024-2025",
+          "note": "TuShare oth_b_income 全 0；年报收入构成表 2025=1,090,938,412.66 元、2024≈1,272,678,831 元。clean.revenue − 4 线分产品合计 = 其他业务收入（2025: 115636.23−114545.29=1090.94；2024: 115393.31−114120.63=1272.68）。"
+        }
+      ]
     }
   ]
 }

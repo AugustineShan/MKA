@@ -138,12 +138,15 @@ QA_BS_PLUG_FIELDS: dict[str, str] = {
 
 QA_CF_CASH_PLUG_FIELD = "qa_cf_cash_reconcile_plug"
 QA_FIELDS = sorted([*QA_BS_PLUG_FIELDS.values(), QA_CF_CASH_PLUG_FIELD])
-APPROVED_OVERRIDE_SOURCES = {"glm", "kimi", "claude"}
+APPROVED_OVERRIDE_SOURCES = {"glm", "kimi", "claude", "proactive"}
 # audit H4:override 文件跨运行 merge-append,同一 (period, 解析后列名) 可能累积多条
 # approved 记录(不同 source / 不同 new_value)。旧实现按列表序 last-write-wins=非确定。
 # 这里按显式 source 优先级裁决,保证可复现:claude(subagent bridge 逐数字证据闭合)
 # > glm(rule+LLM) > kimi(旧)。同 cell 不同值的冲突显式 LOG.warning,不静默。
-OVERRIDE_SOURCE_PRECEDENCE = ("claude", "glm", "kimi")
+# "proactive" 由 src.proactive_gap_fill.py 产出：确定性来源（OfficialBreakdowns
+# 分产品收入）补 TuShare 留空字段（如 oth_b_income），非 LLM。优先级最低——只填
+# 既有 approved override 未覆盖的空 cell，不覆盖 LLM/bridge 结论。
+OVERRIDE_SOURCE_PRECEDENCE = ("claude", "glm", "kimi", "proactive")
 # "claude" 来源的 override 由 init skill 的 subagent 升级通道产出（见
 # src/recon_subagent_bridge.py）：subagent 读年报干净 Markdown 定位科目金额，
 # bridge 服务端按净残差验闭合后才标 approved。与 glm/kimi 同等审计可追溯。

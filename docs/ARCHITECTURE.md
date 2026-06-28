@@ -135,6 +135,7 @@ core_metrics_overview → financial_expense_analyzer 五个独立阶段按正确
 | `stage_fetch()` | 阶段①拉取；幂等：当日 `meta.last_updated` 已是今天则跳过（除非 `--force`），否则 UPSERT 增量 |
 | `stage_reports()` | 年报 PDF/Markdown 下载（**必须在 clean 之前**，否则失败时 reconciler 无年报可切片）；report_downloader 自身幂等，下载失败不致命 |
 | `stage_clean()` | 阶段③清洗校验，含"年度失败→生成 override→重跑应用"两段式；用 `approved_override_count()` 比对前后判断是否新增补数 |
+| `proactive_field_gap_fill()` | 阶段③.5（`src/proactive_gap_fill.py`，clean 成功后、④ 前）：主动补 TuShare 留空但**不触发硬失败**的已知缺口字段（当前白名单 `oth_b_income`）。用确定性来源 `clean.revenue − Σ OfficialBreakdowns 分产品收入` 算应填值，写 `source=proactive` approved override，重跑 `clean_all(annual)` 应用。raw 不动，只进 `clean_adjustments`；失败不阻塞。补 reconciler（失败驱动）够不到的静默缺口 |
 | `stage_core_metrics_overview()` | 阶段④：从 `clean_annual` 覆盖生成 `Agent/core_metrics_overview.md/json/csv` 年度事实速览；只读 clean 历史，不读 forecast/yaml，不阻塞管线 |
 | `stage_financial_expense()` | 阶段⑤：从年报附注切片「财务费用」明细，LLM 拆出利息支出/资本化利息/财政贴息/利息收入/其他，按年份归档到 `financial_expense.yaml`；失败只 warning，不阻塞管线 |
 | `build_report()` | 输出数据拉取报告：五阶段状态 + 年度/季度期数 + `clean_adjustments`（年报确认补全科目）+ `clean_warnings` 汇总 |
