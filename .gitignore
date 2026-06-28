@@ -19,6 +19,10 @@ tmp/
 
 # Playwright MCP snapshots (regenerated each browser session)
 .playwright-mcp/
+.playwright-cli/
+
+# Playwright test screenshots
+output/playwright/
 
 # ...but keep committed test fixtures even though annuals/ is ignored globally
 !tests/fixtures/company_002946/annuals/
