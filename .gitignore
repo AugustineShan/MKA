@@ -64,3 +64,6 @@ Thumbs.db
 
 # GSD workflow planning state (personal, not project code)
 .planning/
+
+# 入口.cmd 依赖指纹（本地启动状态，删之可强制重查依赖）
+.workbench.deps.ok
