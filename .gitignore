@@ -61,3 +61,6 @@ Thumbs.db
 # Temporary / draft docs
 ~$*
 *.tmp
+
+# GSD workflow planning state (personal, not project code)
+.planning/
