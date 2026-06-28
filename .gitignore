@@ -14,6 +14,12 @@ companies/*
 .recon/
 annuals/
 
+# Temporary scratch / spreadsheet dumps (recon JSON, data.db copies, .xlsm)
+tmp/
+
+# Playwright MCP snapshots (regenerated each browser session)
+.playwright-mcp/
+
 # ...but keep committed test fixtures even though annuals/ is ignored globally
 !tests/fixtures/company_002946/annuals/
 !tests/fixtures/company_002946/annuals/*
