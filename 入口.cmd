@@ -104,7 +104,7 @@ echo [OK] .env 已存在
 :: ============================================================
 echo.
 echo [*] 检查 Python 依赖...
-%PY% -c "import tushare, pandas, fastapi, uvicorn, fitz, yaml, openpyxl" >nul 2>nul
+%PY% -c "import tushare, pandas, fastapi, uvicorn, fitz, yaml, openpyxl, docx" >nul 2>nul
 if errorlevel 1 (
   echo     缺失，安装中（清华镜像，首次较慢）...
   %PY% -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -124,7 +124,7 @@ if errorlevel 1 (
 if not exist "node_modules" (
   echo.
   echo [*] 安装前端依赖（首次较慢）...
-  call npm install
+  call npm install --registry=https://registry.npmmirror.com
   if errorlevel 1 (
     echo [X] npm install 失败。
     pause
