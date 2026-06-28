@@ -27,13 +27,15 @@ def test_stage_init_done(tmp_path: Path) -> None:
     assert _pipeline_stage(company) == "初始化完毕"
 
 
-def test_stage_core_assumption_done(tmp_path: Path) -> None:
+def test_stage_preloaded_done(tmp_path: Path) -> None:
     company = _make_company(tmp_path)
     (company / "Agent").mkdir()
     (company / "Agent" / "data.db").write_bytes(b"")
     (company / "Agent" / "defaults.yaml").write_text("meta: {}")
-    (company / "测试公司-20260626-核心假设.md").write_text("# 假设")
-    assert _pipeline_stage(company) == "核心假设完毕"
+    ka_dir = company / "Skills素材包" / "KA（ALPHAPAI拆出来的东西放在这里）"
+    ka_dir.mkdir(parents=True)
+    (ka_dir / "核心假设参考alphapai_20260626.md").write_text("# 参考")
+    assert _pipeline_stage(company) == "预加载完毕"
 
 
 def test_stage_modeled(tmp_path: Path) -> None:

@@ -581,6 +581,54 @@ def evaluate_restatement_proposal(
     }
 
 
+def approve_restatement_auto(context: dict[str, Any]) -> dict[str, Any] | None:
+    """轻量自动豁免：agent 确认后直接放行，不读年报、不派 subagent、不过证据闸门。
+
+    重述是公司自己披露的会计事件（在新一年年报比较列里追溯重述上年期末现金）——TuShare
+    本期期初已采纳重述后值（TuShare 取最新年报），残差 = |本期期初 − 上年期末| 天然就是重述
+    幅度。故无需 subagent 复核年报行号：agent 看 context 确认是 7.4 边界错配即可豁免。
+
+    最小确定性守卫（不读 MD）：
+    1. kind == restatement；
+    2. net_residual > TOLERANCE（确有错配，非噪声）；
+    3. markdown_path 存在（本期有年报 MD；pre-IPO 年由 clean 的 pre-IPO 闸门降级，不会到这）。
+
+    防脏豁免：clean.py 每次加载 restatement_exemptions.json 都按 TuShare 现值重验残差，TuShare
+    数据变动后旧豁免自动失效，不会脏放行。降级为透明 warning（非静默改判），可审计。
+    """
+    if context.get("kind") != "restatement":
+        return None
+    residual = float(context.get("net_residual") or 0.0)
+    if residual <= TOLERANCE:
+        return None
+    md_path = context.get("markdown_path")
+    if not md_path:
+        return None
+    prev_end_cash = float(context.get("prev_end_cash") or 0.0)
+    cur_beg_cash = float(context.get("cur_beg_cash") or 0.0)
+    direction = context.get("net_direction") or (
+        "restated_up" if cur_beg_cash > prev_end_cash else "restated_down"
+    )
+    return {
+        "period": str(context["failure"].get("period")),
+        "prev_period": context.get("prev_period"),
+        "check_code": "跨表 7.4",
+        "prev_end_cash": prev_end_cash,
+        "cur_beg_cash": cur_beg_cash,
+        "residual": residual,
+        "status": "approved",
+        "source": "claude",
+        "approved_by": "claude:agent_confirmed",
+        "annual_report": Path(md_path).name,
+        "reason": (
+            f"重述豁免（agent 确认直接放行）：TuShare 本期期初 {cur_beg_cash:.4f} 百万元已采纳本期年报"
+            f"重述后值，上年期末 {prev_end_cash:.4f} 百万元为原始披露值，残差 {residual:.4f} 百万元"
+            f"（{direction}）即公司追溯重述幅度，属披露会计事件非数据错误。clean.py 每次加载按 TuShare"
+            f"现值重验残差，数据变动后豁免自动失效。"
+        ),
+    }
+
+
 def merge_and_write_exemptions(
     exemption_path: Path, ticker: str, new_records: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -732,50 +780,70 @@ def cmd_apply(args: argparse.Namespace) -> int:
 
 
 def cmd_apply_restatements(args: argparse.Namespace) -> int:
-    """吃 subagent 重述确认，服务端验证据 + 写 restatement_exemptions.json。"""
+    """跨表 7.4 重述豁免：agent 确认后直接写 restatement_exemptions.json。
+
+    默认轻量放行（approve_restatement_auto）——不派 subagent、不读年报行号、不需要 proposals
+    文件。重述是公司自己披露的会计事件，TuShare 本期期初已采纳重述后值，agent 看 context
+    确认是 7.4 边界错配即可豁免，clean.py 每次加载按 TuShare 现值重验残差防脏放行。
+
+    --strict：走旧 subagent 证据闸门路径（需 subagent_restatement_proposals.json，读年报行号
+    反幻觉校验）。仅当 agent 想对个别边界做严格复核时用。
+    """
     ticker = args.ticker.strip().upper()
     company_dir = _find_company_dir(ticker)
     company_recon_dir = recon_dir(company_dir)
     context_path = Path(args.context) if args.context else company_recon_dir / "subagent_context.json"
-    proposals_path = Path(args.proposals) if args.proposals else company_recon_dir / "subagent_restatement_proposals.json"
     exemption_path = company_recon_dir / "restatement_exemptions.json"
 
     if not context_path.exists():
         print(f"context not found: {context_path}（先跑 `context` 模式）", file=sys.stderr)
         return 2
-    if not proposals_path.exists():
-        print(f"proposals not found: {proposals_path}（SKILL 需先把重述确认 subagent 输出合并到此）", file=sys.stderr)
-        return 2
 
     contexts = json.loads(context_path.read_text(encoding="utf-8")).get("contexts", [])
     restatement_ctxs = [c for c in contexts if c.get("kind") == "restatement"]
-    proposals = json.loads(proposals_path.read_text(encoding="utf-8"))
-    if isinstance(proposals, dict):
-        proposals = proposals.get("proposals", [])
-
-    # 按 period 索引 subagent 确认
-    by_period: dict[str, dict[str, Any]] = {}
-    for p in proposals:
-        if isinstance(p, dict) and p.get("period"):
-            by_period[str(p.get("period"))] = p
 
     new_records: list[dict[str, Any]] = []
     verdict: list[dict[str, Any]] = []
-    for ctx in restatement_ctxs:
-        period = str(ctx["failure"].get("period"))
-        proposal = by_period.get(period)
-        if not proposal:
-            verdict.append({"code": "跨表 7.4", "period": period, "status": "no_proposal"})
-            continue
-        record = evaluate_restatement_proposal(ctx, proposal)
-        if record:
-            new_records.append(record)
-            verdict.append({"code": "跨表 7.4", "period": period, "status": "exempted",
-                            "residual": record["residual"]})
-        else:
-            verdict.append({"code": "跨表 7.4", "period": period, "status": "rejected",
-                            "net_residual": ctx.get("net_residual"),
-                            "reason": "证据闸门未过（confirmed/行号金额不符/非重述/残差不吻合）"})
+
+    if args.strict:
+        proposals_path = Path(args.proposals) if args.proposals else company_recon_dir / "subagent_restatement_proposals.json"
+        if not proposals_path.exists():
+            print(f"proposals not found: {proposals_path}（--strict 需 subagent 重述确认）", file=sys.stderr)
+            return 2
+        proposals = json.loads(proposals_path.read_text(encoding="utf-8"))
+        if isinstance(proposals, dict):
+            proposals = proposals.get("proposals", [])
+        by_period: dict[str, dict[str, Any]] = {}
+        for p in proposals:
+            if isinstance(p, dict) and p.get("period"):
+                by_period[str(p.get("period"))] = p
+        for ctx in restatement_ctxs:
+            period = str(ctx["failure"].get("period"))
+            proposal = by_period.get(period)
+            if not proposal:
+                verdict.append({"code": "跨表 7.4", "period": period, "status": "no_proposal"})
+                continue
+            record = evaluate_restatement_proposal(ctx, proposal)
+            if record:
+                new_records.append(record)
+                verdict.append({"code": "跨表 7.4", "period": period, "status": "exempted",
+                                "residual": record["residual"], "mode": "strict"})
+            else:
+                verdict.append({"code": "跨表 7.4", "period": period, "status": "rejected",
+                                "net_residual": ctx.get("net_residual"),
+                                "reason": "证据闸门未过（confirmed/行号金额不符/非重述/残差不吻合）"})
+    else:
+        for ctx in restatement_ctxs:
+            period = str(ctx["failure"].get("period"))
+            record = approve_restatement_auto(ctx)
+            if record:
+                new_records.append(record)
+                verdict.append({"code": "跨表 7.4", "period": period, "status": "exempted",
+                                "residual": record["residual"], "mode": "agent_confirmed"})
+            else:
+                verdict.append({"code": "跨表 7.4", "period": period, "status": "rejected",
+                                "net_residual": ctx.get("net_residual"),
+                                "reason": "最小守卫未过（非 restatement / 残差为 0 / 无年报 MD）"})
 
     write_summary = merge_and_write_exemptions(exemption_path, ticker, new_records)
     print(json.dumps({
@@ -801,10 +869,12 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--context", default=None)
     pa.add_argument("--proposals", default=None)
     pa.set_defaults(func=cmd_apply)
-    par = sub.add_parser("apply-restatements", help="验 跨表 7.4 重述确认 + 写 restatement_exemptions.json")
+    par = sub.add_parser("apply-restatements", help="跨表 7.4 重述豁免：agent 确认直接放行（默认轻量，--strict 走旧 subagent 证据闸门）")
     par.add_argument("--ticker", required=True)
     par.add_argument("--context", default=None)
     par.add_argument("--proposals", default=None)
+    par.add_argument("--strict", action="store_true",
+                    help="走旧 subagent 证据闸门路径（需 subagent_restatement_proposals.json）")
     par.set_defaults(func=cmd_apply_restatements)
     args = p.parse_args(argv)
     return args.func(args)

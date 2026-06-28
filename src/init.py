@@ -64,6 +64,7 @@ from src.company_paths import (
     find_company_dir as find_company_root,
     official_breakdowns_dir,
     quarterly_reports_dir,
+    recon_dir,
 )
 from src.core_metrics_overview import write_core_metrics_overview
 from src.defaults_gen import build_defaults, default_output_path
@@ -369,6 +370,32 @@ def _round2_residuals_unchanged(
     return True
 
 
+def _round1_llm_errored_failures(db_path: Path) -> set[tuple[str, str]]:
+    """读最近一次 reconciliation JSON，返回 round-1 LLM 报错（429/超时/解析失败）的
+    (code, period) 集合。
+
+    残差未变不代表 round-2 必失败：round-1 对某失败 LLM 报错时没产出 override，
+    残差自然未变，但 round-2 重新调一次 LLM 可能成功。这类失败应强触发 round-2 重试，
+    不走"残差未变→跳过"的捷径。
+    """
+    p = recon_dir(company_dir_from_db_path(db_path)) / "annual_report_reconciliation_latest.json"
+    if not p.exists():
+        return set()
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    out: set[tuple[str, str]] = set()
+    for a in d.get("analyses", []) or []:
+        if not isinstance(a, dict):
+            continue
+        llm = a.get("llm")
+        f = a.get("failure", {}) or {}
+        if isinstance(llm, dict) and llm.get("error"):
+            out.add((str(f.get("code")), str(f.get("period"))))
+    return out
+
+
 CORE_VIEW_TEMPLATE = """# 公司判断和最新观点
 
 请在此文件填写对这家公司的核心投资观点。
@@ -485,6 +512,18 @@ def stage_clean(
             if _round2_residuals_unchanged(fails, fails_before_round1):
                 # Opt 2: round-1 的 override 未触及任何仍失败 check 的残差 → round-2
                 # 会用同样上下文重试同样失败、必同样失败。跳过省一个 LLM 轮。
+                # 例外：round-1 对某仍失败 check 的 LLM 报错（429/超时/解析失败）时，
+                # 残差未变只是因为没产出 override，round-2 重新调 LLM 可能成功 → 不跳过。
+                errored = _round1_llm_errored_failures(db_path)
+                remaining_keys = {(code, period) for code, period, _ in fails}
+                if errored & remaining_keys:
+                    LOGGER.info(
+                        "第 %d 轮应用后硬失败残差未变，但 round-1 对部分失败 LLM 报错"
+                        "（429/超时），强触发 round-2 重试。",
+                        cycle + 1,
+                    )
+                    auto_reconcile_annual_failure(db_path, ticker, max_failures=AUTO_RECONCILE_MAX_FAILURES)
+                    continue
                 LOGGER.info(
                     "第 %d 轮应用后硬失败残差未变（round-1 override 未触及），跳过 round-2 reconciler。",
                     cycle + 1,
@@ -617,6 +656,27 @@ def stage_financial_expense(
         return f"⚠️ 分析失败: {exc}", None
 
 
+def _format_defaults_status(output: Path, data: dict[str, Any]) -> str:
+    base_period = data.get("base_period", "?")
+    flags = data.get("review_flags") or []
+    if not isinstance(flags, list) or not flags:
+        return f"✅ 已生成 {output.name}（base_period={base_period}，review_flags=0）"
+
+    summaries: list[str] = []
+    for flag in flags[:3]:
+        if not isinstance(flag, dict):
+            continue
+        code = flag.get("code", "unknown")
+        path = flag.get("path") or flag.get("period") or "?"
+        summaries.append(f"{code}: {path}")
+    suffix = "；".join(summaries)
+    if len(flags) > 3:
+        suffix = f"{suffix}；另 {len(flags) - 3} 项" if suffix else f"另 {len(flags) - 3} 项"
+    if not suffix:
+        suffix = "详见 Agent/defaults.yaml"
+    return f"⚠️ 已生成 {output.name}（base_period={base_period}，review_flags={len(flags)}；{suffix}）"
+
+
 def stage_defaults(ticker: str, db_path: Path, *, verbose: bool) -> str:
     """阶段⑥：生成 defaults.yaml（YAML2 机器平推底座）。
 
@@ -629,8 +689,7 @@ def stage_defaults(ticker: str, db_path: Path, *, verbose: bool) -> str:
         data = build_defaults(db_path, ticker=ticker)
         output = default_output_path(db_path)
         write_yaml2(output, data)
-        base_period = data.get("base_period", "?")
-        return f"✅ 已生成 {output.name}（base_period={base_period}）"
+        return _format_defaults_status(output, data)
     except Exception as exc:  # noqa: BLE001
         if verbose:
             LOGGER.exception("defaults.yaml 生成失败")

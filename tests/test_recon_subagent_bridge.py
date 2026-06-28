@@ -404,6 +404,49 @@ def test_evaluate_restatement_rejects_unconfirmed(tmp_path):
     assert bridge.evaluate_restatement_proposal(ctx, {"confirmed": False, "period": "2021"}) is None
 
 
+def test_approve_restatement_auto_exempts_without_reading_md(tmp_path):
+    """轻量自动豁免：agent 确认即放行，不读年报、不派 subagent，最小守卫过即写豁免。"""
+    md = tmp_path / "2021.md"
+    md.write_text("（无需读内容）", encoding="utf-8")
+    ctx = _weichai_2021_context(md)
+    rec = bridge.approve_restatement_auto(ctx)
+    assert rec is not None
+    assert rec["status"] == "approved"
+    assert rec["source"] == "claude"
+    assert rec["approved_by"] == "claude:agent_confirmed"
+    assert rec["check_code"] == "跨表 7.4"
+    assert abs(rec["prev_end_cash"] - 52734.0527) < 1e-6
+    assert abs(rec["cur_beg_cash"] - 52873.0389) < 1e-6
+    assert abs(rec["residual"] - 138.9862) < 1e-4
+    assert "agent 确认直接放行" in rec["reason"]
+
+
+def test_approve_restatement_auto_rejects_zero_residual(tmp_path):
+    """残差为 0（噪声）不豁免。"""
+    md = tmp_path / "2021.md"
+    md.write_text("x", encoding="utf-8")
+    ctx = _weichai_2021_context(md)
+    ctx["net_residual"] = 0.0
+    ctx["cur_beg_cash"] = ctx["prev_end_cash"]  # 无错配
+    assert bridge.approve_restatement_auto(ctx) is None
+
+
+def test_approve_restatement_auto_rejects_no_markdown(tmp_path):
+    """无年报 MD（pre-IPO 年不应到这，但防御）不豁免。"""
+    ctx = _weichai_2021_context(tmp_path / "missing.md")
+    ctx["markdown_path"] = None
+    assert bridge.approve_restatement_auto(ctx) is None
+
+
+def test_approve_restatement_auto_rejects_non_restatement_kind(tmp_path):
+    """非 restatement kind（BS 残差）不走这条通道。"""
+    md = tmp_path / "2021.md"
+    md.write_text("x", encoding="utf-8")
+    ctx = _weichai_2021_context(md)
+    ctx["kind"] = "bs_residual"
+    assert bridge.approve_restatement_auto(ctx) is None
+
+
 def test_merge_exemptions_dedup_by_period(tmp_path):
     """同 period 已有 approved 豁免 → 跳过，不覆盖。"""
     path = tmp_path / "restatement_exemptions.json"

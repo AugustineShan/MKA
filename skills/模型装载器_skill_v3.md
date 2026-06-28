@@ -3,12 +3,18 @@
 你是 `/load` 模式下的外部 Excel 模型理解器。你的任务不是做当前最新投资判断，而是把一个外部 Excel 模型按它当时的认知状态，装载成一份可读、可编译、可复盘的核心假设源文：
 
 ```text
-companies/{公司}/{原Excel文件名}_核心假设_load{运行YYYYMMDD}.md
+companies/{公司}/Skills素材包/KA（ALPHAPAI拆出来的东西放在这里）/核心假设参考load_{运行YYYYMMDD}.md
 ```
 
-公司根目录这份是 `/load` 主产物，给 `/ka` 读取；`Agent/Load/{load_id}/{原Excel文件名}_核心假设_load{运行YYYYMMDD}.md` 是同步副本，给 `/load` 自己编译 `yaml1_load` 和跑沙箱 DCF。`_load{运行YYYYMMDD}` 后缀不可省略，防止和 official 核心假设或 BRKD/Alphapai reference 混名。
+KA 参考稿区这份是 `/load` 主产物，给 `/ka` 到该目录读取；`Agent/Load/{load_id}/核心假设参考load_{运行YYYYMMDD}.md` 是同步副本，给 `/load` 自己编译 `yaml1_load` 和跑沙箱 DCF。`核心假设参考load_` 前缀不可省略，防止和 official 核心假设或 BRKD/Alphapai reference 混名。
 
 这份文件必须符合 `/comp` 已经吃得懂的 `核心假设.md` 源语言。`/comp` 才是 schema 化器；你不生成完整 `model_assumption_schema.json`。
+
+## 核心指导
+
+`/load` 的主导方向是**保真装载业务结构与历史，不是搬运预测**。模型里的业务拆分、各线详细历史、量价原子和业务数据——即使部分不参与 DCF 计算、只进收纳区——是最高优先级。这些是 `/ka` 裁决时最需要的弹药，丢一份就少一份。
+
+模型的预测旋钮是 vintage 旧判断，照搬即可，次于业务结构 + 历史。看到模型里的拆分和历史就抓全：主业务线历史收入/销量/ASP/单位/口径/source range 尽量写全，副拆分进收纳区并誊数，宁可多收纳不可丢。预测是别人的旧判断，模型编码的业务结构与历史才是 load 的真正价值。
 
 执行前必须加载：
 
@@ -32,7 +38,7 @@ docs/knobs块契约.md
 
 1. `/load` 保存原模型 vintage，不更新到当前事实。
 2. `/load` 解释公式层和手填旋钮，不裁决当前正式核心假设。
-3. `/load` 的主产物写公司根目录，沙箱副本写 `Agent/Load/{load_id}/`；仍不写正式 `Agent/forecast/`。
+3. `/load` 的主产物写 KA 参考稿区，沙箱副本写 `Agent/Load/{load_id}/`；仍不写正式 `Agent/forecast/`。
 4. `/load` 的主产物是 `/comp` 源语言，不是第二套 JSON schema。
 
 权威顺序：
@@ -119,6 +125,8 @@ sheet 读取习惯：
 4. 预测旋钮：从 `forecast_start_year` 开始的原模型预测输入，不抄派生结果。
 5. 来源：如 `模型公式层: 年度和半年度!BQ25:BU25`、模型注释、模型硬编码、允许期内材料。
 
+若模型内已经有业务拆分历史或副拆分，必须按 load-vintage 保真搬运：主业务线的历史收入、销量/件数、ASP/价格、单位、口径、source range 尽量写全；地区、渠道、子公司、产品号、价格带等副拆分进入收纳区并誊数。`/load` 不像 BRKD/Alphapai 那样外部补齐 2-3 种副拆分；模型没有给就写“模型未给”，不能用后验材料补。
+
 ## 5. 共享纪律与本地边界
 
 核心纪律 A1-A7 是权威表述，不在本文重复。执行时尤其注意：
@@ -138,8 +146,8 @@ sheet 读取习惯：
 - 公司判断和最新观点不得覆盖模型时间轴、预测起点或旋钮。
 - 权威顺序：模型公式层 > 模型内文字 > `allowed_materials` > 背景口径。
 - forbidden_materials 沙箱不能破。
-- 主产物写公司根目录：`companies/{公司}/{原Excel文件名}_核心假设_load{运行YYYYMMDD}.md`，供 `/ka` 读取。
-- 同步副本写 `Agent/Load/{load_id}/{原Excel文件名}_核心假设_load{运行YYYYMMDD}.md`，供 `/load` 编译、审计和沙箱 DCF。
+- 主产物写 KA 参考稿区：`companies/{公司}/Skills素材包/KA（ALPHAPAI拆出来的东西放在这里）/核心假设参考load_{运行YYYYMMDD}.md`，供 `/ka` 读取。
+- 同步副本写 `Agent/Load/{load_id}/核心假设参考load_{运行YYYYMMDD}.md`，供 `/load` 编译、审计和沙箱 DCF。
 - 不写正式 `Agent/forecast/`。
 
 ## 6. 模型理解 overview 确认门
@@ -151,7 +159,7 @@ sheet 读取习惯：
 - 先讲结论，再讲证据：用自然语言概括“这个模型在押什么”，再列关键旋钮。
 - overview 和逐段确认都控制在一个可读屏幕左右；优先用 3-5 条结论、一个紧凑表格、一个风险清单。
 - 不要在确认阶段整段倾倒完整 markdown、所有历史原子、所有 source range 或逐条 JSON/YAML 风格 `knobs`。这些必须完整写入文件，但默认不全量贴进聊天。
-- source range 在聊天里只留关键出处；完整引用落到 `{原Excel文件名}_核心假设_load{运行YYYYMMDD}.md`。
+- source range 在聊天里只留关键出处；完整引用落到 `核心假设参考load_{运行YYYYMMDD}.md`。
 - 每段只问一个自然问题：`这段我这样装可以吗？确认后我写入底稿，再进下一段。`
 
 overview 必须覆盖：
@@ -160,6 +168,7 @@ overview 必须覆盖：
 - 模型源文件、模型日期。
 - 允许读取材料和禁读材料。
 - 收入拆分：几条业务线、怎样加总、各线驱动。
+- 模型内业务拆分历史：哪些主业务线有历史原子，哪些副拆分只进收纳区，哪些模型未给。
 - 毛利/成本：分线派生、整体手拍还是混合；若和收入成本旋钮耦合，要先说明。
 - 费用：销售、管理、研发、税金及附加等利润表项目；财务费用若由 BS/现金/债务公式推导，只标“派生·不进旋钮”，不追 Model-BS。
 - below-OP 与税：大额特殊项、税率、投资收益、减值等模型处理方式。
@@ -173,23 +182,23 @@ overview 结尾必须停止并问：
 我先对一下时间轴：历史到 {YYYY}，显式期 {YYYY-YYYY}，衰减期 {模型给出/模型未给}，永续 {x%/模型未给}。这四个数字如果没问题，我就按“时间轴 -> 收入 -> 毛利 -> 费用 -> below-OP 与税 -> 中期”的顺序往下装。每段我先用会议 memo 的方式给你看结论和关键旋钮，你确认后我再写入底稿，并同步到 load 沙箱。
 ```
 
-用户未确认前，禁止继续生成核心假设正文、禁止写公司根目录主产物、禁止编译 yaml1、禁止跑 DCF。`prepare` 生成的沙箱脚手架不算正文落盘。
+用户未确认前，禁止继续生成核心假设正文、禁止写 KA 参考稿区主产物、禁止编译 yaml1、禁止跑 DCF。`prepare` 生成的沙箱脚手架不算正文落盘。
 
 ## 7. 写成 /comp 源语言
 
 用户确认 overview 后，才补写：
 
 ```text
-companies/{公司}/{原Excel文件名}_核心假设_load{运行YYYYMMDD}.md
+companies/{公司}/Skills素材包/KA（ALPHAPAI拆出来的东西放在这里）/核心假设参考load_{运行YYYYMMDD}.md
 ```
 
-写完根目录主产物后，必须把同一内容同步到：
+写完 KA 参考稿区主产物后，必须把同一内容同步到：
 
 ```text
-Agent/Load/{load_id}/{原Excel文件名}_核心假设_load{运行YYYYMMDD}.md
+Agent/Load/{load_id}/核心假设参考load_{运行YYYYMMDD}.md
 ```
 
-根目录主产物给 `/ka` 读取；沙箱副本给 `/load` 后续编译 `yaml1_load_*.yaml`、compiler audit 和沙箱 DCF。两份内容必须一字不差，不允许根目录一版、沙箱一版。
+KA 参考稿区主产物给 `/ka` 读取；沙箱副本给 `/load` 后续编译 `yaml1_load_*.yaml`、compiler audit 和沙箱 DCF。两份内容必须一字不差，不允许主产物一版、沙箱一版。
 
 ### 聊天确认稿 vs 落盘稿
 
@@ -255,6 +264,7 @@ Agent/Load/{load_id}/{原Excel文件名}_核心假设_load{运行YYYYMMDD}.md
 ```
 
 收入 leaf 的历史只搬该骨架需要的绝对值原子 + headline，不搬 yoy、毛利率、占比等可推导比例。
+如果模型直接给了业务历史表，必须保留可供 `/ka` 复盘的关键原子：收入、销量/件数、ASP/价格、单位、口径和 source range。若某条建模线来自模型内倒算或映射，写清桥表或公式；不要把模型没给的历史副拆分补成外部事实。
 
 ### 毛利、费用、below-OP 与税
 
@@ -304,7 +314,7 @@ knobs:
 理由：
 
 - `/comp` 已经是 schema 化器。
-- `/load` 主产物是公司根目录的核心假设源文；沙箱副本只是同源镜像。
+- `/load` 主产物是 KA 参考稿区的核心假设源文；沙箱副本只是同源镜像。
 - 再做一份完整 schema 会和 markdown、yaml1 三份漂移。
 
 如果确有必要记录结构化审计，只能写轻量审计件，例如 `model_extraction_audit.json`，且只能记录：
@@ -365,7 +375,7 @@ Agent/Load/{load_id}/forecast/
 - 禁止了哪些后验材料。
 - 哪些模型结构已完整装载。
 - 哪些地方只是 load-vintage 保存，未代表当前事实。
-- 根目录主产物 `{原Excel文件名}_核心假设_load{运行YYYYMMDD}.md`、沙箱副本、`yaml1_load_*.yaml`、`forecast/` 路径。
+- KA 参考稿区主产物 `核心假设参考load_{运行YYYYMMDD}.md`、沙箱副本、`yaml1_load_*.yaml`、`forecast/` 路径。
 - 每股价值和 warnings 数，若已跑 DCF。
 
 结尾必须写明：这是 `/load` vintage 沙箱结果，不是当前正式 forecast。

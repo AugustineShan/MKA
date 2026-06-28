@@ -1,6 +1,6 @@
 ---
 name: webload
-description: 一键准备 /load 时间沙箱，并把网页端执行 /load 所需的共享纪律、核心假设源语言、load 运行纪律、边界、禁读清单、模型装载器和 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md` 脚手架预合并成一个 Markdown，连同 allowed_materials 打包到 WEBCLAUDE/模型装载部分/。
+description: 一键准备 /load 时间沙箱，并把网页端执行 /load 所需的共享纪律、核心假设源语言、load 运行纪律、边界、禁读清单、模型装载器和 `核心假设参考load_{YYYYMMDD}.md` 脚手架预合并成一个 Markdown，连同 allowed_materials 打包到 WEBCLAUDE/模型装载部分/。
 argument-hint: [公司名或代码，如 新乳业 / 002946]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
@@ -32,7 +32,7 @@ py -m src.webload "{公司}" --overwrite
 companies\{公司}\Agent\Load\{load_id}\
 ```
 
-并写入 `model_boundary.*`、`forbidden_materials.md`、`allowed_materials/`、沙箱 `data_cutoff.db`、沙箱 `defaults.yaml`、`{原Excel文件名}_核心假设_load{YYYYMMDD}.md` 脚手架。
+并写入 `model_boundary.*`、`forbidden_materials.md`、`allowed_materials/`、沙箱 `data_cutoff.db`、沙箱 `defaults.yaml`、`核心假设参考load_{YYYYMMDD}.md` 脚手架。
 
 5. 然后清空并重建：
 
@@ -56,7 +56,7 @@ companies\{公司}\WEBCLAUDE\模型装载部分\
 - `model_boundary.md`
 - `model_boundary.json`
 - `forbidden_materials.md`
-- `{原Excel文件名}_核心假设_load{YYYYMMDD}.md` 脚手架
+- `核心假设参考load_{YYYYMMDD}.md` 脚手架
 - `模型装载器_skill_vN.md`
 
 明确不打包：
@@ -82,10 +82,10 @@ companies\{公司}\WEBCLAUDE\模型装载部分\
 - 只读 `allowed_materials/`。
 - 先给用户模型理解 overview，用户确认前不补完核心假设；overview 必须用会议 memo 风格，先讲你对模型的理解、预测、关键旋钮和风险，不要机械倾倒单元格和 knobs。
 - 用户确认后，按时间轴 -> 收入 -> 毛利/成本 -> 费用 -> below-OP 与税 -> 中期/terminal 分段先押再问。
-- 每段聊天里只给结论、紧凑表格和待拍板点；完整 `/comp` 源语言、历史原子、source range 和 `knobs` 块写进 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md`。
-- 输出必须是 `/comp` 源语言的 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md`，末尾带 `knobs` 机器自报清单代码块。
+- 每段聊天里只给结论、紧凑表格和待拍板点；完整 `/comp` 源语言、历史原子、source range 和 `knobs` 块写进 `核心假设参考load_{YYYYMMDD}.md`。
+- 输出必须是 `/comp` 源语言的 `核心假设参考load_{YYYYMMDD}.md`，末尾带 `knobs` 机器自报清单代码块。
 
-网页端生成的 `{原Excel文件名}_核心假设_load{YYYYMMDD}.md` 放回 load manifest 中的 `core_assumption_path`。
+网页端生成的 `核心假设参考load_{YYYYMMDD}.md` 放回 load manifest 中的 `core_assumption_path`。
 
 然后本地继续编译 `yaml1_load_*.yaml` 并运行：
 

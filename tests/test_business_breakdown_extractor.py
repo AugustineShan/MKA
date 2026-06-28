@@ -336,3 +336,190 @@ def test_writes_h1_and_all_outputs(tmp_path: Path):
     assert (out_dir / "business_revenue_breakdown_all.csv").exists()
     assert (out_dir / "business_revenue_breakdown_all.jsonl").exists()
 
+
+def test_extracts_volume_section(tmp_path: Path):
+    report = write_report(
+        tmp_path,
+        """
+(1). 主营业务分行业、分产品、分地区、分销售模式情况
+单位：元 币种：人民币
+主营业务分产品情况
+分产品
+营业收入
+营业成本
+毛利率
+啤酒
+1,000,000
+600,000
+40.00
+5.00
+3.00
+增加1.00个百分点
+主营业务分行业、分产品、分地区、分销售模式情况的说明
+(2). 产销量情况分析表
+√适用 □不适用
+主要产品
+单位
+生产量
+销售量
+库存量
+生产量比上年增减（%）
+销售量比上年增减（%）
+库存量比上年增减（%）
+啤酒
+万千升
+723
+754
+52
+-2.39
+-5.85
+0.78
+产销量情况说明
+""",
+    )
+
+    rows = extract_report(report)
+    volume = [row for row in rows if row.dimension == "volume"]
+
+    assert len(volume) == 1
+    row = volume[0]
+    assert row.item_name == "啤酒"
+    assert row.quantity_unit == "万千升"
+    assert row.production_qty == 723.0
+    assert row.sales_qty == 754.0
+    assert row.inventory_qty == 52.0
+    assert row.production_yoy_pct == -2.39
+    assert row.sales_qty_yoy_pct == -5.85
+    assert row.inventory_yoy_pct == 0.78
+    assert row.source_table == "volume"
+    # 主营收四维表不受影响
+    assert [r.item_name for r in rows if r.dimension == "product"] == ["啤酒"]
+
+
+def test_extracts_cost_composition_with_inherited_segment(tmp_path: Path):
+    report = write_report(
+        tmp_path,
+        """
+(4). 成本分析表
+单位：千元 币种：人民币
+分行业情况
+分行业
+成本构成项目
+本期金额
+本期占总成本比例(%)
+上年同期金额
+上年同期占总成本比例(%)
+本期金额较上年同期变动比例(%)
+情况说明
+酒类
+直接材料
+558,496,859.88
+74.68
+572,694,939.91
+77.12
+-2.48
+直接人工
+39,841,749.51
+5.33
+42,308,548.36
+5.70
+-5.83
+合计
+598,338,609.39
+100.00
+615,003,488.27
+100.00
+-2.71
+成本分析其他情况说明
+""",
+    )
+
+    rows = extract_report(report)
+    cost = [row for row in rows if row.dimension == "cost_composition"]
+
+    assert len(cost) == 3
+    assert [(r.item_name, r.cost_item) for r in cost] == [
+        ("酒类", "直接材料"),
+        ("酒类", "直接人工"),
+        ("合计", ""),
+    ]
+    assert cost[0].revenue_yuan == 558_496_859_880.0  # 千元 -> 元
+    assert cost[0].revenue_pct == 74.68
+    assert cost[0].revenue_previous_yuan == 572_694_939_910.0
+    assert cost[0].revenue_yoy_pct == -2.48
+    # segment 只写一次，第二行继承
+    assert cost[1].item_name == "酒类"
+
+
+def test_extracts_cost_composition_segment_repeated_per_row(tmp_path: Path):
+    report = write_report(
+        tmp_path,
+        """
+(4). 成本分析表
+单位：元
+分行业情况
+成本构成项目
+本期金额
+本期占总成本比例(%)
+上年同期金额
+上年同期占总成本比例(%)
+本期金额较上年同期变动比例(%)
+啤酒销售 直接材料
+12,446,267
+65.81
+13,686,118
+66.63
+-9.06
+啤酒销售 直接人工
+1,031,779
+5.46
+1,002,716
+4.88
+2.90
+成本分析其他情况说明
+""",
+    )
+
+    rows = extract_report(report)
+    cost = [row for row in rows if row.dimension == "cost_composition"]
+
+    assert [(r.item_name, r.cost_item, r.revenue_yuan) for r in cost] == [
+        ("啤酒销售", "直接材料", 12_446_267.0),
+        ("啤酒销售", "直接人工", 1_031_779.0),
+    ]
+
+
+def test_filters_inter_segment_elimination_row(tmp_path: Path):
+    report = write_report(
+        tmp_path,
+        """
+(1). 主营业务分行业、分产品、分地区、分销售模式情况
+单位：元 币种：人民币
+主营业务分地区情况
+分地区
+营业收入
+营业成本
+毛利率
+山东地区
+1,000,000
+600,000
+40.00
+5.00
+3.00
+增加1.00个百分点
+分部间抵消合并
+-200,000
+-100,000
+50.00
+-5.00
+-3.00
+减少2.00个百分点
+主营业务分行业、分产品、分地区、分销售模式情况的说明
+""",
+    )
+
+    rows = extract_report(report)
+    regions = [row for row in rows if row.dimension == "region"]
+
+    assert [r.item_name for r in regions] == ["山东地区"]
+

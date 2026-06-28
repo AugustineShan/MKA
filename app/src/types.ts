@@ -2,6 +2,7 @@ export type CompanySummary = {
   id: string;
   name: string;
   code: string;
+  industry?: string | null;
   ticker?: string | null;
   path: string;
   has_yaml1: boolean;
@@ -9,12 +10,19 @@ export type CompanySummary = {
   has_forecast: boolean;
   has_core_assumption: boolean;
   has_materials: boolean;
+  market_cap?: number | null;
   per_share_value?: number | null;
   base_period?: string | null;
   forecast_years?: number | null;
   warnings_count?: number | null;
   backtest_status?: string | null;
   updated_at?: number | null;
+};
+
+export type IndustryData = {
+  version: number;
+  sectors_order: string[];
+  companies: Record<string, string>;
 };
 
 export type TableFile = {
@@ -497,20 +505,21 @@ export type AppSettings = {
   fields: SettingsField[];
   validation: SettingsValidation;
   rating_report?: RatingReportSettings;
+  home_display_start_year: number;
 };
 
 export type PipelineStage =
   | "未初始化"
   | "初始化完毕"
-  | "核心假设完毕"
+  | "预加载完毕"
   | "建模完毕"
   | "建模完毕且有DA表";
 
 export type HomeForecastSnapshot = {
   market_cap: number | null;
-  revenue_yoy: { "2026": number | null; "2027": number | null };
-  profit_yoy: { "2026": number | null; "2027": number | null };
-  pe: { "2026": number | null; "2027": number | null };
+  revenue_yoy: Record<string, number | null>;
+  profit_yoy: Record<string, number | null>;
+  pe: Record<string, number | null>;
 };
 
 export type HomeFolderOverviewSignals = {
@@ -520,6 +529,7 @@ export type HomeFolderOverviewSignals = {
   yaml1_archive_eligible: boolean;
   root_models: { excel_count: number; lock_count: number; archive_eligible: boolean };
   workbench_materials: number;
+  ka_references: { name: string; source: string; date: string | null }[];
   forecast: HomeForecastSnapshot | null;
 };
 

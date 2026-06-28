@@ -10,6 +10,22 @@
 
 `calc.py` 不直接理解 `yaml1`。所有业务线、driver、分线毛利率、历史拆分、收纳区信息，都必须先在 cleaner 层折成标准 YAML2 参数。
 
+## 术语：`revenue_family` 是什么
+
+> **`revenue_family` = 一条收入 leaf 的算法模板字段名**，声明这条线的未来收入用什么数学方法折叠，只能从下面这个有限枚举里选：
+
+```text
+factor_product  / driver_rate  / growth  / abs
+vol_price / vol_price_margin   （旧样本兼容名）
+formula                         （走 formulas.nodes + formula_ref，不是普通 family）
+```
+
+- **算法模板**是抽象概念（"量×价连乘""增速递推""逐年绝对值"…）；`revenue_family` 是它在 yaml1 里落地成 leaf 字段的那个枚举值。两者一一对应，文档里常混称"族/family/模板"。
+- `yaml1_cleaner.py` 按 `revenue_family` 选折叠分支；`calc.py` 不认 `revenue_family`，只认折出来的 `model.revenue_yoy` / `income.gpm`。
+- 可执行集合由 `src/yaml1_fidelity_check.py` 的 `ALLOWED_FAMILY` 守门，自创族名硬失败。
+
+> ⚠️ **同名陷阱：另一个 `family`。** 核心假设.md 末尾 `knobs` 块里也有一个字段叫 `family`，那是**正文旋钮的语义族**（`factor_yoy / growth / abs / gpm / cost_rate / bs_revenue_pct / …`），由 `docs/knobs块契约.md §7` 定义，**与本文的 `revenue_family` 是两个不同枚举**。两者共用 `growth`/`abs` 之名但含义不同：`revenue_family: growth` 是"收入按增速递推的算法模板"，`knobs` 块 `family: growth` 是"这格旋钮是收入增速类输入"。见到 `family` 先确认它在 yaml1 leaf 上还是 knobs 块里。
+
 ## 一句话原则
 
 ```text
@@ -36,6 +52,7 @@ YAML1 收入侧分三层。
 
 叶子算法层:
   factor_product
+  driver_rate           # factor_product 的等价别名，费率型 driver 场景
   growth
   abs
   vol_price / vol_price_margin 兼容旧名
@@ -63,7 +80,9 @@ terminal:
     target_growth: 0.055
     target_basis: auto_stable_brand
     fade_paths: [model.revenue_yoy]
-    hold_paths: [income.gpm]
+    hold_paths: [income.cost_rates.sell_exp]
+    path_targets:
+      income.gpm: 0.32
   perpetual_growth: 0.02
 ```
 
@@ -73,7 +92,9 @@ terminal:
 - `perpetual_growth` 是 `calc.py` Gordon terminal value 使用的永续增速，并会覆盖 `model.terminal_growth`。
 - 缺少 `target_growth` 时，清洗层兼容旧语义：fade 直接收敛到 `perpetual_growth`。
 - 若写了 `target_growth`，它必须大于或等于 `perpetual_growth`，否则硬失败。
-- `target_basis` 只用于审计和解释，清洗层不执行。
+- `target_basis` 只用于审计和解释，清洗层不执行。允许取值（照抄 `/ka` 的自动档位理由，与 `skills/核心假设编辑器_skill_v1.md` 一致）：`auto_mature`（成熟稳态）/ `auto_stable_brand`（品牌稳态）/ `auto_long_runway`（长坡厚雪）/ `auto_cycle_repair`（周期修复）。写哪个不影响 cleaner 计算，只留给读者解释"凭什么 fade 到这个交接增速"。
+- `path_targets` 是可选路径级目标值映射：路径必须已经在 yaml1 overlay 中存在，cleaner 会把该路径从显式期末值线性延伸到 `to_year` 目标值。它用于 `income.gpm: 31.1% -> 32.0%`、`income.operating_adjustments_abs.asset_disp_income: -60 -> -40` 这类非收入增速的中期目标。
+- `path_targets` 使用 yaml1 标准单位：比率写小数，金额写百万；同一路径不得同时出现在 `fade_paths` 或 `hold_paths`。
 
 ## 结构层：decomposition_sum
 
@@ -115,7 +136,7 @@ income.revenue
 结构层硬规则：
 
 - 一个节点要么是 decomposition（带 `segments`），要么是 leaf，不能既有 `segments` 又自己挂 leaf 旋钮。
-- 当前只支持 `fold_direction: sum` / `fold_direction: decomposition_sum`（默认 sum；cleaner 只读 `fold_direction`，不读 `rollup`）。
+- 当前只支持 `fold_direction: sum` / `fold_direction: decomposition_sum`（默认 sum；cleaner 只读 `fold_direction`，不读 `rollup`）。**两者当前行为完全等价**：cleaner 都走 `_sum_revenue_folds` 递归求和子节点（`yaml1_cleaner.py` 里没有按 `decomposition_sum` 分叉的分支）。`decomposition_sum` 只是显式语义名，`sum` 是默认值；保留两个名是为未来 `mix_allocation`（父定子/占比分配）占位区分。见到任一都按"子节点求和"理解，不要期待不同行为。
 - `mix_allocation` 还未实现。父定子与子定父不能混在同一节点。
 - 遇到 mix / allocation 需求，先举旗，不得伪装成 sum。
 
@@ -168,7 +189,25 @@ store_retail:
 
 注意：`factor_product` 不引用别的 leaf，不做跨期递推，不做 DAG。
 
-`driver_rate` 是 `factor_product` 的等价别名（生息资产 × 息差等费率型 driver 场景），cleaner 同样按连乘处理。
+### `unit_factor_to_million_cny` 结构化规则（硬约束）
+
+cleaner 是纯确定性 Python，**绝不解析中文 note 拿系数**，所以换算系数必须结构化写在 leaf `base.unit_factor_to_million_cny`。按 family 给，不全局拍一个：
+
+| family | base 已是百万元？ | 典型 unit_factor | 例子 |
+|---|---|---|---|
+| `factor_product` / `driver_rate` | 否（因子连乘后才是收入） | 按连乘后的单位给 | 万吨 × 元/吨 → `100`；装机量 × 利用小时 × 元/度 → 视连乘结果定；连乘后已是百万元 → `1` |
+| `vol_price` / `vol_price_margin` | 否（量 × 价） | 通常 `100` | 万吨 × 元/吨 → `100` |
+| `growth` / `abs` | 是（base 直接是 revenue） | `1` | base 已是百万元 |
+| `formula` | 视 formula 输出单位 | 同上判断 | formula 输出已是百万元 → `1` |
+
+增速线最常见的错：base 已是百万元却写 `100`，收入被缩小 100 倍。**按 leaf 自己的族判，不是按公司判。**
+
+`driver_rate` 是 `factor_product` 的等价别名，**cleaner 走同一个分支**（`yaml1_cleaner.py:410` `elif family in {"factor_product", "driver_rate"}`），结构完全相同：用 `factors[]`、按 n 因子连乘、`unit_factor_to_million_cny` 同规则。两者行为零差异，只是语义标签：
+
+- `factor_product`：因子是"量"类实体（门店数、用户数、装机量、产能）。
+- `driver_rate`：因子里有"费率/率"类 driver（生息资产 × 净息差、贷款余额 × 收益率 × 减值率）。"率"作因子时用 `driver_rate` 比 `factor_product` 更达意。
+
+选哪个都不影响计算；新写法默认用 `factor_product`，"率型 driver"语义明显时用 `driver_rate`。不要两者混用，一条 leaf 只声明一个。
 
 ## 叶子模板二：growth
 
@@ -240,6 +279,39 @@ milk:
 `vol_price_margin` 是旧样本兼容名，等价于 `vol_price` 加 leaf margin。
 
 新写法优先使用 `factor_product`，不要为了非乳业公司硬造 `volume` / `price` 字段。门店、客流、息差、电价都应使用真实 driver 名和 `factors[]`。
+
+## family × 前端行可编辑性矩阵（单一真源）
+
+核心假设展示页把每条业务线渲染成四类行：**收入行 / 同比行 / 销量行 / driver 行**。哪些可编辑、哪些派生只读，由该 leaf 的 `revenue_family` 唯一决定。本表是 `family` → 行可编辑性的权威定义，`app/src/App.tsx`（`VOLUME_FAMILIES`、`revenue_yoy`/`revenue_abs` 拎出逻辑）按此实现。
+
+本节只定义 **A 类可执行收入 leaf 在前端里的可编辑性**，不决定 `stash` / B 类信息应放在主表、副拆分还是 Reference。B 类展示去向由 `docs/yaml1前端展示契约.md` 的 `display` 契约定义；没有显式 `display` 的旧 yaml1 由 `workbench.py` 保守推断，宁可留在 Reference，也不得把参考材料伪装成主表。
+
+| family | 收入行 | 同比行 | 销量行 | driver 行 |
+|---|---|---|---|---|
+| `growth` | 派生·只读 | `revenue_yoy` 可编辑 | 无 | 无 |
+| `abs` | `revenue_abs` 可编辑 | 派生·只读 | 无 | 无 |
+| `factor_product` / `driver_rate` / `vol_price` / `vol_price_margin` | 派生·只读 | 派生·只读 | 有（单位从 `base.unit.volume` 通用映射） | 因子 driver 可编辑（`factors[].projection.values`） |
+| `formula` | 派生·只读 | 派生·只读 | 无 | 无（输入走 `formulas.nodes` 另处编辑） |
+
+设计约束（与模板层一致）：
+
+- **每个 family 恰好露一个真输入为可编辑行，其余全部派生只读**——避免收入行与同比行同时对偶可改的过度决定。`growth` 露同比，`abs` 露收入，量价族露因子 driver。
+- **销量行只给量价族**（`VOLUME_FAMILIES = {factor_product, vol_price, vol_price_margin, driver_rate}`）。`growth`/`abs`/`formula` 没有"量"的概念，强行画销量行就是把公司特征焊进模板（铁律 2）。销量单位从 `base.unit.volume` 通用映射，不硬编码"万吨"。
+- **`formula` 不占销量/driver 行**：它已升级到 DAG 层，输入是 `formulas.nodes` 的 `inputs`/`seeds`，不走 `factors[]`，不套用本行矩阵。
+- 派生行的展示值由 `assumption-preview` 内存重算；改一个可编辑格，同线派生格实时跟随。落盘走 `/frontend-edit` 定点 patch yaml1 + 跑 forecast。
+
+## history series × family 映射
+
+每个 revenue leaf 的 `history.series` 存什么序列，由 `revenue_family` 决定（法定归宿，详见 `yaml1compiler_v5 §5.3`）：
+
+| family | history.series 存什么 | 说明 |
+|---|---|---|
+| `factor_product` / `driver_rate` | `revenue` + 各 factor 序列 + `cost` | 量价/因子线存 driver 序列（如 `volume`/`price` 或各 factor key），收入由连乘派生 |
+| `vol_price` / `vol_price_margin` | `revenue` + `volume` + `price` + `cost` | 量价旧写法固定存 volume/price 两序列 |
+| `growth` / `abs` | `revenue` + `cost` | 增速/绝对值线只存收入与成本两序列，无 driver |
+| `formula` | `revenue` + `cost` + formula 节点的 `history`/`seeds` | formula 节点自身的滞后序列写在 `formulas.nodes.<node>.history` |
+
+规则：history 是**过去**的完整记录（占位/异常/断点年在 `note` 标，不进计算）；knobs 是**未来**的旋钮。两者不可混写同一年。history 不参与 cleaner 折叠未来收入，只用于 backtest（分线 base 加总 vs `clean_annual.revenue` 的差异）。
 
 ## 折叠一：收入折成 model.revenue_yoy
 
@@ -392,6 +464,67 @@ income.cost_rates.sell_exp:
 如果确实需要 bridge、ratio_to_driver、跨期递推、分段函数、中间变量复用，必须投影成受限 `formulas.nodes` + `formula_ref`，不得发明新 `kind` 或新 `revenue_family`。
 
 `mix_allocation` 仍未实现，遇到父定子/占比分配需求仍需举旗。
+
+## 端到端 worked example
+
+把一棵 decomposition 树从头折到 `calc.py` 入口，看每个 family 怎么落地。假设一家简化的乳企，基年 2024，预测期 2025-2027：
+
+```yaml
+income.revenue:
+  kind: decomposition
+  fold_direction: sum
+  segments:
+    liquid_milk:                    # 主业：量×价，因子连乘
+      revenue_family: factor_product
+      base: { base_year: 2024, unit_factor_to_million_cny: 100 }   # 万吨×元/吨→百万元
+      factors:
+        - { key: volume,  label: 销量(万吨), base: 50, projection: { kind: yoy, values: [0.05, 0.04, 0.03] } }
+        - { key: price,   label: 吨价(元),   base: 8000, projection: { kind: yoy, values: [0.02, 0.02, 0.02] } }
+      knobs:
+        margin: [0.30, 0.31, 0.32]   # 分线毛利率 → 折 income.gpm
+    other_business:                  # 小业务：老板直接拍金额
+      revenue_family: abs
+      base: { base_year: 2024, revenue: 200, unit_factor_to_million_cny: 1 }
+      knobs:
+        revenue_abs: [210, 220, 230]
+        margin: [0.15, 0.15, 0.15]
+```
+
+**Step 1 — 折每个 leaf 的逐年收入**（cleaner `_fold_revenue_leaf`）：
+
+- `liquid_milk`（factor_product，unit_factor=100）：
+  - base_revenue = 50 × 8000 / 100 = 4000（百万元）
+  - 2025 = 50×1.05 × 8000×1.02 / 100 = 4284
+  - 2026、2027 同理连乘递推。
+- `other_business`（abs，unit_factor=1）：
+  - base_revenue = 200 / 1 = 200
+  - 2025 = 210 / 1 = 210；2026 = 220；2027 = 230。
+
+**Step 2 — 结构层求和**（`_sum_revenue_folds`，`fold_direction: sum`）：
+
+```
+total_revenue_2025 = 4284 + 210 = 4494
+```
+
+**Step 3 — 折成 `model.revenue_yoy`**（折叠一）：
+
+```
+model.revenue_yoy_2025 = total_2025 / clean_annual.revenue_2024 - 1
+```
+
+第一年前一年锚点用 `clean_annual` 基年收入，不是手工分线加总；分线 base 加总与 clean_annual 的差异进 backtest。
+
+**Step 4 — 折成 `income.gpm`**（折叠二，每个 leaf 都带 margin）：
+
+```
+income.gpm_2025 = (4284×0.30 + 210×0.15) / (4284 + 210)
+```
+
+因每个 revenue leaf 都带了 `margin`，cleaner 折成整体 `income.gpm`；此时**禁止**再写顶层 `income.gpm` knob（margin 互斥硬规则）。
+
+**Step 5 — 交给 calc.py**：calc 只看到 `model.revenue_yoy` 和 `income.gpm` 两条序列，不知道公司有几条线、不知道 driver 名，做 `oper_cost = revenue × (1 − gpm)` 推下去。
+
+这五步就是把"人话判断"压平成"机器参数"的全过程：family 决定折法 → 求和 → 折 yoy → 折 gpm → calc 算账。任何一步对不上，就是契约违规，cleaner 硬失败举旗。
 
 ## 模板层与 formula 层的边界
 

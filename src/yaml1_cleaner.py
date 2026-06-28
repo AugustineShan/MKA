@@ -338,7 +338,7 @@ def _unsupported_revenue_family(path: str, family: Any) -> Yaml1CleanError:
         )
     return Yaml1CleanError(
         f"Unsupported revenue_family at {path}: {family}. "
-        "Supported families: factor_product, vol_price, vol_price_margin, growth, abs. "
+        "Supported families: factor_product, driver_rate, vol_price, vol_price_margin, growth, abs. "
         "For Formula/DAG use kind: formula with formula_ref."
     )
 
@@ -850,6 +850,17 @@ def _canonical_fade_path(path: str, report: dict[str, Any]) -> str:
     return path
 
 
+def _path_targets_from_fade(fade: dict[str, Any], report: dict[str, Any]) -> dict[str, float]:
+    raw_targets = fade.get("path_targets", {})
+    if raw_targets is None:
+        return {}
+    targets = _require_mapping(raw_targets, "terminal.fade.path_targets")
+    out: dict[str, float] = {}
+    for path, value in targets.items():
+        out[_canonical_fade_path(str(path), report)] = _to_float(value)
+    return out
+
+
 def _expand_overlay(
     overlay: dict[str, dict[str, Any]],
     terminal: dict[str, Any],
@@ -872,6 +883,14 @@ def _expand_overlay(
         report["terminal_fade"]["target_source"] = "yaml1.terminal.perpetual_growth"
     fade_paths = {_canonical_fade_path(str(path), report) for path in fade.get("fade_paths", [])}
     hold_paths = {_canonical_fade_path(str(path), report) for path in fade.get("hold_paths", [])}
+    path_targets = _path_targets_from_fade(fade, report)
+    path_target_conflicts = sorted(set(path_targets) & (fade_paths | hold_paths))
+    if path_target_conflicts:
+        raise Yaml1CleanError(
+            "terminal.fade.path_targets paths must not also appear in fade_paths/hold_paths: "
+            f"{path_target_conflicts}"
+        )
+    report["terminal_fade"]["path_targets"] = path_targets
     extra_years = len(full_horizon) - len(explicit_horizon)
     if extra_years <= 0:
         return overlay
@@ -880,7 +899,13 @@ def _expand_overlay(
     for path, item in overlay.items():
         values = list(item["values"])
         last = _to_float(values[-1])
-        if path in fade_paths:
+        if path in path_targets:
+            target = path_targets[path]
+            tail = [
+                last + (target - last) * step / extra_years
+                for step in range(1, extra_years + 1)
+            ]
+        elif path in fade_paths:
             tail = [
                 last + (fade_target_growth - last) * step / extra_years
                 for step in range(1, extra_years + 1)
@@ -889,7 +914,7 @@ def _expand_overlay(
             tail = [last] * extra_years
         expanded[path] = {**item, "values": values + tail}
 
-    for path in fade_paths | hold_paths:
+    for path in fade_paths | hold_paths | set(path_targets):
         if path not in expanded:
             raise Yaml1CleanError(f"terminal fade/hold path does not exist in overlay: {path}")
     return expanded

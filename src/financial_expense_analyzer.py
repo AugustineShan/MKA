@@ -42,7 +42,7 @@ from src.annual_report_utils import (
 from src.company_paths import financial_expense_path, recon_dir
 
 
-EVIDENCE_VERSION = 1
+EVIDENCE_VERSION = 2
 TOLERANCE = 1.0  # 百万元
 INTEREST_BEARING_DEBT_FIELDS = [
     "st_borr",
@@ -156,15 +156,25 @@ def _read_latest_annual_row(db_path: Path, ticker: str) -> tuple[str, dict[str, 
     return latest_period, row, present_by_period
 
 
-def _anchor_values(row: dict[str, float]) -> dict[str, float]:
+def _anchor_values(row: dict[str, float], prev_row: dict[str, float] | None = None) -> dict[str, float]:
     debt = sum(row.get(field, 0.0) for field in INTEREST_BEARING_DEBT_FIELDS)
     cash = row.get("money_cap", 0.0)
+    if prev_row is None:
+        avg_debt = debt
+        avg_cash = cash
+    else:
+        prev_debt = sum(prev_row.get(field, 0.0) for field in INTEREST_BEARING_DEBT_FIELDS)
+        prev_cash = prev_row.get("money_cap", 0.0)
+        avg_debt = (prev_debt + debt) / 2.0
+        avg_cash = (prev_cash + cash) / 2.0
     return {
         "fin_exp": row.get("fin_exp", 0.0),
         "fin_exp_int_exp": row.get("fin_exp_int_exp", 0.0),
         "fin_exp_int_inc": row.get("fin_exp_int_inc", 0.0),
         "interest_bearing_debt": debt,
         "money_cap": cash,
+        "avg_interest_bearing_debt": avg_debt,
+        "avg_money_cap": avg_cash,
         "revenue": row.get("revenue", 0.0),
     }
 
@@ -199,6 +209,7 @@ def _llm_prompt(
     ticker: str,
     base_period: str,
     report_year: str,
+    target_column: str,
     anchors: dict[str, float],
     note: dict[str, Any],
 ) -> list[dict[str, str]]:
@@ -208,7 +219,7 @@ def _llm_prompt(
         "report_year": report_year,
         "clean_anchors_million_cny": anchors,
         "note_unit": "元人民币",
-        "target_column": "上期发生额",
+        "target_column": target_column,
         "note_snippet": note,
     }
     system = (
@@ -216,7 +227,7 @@ def _llm_prompt(
         "并换算成「百万元人民币」。不要编造表格外数据。"
     )
     user = (
-        "请读取下面年报片段中的「财务费用」附注表，提取 base_period 对应的「上期发生额」列数据。\n"
+        f"请读取下面年报片段中的「财务费用」附注表，提取 base_period 对应的「{target_column}」列数据。\n"
         "换算规则：元人民币 → 百万元人民币，除以 1,000,000。\n"
         "符号规则（关键）：\n"
         "- 利息支出类项目（银行借款利息支出、租赁负债利息支出、债券利息支出等）取正数，计入 interest_expense_gross。\n"
@@ -274,8 +285,8 @@ def _derive_params(components: dict[str, float], anchors: dict[str, float]) -> d
     interest_expense = components["interest_expense_gross"] - components["capitalized_interest"]
     interest_income = components["interest_income"]
     other_fin_exp_abs = anchors["fin_exp"] - interest_expense + interest_income
-    debt = anchors["interest_bearing_debt"]
-    cash = anchors["money_cap"]
+    debt = anchors.get("avg_interest_bearing_debt", anchors["interest_bearing_debt"])
+    cash = anchors.get("avg_money_cap", anchors["money_cap"])
     return {
         "interest_expense": interest_expense,
         "interest_income": interest_income,
@@ -378,19 +389,36 @@ def _analyze_period(
     db_path: Path,
     base_period: str,
     row: dict[str, float],
+    prev_row: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Analyze one clean_annual period.  Returns a period record."""
-    anchors = _anchor_values(row)
-    report_year = str(int(base_period) + 1)
+    anchors = _anchor_values(row, prev_row)
 
-    md_path = annual_markdown_path(company_dir, report_year)
+    attempts = [
+        (base_period, "本期发生额"),
+        (str(int(base_period) + 1), "上期发生额"),
+    ]
+    report_year = attempts[0][0]
+    target_column = attempts[0][1]
+    md_path = None
     note: dict[str, Any] | None = None
-    if md_path is not None:
-        lines = read_md_lines(md_path)
-        note = _slice_financial_expense_note(lines)
+    for attempt_report_year, attempt_target_column in attempts:
+        attempt_path = annual_markdown_path(company_dir, attempt_report_year)
+        if attempt_path is None:
+            continue
+        lines = read_md_lines(attempt_path)
+        attempt_note = _slice_financial_expense_note(lines)
+        if attempt_note is None:
+            continue
+        report_year = attempt_report_year
+        target_column = attempt_target_column
+        md_path = attempt_path
+        note = attempt_note
+        break
 
     record: dict[str, Any] = {
         "report_year": report_year,
+        "target_column": target_column,
         "source_markdown_path": str(md_path) if md_path else None,
         "anchors": anchors,
         "llm": None,
@@ -402,14 +430,17 @@ def _analyze_period(
     }
 
     if md_path is None:
-        record["error"] = f"No annual markdown found for report year {report_year}"
+        record["error"] = (
+            f"No financial expense note found for report years "
+            f"{attempts[0][0]} ({attempts[0][1]}) or {attempts[1][0]} ({attempts[1][1]})"
+        )
         return record
 
     if note is None:
         record["error"] = f"Financial expense note not found in {md_path}"
         return record
 
-    messages = _llm_prompt(ticker, base_period, report_year, anchors, note)
+    messages = _llm_prompt(ticker, base_period, report_year, target_column, anchors, note)
     llm_response = call_llm(messages)
     record["llm"] = llm_response
 
@@ -456,6 +487,7 @@ def _build_latest_evidence(
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "base_period": base_period,
         "report_year": record.get("report_year"),
+        "target_column": record.get("target_column"),
         "source_markdown_path": record.get("source_markdown_path"),
         "anchors": record.get("anchors"),
         "llm": record.get("llm"),
@@ -493,11 +525,34 @@ def analyze(
     if evidence_path.exists() and not force:
         return evidence_path
 
-    base_period, row, _present = _read_latest_annual_row(db_path, ticker)
-    record = _analyze_period(ticker, company_dir, db_path, base_period, row)
+    rows = _read_annual_rows(db_path, ticker)
+    base_period, row = rows[-1]
+    prev_row = rows[-2][1] if len(rows) > 1 else None
+    record = _analyze_period(ticker, company_dir, db_path, base_period, row, prev_row)
     evidence = _build_latest_evidence(ticker, company_dir, db_path, base_period, record)
     write_json(evidence_path, evidence)
     return evidence_path
+
+
+def _archive_needs_retry(archive: dict[str, Any] | None, company_dir: Path) -> bool:
+    if archive is None:
+        return True
+    if int(archive.get("version") or 0) != EVIDENCE_VERSION:
+        return True
+    periods = archive.get("periods")
+    if not isinstance(periods, dict):
+        return True
+    for base_period, record in periods.items():
+        if isinstance(record, dict) and record.get("status") == "approved":
+            continue
+        try:
+            next_report_year = str(int(base_period) + 1)
+        except (TypeError, ValueError):
+            return True
+        for report_year in (str(base_period), next_report_year):
+            if annual_markdown_path(company_dir, report_year) is not None:
+                return True
+    return False
 
 
 def analyze_all_periods(
@@ -519,18 +574,24 @@ def analyze_all_periods(
 
     yaml_path = default_yaml_path(company_dir)
     if yaml_path.exists() and not force:
-        return yaml_path
+        archive = load_financial_expense_yaml(company_dir)
+        if not _archive_needs_retry(archive, company_dir):
+            return yaml_path
 
     rows = _read_annual_rows(db_path, ticker)
     periods: dict[str, Any] = {}
     latest_period: str | None = None
     latest_record: dict[str, Any] | None = None
+    rows_with_prev = [
+        (period, row, rows[idx - 1][1] if idx > 0 else None)
+        for idx, (period, row) in enumerate(rows)
+    ]
 
     # Each period is independent (own markdown slice + own LLM call, no shared
     # state), so analyze them concurrently. parallel_map preserves input order.
     records = parallel_map(
-        lambda item: _analyze_period(ticker, company_dir, db_path, item[0], item[1]),
-        rows,
+        lambda item: _analyze_period(ticker, company_dir, db_path, item[0], item[1], item[2]),
+        rows_with_prev,
     )
     for (base_period, _row), record in zip(rows, records):
         periods[base_period] = record
@@ -540,6 +601,8 @@ def analyze_all_periods(
 
     data: dict[str, Any] = {
         "version": EVIDENCE_VERSION,
+        "analyzer_version": EVIDENCE_VERSION,
+        "retry_policy": "retry_non_approved_periods_when_matching_annual_markdown_exists",
         "ticker": ticker,
         "company_dir": str(company_dir),
         "db_path": str(db_path),

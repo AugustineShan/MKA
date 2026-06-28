@@ -29,7 +29,9 @@
 
 ## 🧭 路由（改这些去哪）
 
+- **首次上手 / 冷启动** → 先读 `docs/快速上手.md`（端到端主线：`/init → /brkd → /ka → /comp → forecast`），再按需查 `docs/技能简要分类.md` 分流。
 - **调用/修改 skill** → 先读 `docs/技能简要分类.md` 分流；任何新增或修改 skill，必须同步更新该文档，并保留 `CLAUDE.md` / `Codex.md` 的入口提示。
+- **改核心假设生成类技能** → `/brkd`、`/load`、`docs/Alphapai/Alphapai业务拆分抓取器.md`、`docs/Alphapai/Alphapai-load核心假设参考提示词.md`、`/ka` 同属核心假设生成链路。改其中一个的骨架、门禁、业务拆分历史要求、会议 memo 方式、`knobs`/reference 边界时，必须检查另外几个是否需要同步；同步的是共同骨架和接口纪律，不是互相复制职责。
 - **改字段分类/排序/标签** → 只编辑 `src/field_registry.yaml`（三表 325 字段唯一真源），别再找 clean.py 的分类字典或 workbench 排序声明，它们已不存在、都从 registry import。详见 `docs/会计系统.md`。
 - **改前端** → `docs/前端设计规范.md` 为权威，改前端前必读；实际色值以 `app/src/styles.css` 的 CSS 变量为准（`--blue:#003d7a`、`--red:#b42318`）。
 - **改架构 / 记变更** → 当前状态写 `docs/ARCHITECTURE.md`，发生了什么写 `docs/CHANGELOG.md`（见开发流程）。
@@ -71,8 +73,10 @@ MKA/
 │   ├── Skills素材包/             # 活跃收集，不移动；以下子目录被 skill 路由消费：
 │   │   ├── LOAD外部EXCEL模型理解器（一次最多一个）/   # /load、/ka 读外部 Excel 模型
 │   │   ├── BRKD业务理解器（研报和纪要放在这里）/     # /brkd 读研报/纪要
-│   │   ├── 最高权重材料-放Agent最应对齐的材料/       # 占位，暂无消费方
-│   │   └── ADJ增量信息（用来改模型的边际信息）/       # 占位，暂无消费方
+│   │   ├── 最高权重材料-放Agent最应对齐的材料/       # /ka 读取（ka_prepare 幂等 markdown 化）
+│   │   ├── ADJ增量信息（用来改模型的边际信息）/       # /adj incremental 读取（adj_prepare 幂等 markdown 化）
+│   │   ├── KA（ALPHAPAI拆出来的东西放在这里）/        # brkd/load/alphapai 参考稿区：核心假设参考{来源}_YYYYMMDD.md，/ka 到这里找
+│   │   └── PJBG评级报告素材区/                      # 占位，暂无消费方
 │   ├── 公告/{年报,季报,临时公告}/  研报/ 纪要/ 收集/ 重要文件/ 内部报告/  # 常规材料目录
 │   ├── WEBCLAUDE/               # 高频打包区，供网页 Claude 上传
 │   └── Agent/                   # 建模运行区（核心契约层）：
@@ -117,6 +121,12 @@ Agent/forecast/（唯一正式 DCF；中间参数写 Agent/.modelking/）
 - `/ka`：消费 `Agent业务讨论.md` + `Skills素材包/LOAD…/` 外部模型，产出 `*核心假设*.md`。
 - `/comp`：把 `核心假设.md` 编译为 `yaml1*.yaml`。
 
+核心假设生成类技能同步纪律：
+
+- 同链路技能：`/brkd`、`/load`、`docs/Alphapai/Alphapai业务拆分抓取器.md`、`docs/Alphapai/Alphapai-load核心假设参考提示词.md`、`/ka`。
+- 必须保持相似骨架：时间边界/材料边界、业务拆分历史、收入→毛利→费用→below-OP→terminal 的段序、会议 memo、reference/draft/official 状态、`knobs` 同源边界。
+- 必须保持分工隔离：`/brkd` 挖研报/纪要和 `/init` 事实，产出 draft；`/load` 只保真装载旧 Excel 的 load-vintage，不用后验材料补数；Alphapai业务拆分抓取器只抓用户指定主拆分、桥表和高价值辅助拆分历史 factpack，不写预测；Alphapai-load 用网页端数据库产 reference 并承接 factpack；`/ka` 只裁决候选并生成 official，不读原始 Excel/研报。骨架要同步，职责不能互相污染。
+
 ## DCF 运行规则
 
 用户只维护两类输入：`defaults.yaml`（YAML2，机器平推底座）和 `yaml1*.yaml`（人的判断覆盖层）。正式命令：
@@ -142,7 +152,7 @@ npm install && npm run build     # 验证 React/Vite 前端
 py -m src.workbench              # 启动 FastAPI，打开 http://127.0.0.1:8765
 ```
 
-Windows 双击入口 `first_use.cmd`（首次自动装依赖、之后每次双击直接启动）；开发前端可 `npm run dev`，日常预览走 `py -m src.workbench`（重启前先杀 8765 僵尸进程）。风格 Apple HIG / SF Pro，**完整规范见 `docs/前端设计规范.md`（权威，改前端前必读）**，本节只是入口速记。
+Windows 双击入口 `入口.cmd`（首次自动装依赖、之后每次双击直接启动）；开发前端可 `npm run dev`，日常预览走 `py -m src.workbench`（重启前先杀 8765 僵尸进程）。风格 Apple HIG / SF Pro，**完整规范见 `docs/前端设计规范.md`（权威，改前端前必读）**，本节只是入口速记。
 
 ---
 

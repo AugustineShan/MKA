@@ -55,6 +55,7 @@ from src.company_paths import (
     defaults_path as company_defaults_path,
     forecast_dir as company_forecast_dir,
     important_files_dir,
+    ka_reference_dir,
     latest_yaml1_path,
     meeting_notes_dir,
     modelking_dir,
@@ -79,6 +80,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 COMPANIES_DIR = DEFAULT_COMPANIES_DIR
 APP_DIST = BASE_DIR / "app" / "dist"
 CORE_ASSUMPTION_NAMES = ("核心假设.md", "核心假设 (1).md")
+INDUSTRY_JSON_PATH = BASE_DIR / "industry.json"
 
 _FOLDER_OVERVIEW_TTL = 1.5
 _folder_overview_cache: dict[str, Any] = {"ts": 0.0, "rows": None}
@@ -316,7 +318,10 @@ def _core_assumption(company_dir: Path) -> Path | None:
 
 
 def _pipeline_stage(company_dir: Path) -> str:
-    """建模管线推进状态：未初始化 / 初始化完毕 / 核心假设完毕 / 建模完毕 / 建模完毕且有DA表。"""
+    """建模管线推进状态：未初始化 / 初始化完毕 / 预加载完毕 / 建模完毕 / 建模完毕且有DA表。
+
+    预加载完毕 = init 已跑完且 KA 参考稿区（Skills素材包/KA...）已有文件，但尚未生成 yaml1/DCF。
+    """
     agent = agent_dir(company_dir)
     if not (agent / "data.db").exists() or not company_defaults_path(company_dir).exists():
         return "未初始化"
@@ -324,9 +329,32 @@ def _pipeline_stage(company_dir: Path) -> str:
         if da_schedule_path(company_dir).exists():
             return "建模完毕且有DA表"
         return "建模完毕"
-    if _core_assumption(company_dir) is not None:
-        return "核心假设完毕"
+    if _count_files(ka_reference_dir(company_dir)) > 0:
+        return "预加载完毕"
     return "初始化完毕"
+
+
+_KA_REF_RE = re.compile(r"^核心假设参考([a-z]+)_(\d{8})\.md$")
+
+
+def _ka_reference_products(company_dir: Path) -> list[dict[str, Any]]:
+    """KA 参考稿区的 核心假设参考*.md 产物清单（brkd/load/alphapai），供前端管线推进展示。"""
+    ka_dir = ka_reference_dir(company_dir)
+    if not ka_dir.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for path in sorted(ka_dir.glob("核心假设参考*.md")):
+        match = _KA_REF_RE.match(path.name)
+        if match:
+            source = match.group(1)
+            s = match.group(2)
+            date = f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+        else:
+            # 核心假设参考.md 等无来源后缀的裸参考稿
+            source = "参考"
+            date = None
+        items.append({"name": path.name, "source": source, "date": date})
+    return items
 
 
 _YAML1_DATE_RE = re.compile(r"(\d{8})")
@@ -378,6 +406,7 @@ def _folder_overview_signals(company_dir: Path) -> dict[str, Any]:
             "archive_eligible": len(excels) > 1,
         },
         "workbench_materials": workbench_total,
+        "ka_references": _ka_reference_products(company_dir),
         "forecast": _forecast_snapshot(company_dir),
     }
 
@@ -726,13 +755,34 @@ def _metric_for_year(annual: dict[str, Any], year: int, key: str) -> float | Non
         return None
 
 
-def _forecast_snapshot(company_dir: Path) -> dict[str, Any] | None:
-    """预测与估值快照（来自 Agent/forecast/derived_metrics.json）。无 forecast 产物返回 None。"""
-    dm = _derived_metrics(company_dir)
-    if not isinstance(dm, dict):
+def _meta_total_mv(company_dir: Path) -> float | None:
+    """从 data.db meta 读最新市值(百万元)。市值是基础行情事实，不依赖 forecast 产物。"""
+    db_path = company_db_path(company_dir)
+    if not db_path.exists():
         return None
-    annual = dm.get("annual") if isinstance(dm.get("annual"), dict) else {}
-    market = dm.get("market_snapshot") if isinstance(dm.get("market_snapshot"), dict) else {}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("select value from meta where key = 'total_mv'").fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or row[0] is None or row[0] == "":
+        return None
+    try:
+        return float(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _forecast_snapshot(company_dir: Path) -> dict[str, Any] | None:
+    """预测与估值快照（来自 Agent/forecast/derived_metrics.json）。
+
+    市值是基础行情事实：derived_metrics.market_snapshot 缺失时回退 data.db meta.total_mv，
+    保证已初始化公司即使尚未跑 DCF 也显示市值，不因无 forecast 产物而漏市值。
+    展示年份由 HOME_DISPLAY_START_YEAR 配置驱动，默认 2026。
+    """
+    dm = _derived_metrics(company_dir)
+    annual = dm.get("annual") if isinstance(dm, dict) and isinstance(dm.get("annual"), dict) else {}
+    market = dm.get("market_snapshot") if isinstance(dm, dict) and isinstance(dm.get("market_snapshot"), dict) else {}
     market_cap: float | None = None
     raw_mv = market.get("total_mv")
     if raw_mv is not None and raw_mv != "":
@@ -740,11 +790,15 @@ def _forecast_snapshot(company_dir: Path) -> dict[str, Any] | None:
             market_cap = float(raw_mv)
         except (TypeError, ValueError):
             market_cap = None
+    if market_cap is None:
+        market_cap = _meta_total_mv(company_dir)
+    start_year = app_config.home_display_year()
+    end_year = start_year + 1
     snap = {
         "market_cap": market_cap,
-        "revenue_yoy": {"2026": _metric_for_year(annual, 2026, "revenue_yoy"), "2027": _metric_for_year(annual, 2027, "revenue_yoy")},
-        "profit_yoy": {"2026": _metric_for_year(annual, 2026, "n_income_attr_p_yoy"), "2027": _metric_for_year(annual, 2027, "n_income_attr_p_yoy")},
-        "pe": {"2026": _metric_for_year(annual, 2026, "pe"), "2027": _metric_for_year(annual, 2027, "pe")},
+        "revenue_yoy": {str(start_year): _metric_for_year(annual, start_year, "revenue_yoy"), str(end_year): _metric_for_year(annual, end_year, "revenue_yoy")},
+        "profit_yoy": {str(start_year): _metric_for_year(annual, start_year, "n_income_attr_p_yoy"), str(end_year): _metric_for_year(annual, end_year, "n_income_attr_p_yoy")},
+        "pe": {str(start_year): _metric_for_year(annual, start_year, "pe"), str(end_year): _metric_for_year(annual, end_year, "pe")},
     }
     has_any = (
         snap["market_cap"] is not None
@@ -2515,10 +2569,13 @@ def _company_summary(company_dir: Path) -> dict[str, Any]:
         updated_at = (forecast_dir / "run_manifest.json").stat().st_mtime
     elif forecast_dir.exists():
         updated_at = forecast_dir.stat().st_mtime
+    market_cap = forecast.get("market_cap") if isinstance(forecast, dict) else None
+    industry = _read_industry().get("companies", {}).get(code) or _read_industry().get("companies", {}).get(company_dir.name) or None
     return {
         "id": company_dir.name,
         "name": str(name),
         "code": code,
+        "industry": industry,
         "ticker": ticker,
         "path": _relative(company_dir),
         "has_yaml1": yaml1_path is not None,
@@ -2534,6 +2591,7 @@ def _company_summary(company_dir: Path) -> dict[str, Any]:
             annual_reports_dir(company_dir),
             quarterly_reports_dir(company_dir),
         )),
+        "market_cap": market_cap,
         "per_share_value": forecast.get("per_share_value"),
         "base_period": forecast.get("base_period") or _plain(model.get("base_year")),
         "forecast_years": forecast.get("forecast_years") or _plain(model.get("forecast_years")),
@@ -2547,6 +2605,54 @@ class SettingsPayload(BaseModel):
     companies_dir: str | None = None
     env: dict[str, str] | None = None
     create_companies_dir: bool = False
+
+
+class IndustryPayload(BaseModel):
+    sectors_order: list[str]
+    companies: dict[str, str]
+
+
+_DEFAULT_INDUSTRY: dict[str, Any] = {"version": 1, "sectors_order": [], "companies": {}}
+
+
+def _read_industry() -> dict[str, Any]:
+    if not INDUSTRY_JSON_PATH.exists():
+        return copy.deepcopy(_DEFAULT_INDUSTRY)
+    try:
+        data = json.loads(INDUSTRY_JSON_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return copy.deepcopy(_DEFAULT_INDUSTRY)
+    if not isinstance(data, dict):
+        return copy.deepcopy(_DEFAULT_INDUSTRY)
+    data.setdefault("version", 1)
+    data.setdefault("sectors_order", [])
+    data.setdefault("companies", {})
+    return data
+
+
+def _write_industry(data: dict[str, Any]) -> None:
+    INDUSTRY_JSON_PATH.write_text(
+        json.dumps({"version": 1, "sectors_order": data.get("sectors_order", []), "companies": data.get("companies", {})}, ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+@app.get("/api/industry")
+def read_industry() -> dict[str, Any]:
+    return _read_industry()
+
+
+@app.put("/api/industry")
+def update_industry(payload: IndustryPayload) -> dict[str, Any]:
+    sectors_order = [s.strip() for s in payload.sectors_order if s.strip()]
+    companies = {k.strip(): v.strip() for k, v in payload.companies.items() if k.strip() and v.strip()}
+    data = {"version": 1, "sectors_order": sectors_order, "companies": companies}
+    try:
+        _write_industry(data)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"写入 industry.json 失败: {exc}") from exc
+    return data
 
 
 @app.get("/api/settings")

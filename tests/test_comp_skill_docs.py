@@ -19,10 +19,11 @@ def test_comp_launcher_only_compiles_official_current_assumptions():
     assert "状态: reference" in text
     assert "状态: draft" in text
     assert "model-extracted" in text
-    assert "{原Excel文件名}_核心假设_load{YYYYMMDD}.md" in text
+    assert "核心假设参考load_{YYYYMMDD}.md" in text
     assert "不能被本 `/comp` 当作公司当前正式假设" in text
-    assert "读取五份输入材料" in text
+    assert "读取六份输入材料" in text
     assert "docs\\knobs块契约.md" in text
+    assert "docs\\yaml1前端展示契约.md" in text
 
 
 def test_comp_launcher_requires_compiler_audit_before_forecast():
@@ -58,8 +59,9 @@ def test_architecture_comp_contract_matches_launcher_order():
 
     assert "正式假设选择门" in text
     assert "先跑年份门禁" in text
-    assert "读取五份输入材料" in text
+    assert "读取六份输入材料" in text
     assert "docs/knobs块契约.md" in text
+    assert "docs/yaml1前端展示契约.md" in text
 
 
 def test_yaml1compiler_allows_manual_bs_cf_overrides_only_on_defaults_paths():

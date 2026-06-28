@@ -13,7 +13,7 @@ from openpyxl import Workbook
 from conftest import copy_fixture_company
 from src import yaml1_cleaner
 from src.assumption_staleness import StaleAssumptionError
-from src.company_paths import annual_reports_dir, forecast_dir, load_model_dir
+from src.company_paths import annual_reports_dir, forecast_dir, ka_reference_dir, load_model_dir
 from src.forecast import run_company_forecast
 from src.model_load import (
     ModelLoadError,
@@ -134,13 +134,14 @@ def test_prepare_load_builds_cutoff_db_defaults_and_forbidden_report(tmp_path: P
 
     defaults = yaml.safe_load((load_dir / "defaults.yaml").read_text(encoding="utf-8"))
     assert str(defaults["base_period"]) == "2024"
-    expected_name = f"model20250527_核心假设_load{datetime.now().strftime('%Y%m%d')}.md"
+    expected_name = f"核心假设参考load_{datetime.now().strftime('%Y%m%d')}.md"
     assert (load_dir / expected_name).exists()
     assert not (company_dir / expected_name).exists()
+    assert ka_reference_dir(company_dir).is_dir()
     assert not (load_dir / "model20250527_核心假设.md").exists()
     assert result["core_assumption_path"] == str(load_dir / expected_name)
     assert result["core_assumption_scaffold_path"] == str(load_dir / expected_name)
-    assert result["root_core_assumption_path"] == str(company_dir / expected_name)
+    assert result["root_core_assumption_path"] == str(ka_reference_dir(company_dir) / expected_name)
     forbidden = (load_dir / "forbidden_materials.md").read_text(encoding="utf-8")
     assert "2025年度报告.md" in forbidden
     assert result["removed_rows"]["clean_annual"] >= 1

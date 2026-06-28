@@ -9,6 +9,8 @@ from src.company_paths import (
     top_weight_markdown_store_dir,
     adj_increment_dir,
     adj_markdown_store_dir,
+    pjbg_rating_report_dir,
+    ka_reference_dir,
     load_model_dir,
     skills_materials_dir,
     internal_reports_dir,
@@ -32,6 +34,8 @@ def test_ensure_workspace_layout_creates_active_vore_subfolders(tmp_path: Path):
     assert top_weight_markdown_store_dir(company).is_dir()
     assert adj_increment_dir(company).is_dir()
     assert adj_markdown_store_dir(company).is_dir()
+    assert pjbg_rating_report_dir(company).is_dir()
+    assert ka_reference_dir(company).is_dir()
     assert load_model_dir(company).is_dir()
     assert ka_model_dir(company).parent == active_vore_dir(company)
     assert brkd_material_dir(company).parent == active_vore_dir(company)
@@ -40,6 +44,8 @@ def test_ensure_workspace_layout_creates_active_vore_subfolders(tmp_path: Path):
     assert top_weight_markdown_store_dir(company).parent == top_weight_material_dir(company)
     assert adj_increment_dir(company).parent == active_vore_dir(company)
     assert adj_markdown_store_dir(company).parent == adj_increment_dir(company)
+    assert pjbg_rating_report_dir(company).parent == active_vore_dir(company)
+    assert ka_reference_dir(company).parent == active_vore_dir(company)
     assert load_model_dir(company).parent == skills_materials_dir(company)
 
 

@@ -3,6 +3,7 @@
 > 新开 Codex 线程时，先读本文件。它是 MKA 的项目地图，不是所有执行细则的副本。
 > 真正执行某个 skill 时，必须再读 `D:\MKA\.claude\skills\{skill}\SKILL.md`。
 > 调用 skill 前先读 `docs/技能简要分类.md` 分流；任何新增或修改 skill，必须同步更新该文档，并保留 `CLAUDE.md` / `Codex.md` 的入口提示。
+> `/brkd`、`/load`、`docs/Alphapai/Alphapai业务拆分抓取器.md`、`docs/Alphapai/Alphapai-load核心假设参考提示词.md`、`/ka` 同属核心假设生成链路；改其中一个的骨架、门禁、业务拆分历史要求、会议 memo 或 reference/knobs 边界时，必须检查另外几个是否需要同步。同步共同骨架，不复制职责。
 
 ## 0. 一句话
 
@@ -154,8 +155,17 @@ py -m src.init <公司>
 关键边界：
 
 - `/brkd` 是读懂业务，不拍最终旋钮。
+- `/load` 是旧 Excel 模型 load-vintage 装载，不用后验材料补当前判断。
+- `docs/Alphapai/Alphapai业务拆分抓取器.md` 是网页端业务拆分 factpack 产物，只抓历史，不写预测。
+- `docs/Alphapai/Alphapai-load核心假设参考提示词.md` 是网页端数据库 reference 产物，不是 official。
 - `/ka` 是生成/修改人话核心假设，不写 yaml1。
 - `/comp` 是翻译器，不做投资判断。
+
+核心假设生成类技能同步纪律：
+
+- 同链路技能：`/brkd`、`/load`、`docs/Alphapai/Alphapai业务拆分抓取器.md`、`docs/Alphapai/Alphapai-load核心假设参考提示词.md`、`/ka`。
+- 骨架要相似：时间边界/材料边界、业务拆分历史、收入→毛利→费用→below-OP→terminal 的段序、会议 memo、reference/draft/official 状态、`knobs` 同源边界。
+- 分工不能串：`/brkd` 读研报/纪要和 `/init` 事实产 draft；`/load` 只还原模型当时的公式层和历史原子；Alphapai业务拆分抓取器只抓用户指定主拆分、桥表和高价值辅助拆分历史 factpack；Alphapai-load 产 reference 并承接 factpack；`/ka` 裁决候选生成 official。改一处时同步检查另外几处，但不要让它们互相污染职责。
 
 ### 4.3 DCF 层
 

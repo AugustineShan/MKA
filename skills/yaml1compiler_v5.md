@@ -124,6 +124,7 @@
 | `defaults.yaml`(本公司 yaml2；磁盘位置 `companies/{公司}_{代码}/Agent/defaults.yaml`) | **目标命名空间** | 告诉你这家公司**实际有哪些路径、什么结构、放哪个层级**。覆盖路径**以它为准** |
 | `docs/yaml1算法模板契约.md` | **算法契约** | 告诉你当前下游真正支持哪些收入 leaf、margin fold、terminal fade 和 formula 边界。凡是算法族/模板形态,以它为硬边界 |
 | `docs/knobs块契约.md` | **knobs 块契约** | 告诉你核心假设末尾 `knobs` 机器自报清单如何与 yaml1 做 block-diff 双射；不要另起格式规则 |
+| `docs/yaml1前端展示契约.md` | **展示契约** | 告诉你 B 类 stash 在工作台应进入主表、副拆分、Reference 还是技术页；不改变 DCF、不替代 knobs |
 
 **这是弥合差异 1(组织维度)的核心机制。** 源语言按业务线说"销售费用怎么拍",目标语言要落到一个路径上。这个转换是**三步**,字典、defaults.yaml、算法契约各管一段,别混:
 
@@ -288,7 +289,9 @@ base:
 
 ### 5.2 `knobs`(旋钮 = 未来)
 
-照 `.md` 骨架声明的模板给对应旋钮,满数组。`revenue_family` 是这条 leaf 的算法声明,**只能从当前 cleaner 支持的有限集合里选**:`factor_product` / `growth` / `abs`,以及旧样本兼容名 `vol_price` / `vol_price_margin`。不要自创族名;模板装不下的跨期/DAG/分段/中间变量复用,用 §4.3 的受限 `formulas.nodes` + `formula_ref`,而不是写新的 `revenue_family`。
+照 `.md` 骨架声明的模板给对应旋钮,满数组。`revenue_family` 是这条 leaf 的算法声明,**只能从当前 cleaner 支持的有限集合里选**:`factor_product` / `driver_rate` / `growth` / `abs`,以及旧样本兼容名 `vol_price` / `vol_price_margin`。不要自创族名;模板装不下的跨期/DAG/分段/中间变量复用,用 §4.3 的受限 `formulas.nodes` + `formula_ref`,而不是写新的 `revenue_family`。
+
+> `driver_rate` 是 `factor_product` 的等价别名(生息资产 × 息差等费率型 driver 场景),cleaner 同样按 n 因子连乘处理;新写法优先用 `factor_product`,`driver_rate` 留给费率型 driver 语义更清楚时使用。
 
 - **`factor_product`**(n 因子连乘):用于门店数×单店收入、用户数×ARPU、生息资产×净息差、装机量×利用小时×电价、产能×开工率×价差等。每个 factor 自带 `label`、`base`、`projection`;下游先逐因子算序列,再 `product(factors) / unit_factor_to_million_cny` 折收入。
 
@@ -359,7 +362,18 @@ stash:
   副拆分_按地区:
     note: "来源 …;不参与营收计算"
     unit: "百万元"
-    series: { <region>: { <year>: <v>, ... } }
+    series: { <region>: { <year>: <v>, ... } }            # 收入（必需）
+    毛利率:                                                 # 可选；与 series 同结构的平级子块，前端按 region label 关联收入行渲染"· 毛利率"行
+      series: { <region>: { <year>: <ratio>, ... } }      # 比率写小数，0.4623=46.23%；某 region 年报未披露则该 region 不写、前端自动缺
+    同比:                                                   # 可选；同上，前端渲染"· 同比"行（带符号）
+      series: { <region>: { <year>: <ratio>, ... } }      # 比率写小数，0.15=+15.0%、-0.12=-12.0%
+  # ── 副拆分毛利率/同比自动提取（不要从 .md 手抄）──
+  # 跑 `py scripts/dump_secondary_metrics.py "companies/{公司}_{代码}"`，它从 /init 产物
+  # OfficialBreakdowns/business_revenue_breakdown.csv 直接提取各 dimension（地区/渠道/产品/行业）
+  # 的收入+毛利率(major_business_profitability)+同比(revenue_composition)，输出 yaml 片段。
+  # comp 把脚本输出里与 .md 收纳区副拆分块同 dimension 的 毛利率/同比 series 注入 yaml1 stash
+  # 对应块（保留 .md 的 note/caveat，只补 毛利率/同比 子块）；与主拆分 leaf 重叠的 dimension
+  # （如"按产品"=主拆分）不进 stash。无 breakdown CSV 的公司该项缺，前端自动不渲染。
   副拆分_按子公司:
     note: "来源 …;单位 亿元"
     members: [<sub_1>, <sub_2>, ...]
@@ -370,6 +384,28 @@ stash:
   溯源附注:         { <附注名>: "<原话>" }      # 主动覆盖判断的凭证出处
   定性情报:         ["<情报 1>", "<情报 2>", "..."]   # .md 有几条落几条,别缩水
 ```
+
+### 6.3 `display` 展示契约（B 类去向必须声明）
+
+`stash` 负责保全 B 类信息，`display` 负责告诉工作台怎么摆放这些信息。新产物应在顶层写 `display`，遵守 `docs/yaml1前端展示契约.md`：
+
+```yaml
+display:
+  schema_version: 1
+  primary_dimension: business_line
+  blocks:
+    - {path: income.revenue, role: primary_model, placement: model_table, dimension: business_line, status: active}
+    - {path: stash.分线毛利率, role: primary_attachment, attach_to: income.revenue.segments, placement: model_table, dimension: business_line, metric: gross_margin, status: reference, duplicate_policy: prefer_derived_and_warn}
+    - {path: stash.副拆分_按地区, role: secondary_split, placement: secondary_table, dimension: region, metrics: [revenue, gross_margin, yoy], status: reference}
+    - {path: stash.LOAD分线销量吨价原子_弃用, role: deprecated, placement: reference_tab, status: deprecated}
+```
+
+纪律：
+- `display` 不改变 DCF，不替代 `knobs`，不允许把 B 类变成 A 类。
+- 副拆分默认独立成 `secondary_split`，不要因为局部行名撞上主业务线就挂回主表。
+- 弃用、核对、风险、溯源材料必须进 Reference，且用 `deprecated` / `check_only` / `technical` 标清。
+- 行名匹配默认只允许精确匹配或显式 alias；`其他` 不得自动匹配 `其他业务`。
+- 如果副拆分的毛利率/同比只披露了部分项目，缺失项不补数，只让前端提示“部分未披露”。
 
 > **关于"多年退化成单年":** 若 .md 收纳区某块只显式给了单年(如分线毛利率只给 2024),落单年 **+ note 写明"多年序列可由各 leaf history 的 price/cost 还原,compiler 不代算"**。这不是偷懒——是诚实地指出"多年信息其实在 leaf history 里,这里不重复也不替算"。只落单年而不指路,等于把这条线索藏了,算半丢。
 
@@ -414,24 +450,28 @@ terminal:
     target_growth: <衰减交接增速>      # 可选；有则 fade 到交接增速,无则兼容旧语义 fade 到 perpetual_growth
     target_basis: <auto_profile>      # 可选；照抄 /ka 的自动档位理由,清洗层忽略
     fade_paths: [model.revenue_yoy]   # 衰减期里"滑"的:增速类序列 fade 到 target_growth
-    hold_paths: [income.gpm, ...]     # 衰减期里"钉"的:仅放会被 fade 误伤的比率型稳态项(见下"hold_paths 只装谁")
+    hold_paths: [income.cost_rates.sell_exp, ...]  # 衰减期里"钉"的:显式维持稳态的路径
+    path_targets:                     # 可选；非收入增速路径若有明确衰减期目标值,在这里逐路径写终点
+      income.gpm: 0.32                # 例: 31.1% -> 32.0%; 比率写小数
   perpetual_growth: <永续点>          # Gordon 终值 g,一个点,不是区间
   src: "#往后几年"
 ```
 
 **`target_growth` 与 `perpetual_growth` 是两个数。** `/ka` 若写了“衰减交接增速/中期交接增速/fade target”，必须照转到 `terminal.fade.target_growth`；`perpetual_growth` 仍只表示 Gordon 终值长期经济锚。你不重新计算 target，不把 target 误写成 perpetual，也不把 perpetual 误拿来覆盖 target。若源文没写 target，字段可省略，下游兼容旧语义，fade 到 `perpetual_growth`。
 
-**`.md` 常明示"衰减期里哪些序列 hold、哪些 fade",这条信息必须落进 `terminal`。** 否则下游展开衰减期时会把所有 knob(含毛利率)一起推向永续,封顶守不住。.md 写了 hold/fade 分组就必须落;没写清 → 举旗,别默认全 fade。
+**`.md` 常明示"衰减期里哪些序列 hold、哪些 fade、哪些到具体目标值",这条信息必须落进 `terminal`。** 否则下游展开衰减期时会把路径钉错、滑错或漏掉目标值。.md 写了 hold/fade/目标值分组就必须落;没写清 → 举旗,别默认全 fade。
 
-**`hold_paths` 只装"会被 fade 误伤的比率型稳态项",不是把所有非 revenue 路径兜底全塞进去。** 判据一句:**fade 只对"增速类"序列(`revenue_yoy`)做线性收敛到 `target_growth`；没有 `target_growth` 时才收敛到永续增长点。绝对值(营业外支出 47.39)和比率(税率 16%、少数股东率 2.14%)根本没有"fade 到 2%"这回事,套不上。** 三类路径各自去向:
+**`terminal.fade` 三个去向不要混。** 判据一句:增速类统一用 `fade_paths` 收敛到 `target_growth`;有自己终点的非增速路径用 `path_targets`;明确稳态不变的路径用 `hold_paths`。同一路径只能出现一次。三类路径各自去向:
 
 | 路径类型 | 去向 |
 |---|---|
-| 比率型 + .md 明示维持稳态/封顶 | → 进 `hold_paths`(典型 `income.gpm`、`income.cost_rates.*`) |
+| 增速类序列 | → 进 `fade_paths`(典型 `model.revenue_yoy`),收敛到 `target_growth`;未写 target 时兼容旧语义到 `perpetual_growth` |
+| 非增速类 + .md 给了衰减期终点 | → 进 `path_targets`(如 `income.gpm: 0.32`;金额用百万,如 `income.operating_adjustments_abs.asset_disp_income: -40`) |
+| 非增速类 + .md 明示维持稳态/封顶 | → 进 `hold_paths`(典型 `income.cost_rates.*`、税率、少数股东率;若 GPM 是 31.1% 持平才进 hold) |
 | 显式期末年已归零的绝对值(below-OP 已归零项) | → 不进(已是 0,留 0 自然成立) |
 | 非增速类绝对值/比率(税率、少数股东率、未归零稳定项) | → 不进(fade 碰不到,hold 是答非所问) |
 
-> 落地写法:`hold_paths` 通常就是 `income.gpm` + .md 明示维持稳态的几条 `cost_rates.*`。拿不准某条 knob 在衰减期会不会被下游误推,宁可在收尾报告举旗问清 `src/yaml1_cleaner.py` 的 fade 默认行为,也别为"保险"塞进 hold_paths——多塞一条是语义噪声。
+> 落地写法:新乳业这类"整体毛利率 31.1%(2029) -> 32.0%(2034)"应写 `path_targets: {income.gpm: 0.32}`,而不是把 `income.gpm` 放进 `hold_paths`。拿不准某条 knob 在衰减期是"持平"还是"到目标值",宁可在收尾报告举旗,不要为保险重复塞进多个桶。
 
 > **这是差异 4(歧义)的教科书场景。** .md 的措辞常自相矛盾,例:"2032 起 6 年 fade 至 2038"——"6 年"(2032–2037)与"至 2038 / 2038 起永续"在端点上不自洽(含端 2032–2038 是 7 年)。**处理四步:(1) 识别出这是源语言的信息缺口,不是你能机械翻的形变;(2) 取一个内部自洽解(如:让"6 年"成立 → fade 2032–2037、2038 首个永续年);(3) 在该字段加 `# to_year 语义待核` 注释;(4) 在收尾报告里写明歧义本身 + 你取的解,交人裁定。** 绝不静默选一个字面值放行——因为你选的可能恰好是 .md 写错的那一半,而机器不会报错。
 
@@ -448,7 +488,7 @@ terminal:
   perpetual_growth: 0.025       # 体系纪律默认值,固定 0.025,不要随意换数
 ```
 
-唯一固定的一点:`perpetual_growth` 默认 **`0.025`**(本体系锚长期通胀的纪律值,与 defaults.yaml 的 `model.terminal_growth` 保持一致),别填别的数。若 .md 没铺三段式，默认不写 `target_growth`，保持旧语义。其余四个(to_year/kind/fade_paths/hold_paths)就按上面照抄。.md 里"本轮未铺/待定"的痕迹保留在 `src`/`note` 里即可,无需额外标记。
+唯一固定的一点:`perpetual_growth` 默认 **`0.025`**(本体系锚长期通胀的纪律值,与 defaults.yaml 的 `model.terminal_growth` 保持一致),别填别的数。若 .md 没铺三段式，默认不写 `target_growth` 或 `path_targets`，保持旧语义；默认 `hold_paths: [income.gpm]` 只是为了防止整体毛利率被旧语义误推到永续增速,若 .md 明示 GPM 到某个目标值,必须改用 `path_targets`。`.md` 里"本轮未铺/待定"的痕迹保留在 `src`/`note` 里即可,无需额外标记。
 
 ---
 
@@ -517,6 +557,8 @@ income.financial_expense.other_fin_exp_abs:
 - **modify(改已有):** .md 变了 → 只重译受影响的路径,**保住已 mint 的 segment slug 不变**(否则 resolver 覆盖错位、leaf history 脱锚)。给一份"改动清单"(哪条路径、从什么改到什么、src)。
 
 **slug 命名必须确定且稳定:** 同一段 .md 标题 → 同一个 slug,每次都一样(取标题的稳定规范化 slug)。这是 modify 不崩、leaf history 与 base/knobs 同 slug 锚定的前提。
+
+**segment key 的用途与命名建议:** decomposition `segments.<key>` 的 `<key>` 是后端 path / JSON pointer 的组成部分(`income.revenue.<key>.<driver>`,编辑回写也按它定位),前端工作台按 `seg.key` 匹配 driver path 来定位可编辑单元格——所以 key 用中文显示名还是英文 slug **都能工作**(不要为"代码整洁"反向把中文 key 改成英文)。**建议用中文显示名,且与该 leaf `src` 去掉 `#` 一致**(如 `服饰配饰`、`低温鲜奶`),原因:(1) 与 src/anchor 同名,path 与正文小节标题直接对得上,审计最省眼;(2) 与前端 `seg.name`(=src 去#)一致,人眼对照 path 和显示名不跳戏。这不是硬约束(前端已按 key 匹配,英文 slug 也能调),但用中文显示名最不易出错;若写英文 slug,前端仍可调,只是 path 与显示名对不上、审计略费眼。
 
 ---
 
@@ -643,7 +685,9 @@ terminal:
     to_year: <fade_end_year>      # to_year 语义是与清洗层契约;.md 措辞歧义时取自洽解 + 标待核
     kind: linear
     fade_paths: [model.revenue_yoy]
-    hold_paths: [income.gpm]      # .md 还写了费用率维持稳态时,一并列入
+    hold_paths: [income.cost_rates.sell_exp]      # 只有 .md 明示维持稳态的路径才列入
+    path_targets:
+      income.gpm: <稳态毛利率>     # 若 .md 写 GPM 从显式期末爬到某目标值,用 path_targets 而非 hold_paths
   perpetual_growth: <永续点>
   src: "#往后几年"
 

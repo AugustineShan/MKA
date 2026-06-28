@@ -20,10 +20,14 @@ DEFAULT_COMPANIES_DIR = ROOT / "companies"
 COMPANIES_DIR_KEY = "MKA_COMPANIES_DIR"
 RESEARCHER_NAME_KEY = "MKA_RESEARCHER_NAME"
 COMPANY_DIR_RE = re.compile(r"^.+_\d{6}$")
+HOME_DISPLAY_START_YEAR_KEY = "MKA_HOME_DISPLAY_START_YEAR"
 RATING_REPORT_DATA_START_YEAR_KEY = "MKA_RATING_REPORT_DATA_START_YEAR"
 RATING_REPORT_DATA_END_YEAR_KEY = "MKA_RATING_REPORT_DATA_END_YEAR"
 RATING_REPORT_FORECAST_START_YEAR_KEY = "MKA_RATING_REPORT_FORECAST_START_YEAR"
 RATING_REPORT_FORECAST_END_YEAR_KEY = "MKA_RATING_REPORT_FORECAST_END_YEAR"
+HOME_DISPLAY_DEFAULTS = {
+    HOME_DISPLAY_START_YEAR_KEY: 2026,
+}
 RATING_REPORT_DEFAULTS = {
     RATING_REPORT_DATA_START_YEAR_KEY: 2023,
     RATING_REPORT_DATA_END_YEAR_KEY: 2025,
@@ -44,6 +48,7 @@ class EnvField:
 ENV_FIELDS: tuple[EnvField, ...] = (
     EnvField(RESEARCHER_NAME_KEY, "研究员名字", "output", placeholder="例如：张三"),
     EnvField(COMPANIES_DIR_KEY, "工作台路径", "workspace", placeholder=str(DEFAULT_COMPANIES_DIR)),
+    EnvField(HOME_DISPLAY_START_YEAR_KEY, "首页展示开始年份", "workspace", placeholder=str(HOME_DISPLAY_DEFAULTS[HOME_DISPLAY_START_YEAR_KEY])),
     EnvField("TUSHARE_TOKEN", "TuShare Token", "data", secret=True),
     EnvField("TUSHARE_HTTP_URL", "TuShare HTTP URL", "data", placeholder="http://api.waditu.com/dataapi"),
     EnvField("TUSHARE_MIN_INTERVAL_SECONDS", "请求间隔秒数", "data", placeholder="0.8"),
@@ -210,6 +215,11 @@ def masked_secret(value: str | None) -> str | None:
     return f"****{tail}"
 
 
+def home_display_year(path: Path = ENV_PATH) -> int:
+    values = read_env_values(path)
+    return _int_setting(values, HOME_DISPLAY_START_YEAR_KEY, HOME_DISPLAY_DEFAULTS[HOME_DISPLAY_START_YEAR_KEY])
+
+
 def settings_payload() -> dict[str, Any]:
     values = read_env_values()
     companies_dir = Path(values.get(COMPANIES_DIR_KEY) or os.environ.get(COMPANIES_DIR_KEY) or DEFAULT_COMPANIES_DIR).expanduser().resolve()
@@ -217,7 +227,7 @@ def settings_payload() -> dict[str, Any]:
     fields = []
     for field in ENV_FIELDS:
         value = values.get(field.key) or os.environ.get(field.key) or ""
-        default_value = RATING_REPORT_DEFAULTS.get(field.key)
+        default_value = RATING_REPORT_DEFAULTS.get(field.key) or HOME_DISPLAY_DEFAULTS.get(field.key)
         display_value = str(default_value) if default_value is not None and not value else value
         item: dict[str, Any] = {
             "key": field.key,
@@ -241,6 +251,7 @@ def settings_payload() -> dict[str, Any]:
         "fields": fields,
         "validation": validate_companies_dir(companies_dir),
         "rating_report": rating_report,
+        "home_display_start_year": home_display_year(),
     }
 
 

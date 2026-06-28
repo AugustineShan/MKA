@@ -518,6 +518,37 @@ def test_clean_yaml1_expands_fade_hold_default_hold_and_alias_warning():
     assert any("总增速低于永续" in message for message in warnings)
     assert any("末年增速<永续" in message for message in warnings)
 
+def test_terminal_path_targets_fade_non_growth_paths(tmp_path):
+    yaml1_path, defaults_path, clean_path = paths()
+    yaml1 = yaml1_cleaner.load_yaml(yaml1_path)
+    fade = yaml1["terminal"]["fade"]
+    fade["hold_paths"] = [path for path in fade["hold_paths"] if path != "income.gpm"]
+    fade["path_targets"] = {
+        "income.gpm": 0.32,
+        "income.operating_adjustments_abs.asset_disp_income": -40.0,
+    }
+
+    result = yaml1_cleaner.clean_yaml1(write_yaml1_fixture(tmp_path, yaml1), defaults_path, clean_path)
+    y = result.forecast_params
+
+    assert y["income"]["gpm"]["value"][-5:] == pytest.approx([0.3168, 0.3176, 0.3184, 0.3192, 0.32])
+    assert y["income"]["operating_adjustments_abs"]["asset_disp_income"]["value"][-5:] == pytest.approx(
+        [-32.0, -34.0, -36.0, -38.0, -40.0]
+    )
+    assert result.report["terminal_fade"]["path_targets"] == {
+        "income.gpm": pytest.approx(0.32),
+        "income.operating_adjustments_abs.asset_disp_income": pytest.approx(-40.0),
+    }
+
+
+def test_terminal_path_targets_reject_hold_conflicts(tmp_path):
+    yaml1_path, defaults_path, clean_path = paths()
+    yaml1 = yaml1_cleaner.load_yaml(yaml1_path)
+    yaml1["terminal"]["fade"]["path_targets"] = {"income.gpm": 0.32}
+
+    with pytest.raises(yaml1_cleaner.Yaml1CleanError, match="path_targets.*hold_paths"):
+        yaml1_cleaner.clean_yaml1(write_yaml1_fixture(tmp_path, yaml1), defaults_path, clean_path)
+
 
 def test_terminal_fade_target_growth_separates_fade_from_gordon_growth(tmp_path):
     yaml1_path, defaults_path, clean_path = paths()

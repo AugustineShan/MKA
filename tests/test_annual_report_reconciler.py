@@ -602,6 +602,173 @@ def test_locate_consolidated_statement_returns_none_for_cashflow(tmp_path):
     assert ar._locate_consolidated_statement_section(md, "cashflow") is None
 
 
+def test_locate_consolidated_statement_skips_toc_page_ref(tmp_path):
+    """目录里的"合并及公司利润表 81"是短行（≤15字）表头匹配，但后跟页码不是报表内容。
+    find_statement_header_line 必须用前向内容关键词（营业收入）区分真表头 vs 目录条目，
+    否则 900 行 snippet 窗口从目录起算会切掉真实数据（青岛啤酒 2017 踩坑）。"""
+    from pathlib import Path
+    md = tmp_path / "2017_年度报告.md"
+    # 目录条目与真表头间隔>60 行审计报告填充（真实年报 TOC 与报表相距数百行），
+    # 确保 TOC 条目的 60 行前向窗口不含"营业收入"。
+    filler = "审计报告正文行\n" * 70
+    md.write_text(
+        "2017 年度财务报表\n"
+        "合并及公司资产负债表\n79 – 80\n"  # TOC entry (short, page ref)
+        "合并及公司利润表\n81\n"  # TOC entry (short, page ref) — 旧行为误命中
+        "合并及公司现金流量表\n82\n"
+        + filler +
+        "2017 年度合并及公司利润表\n"  # REAL income header (short, year-prefixed)
+        "单位：元\n一、营业收入\n30,000,000.00\n营业成本\n20,000,000.00\n"
+        "营业利润\n5,000,000.00\n其他收益\n304,412,441.00\n",
+        encoding="utf-8",
+    )
+    inc = ar._locate_consolidated_statement_section(md, "income")
+    assert inc is not None
+    # 必须落在真表头（含"营业收入"数据），不是目录条目
+    assert "营业收入" in inc["text"]
+    assert "30,000,000.00" in inc["text"]
+    assert inc["text"].splitlines()[0].strip() == "2017 年度合并及公司利润表"
+
+
+def test_locate_consolidated_statement_single_table_layout(tmp_path):
+    """单表并列布局（合并及公司利润表，合并+母公司同表，如青岛啤酒）没有独立母公司
+    利润表表头，结束边界回退到下一张报表（现金流量表）。"""
+    from pathlib import Path
+    md = tmp_path / "x.md"
+    md.write_text(
+        "合并及公司利润表\n"  # single-table header (no separate 母公司利润表)
+        "单位：元\n一、营业收入\n1,000.00\n营业利润\n200.00\n其他收益\n50.00\n"
+        "合并及公司现金流量表\n"  # next statement → IS section end
+        "经营活动现金流量\n500.00\n",
+        encoding="utf-8",
+    )
+    inc = ar._locate_consolidated_statement_section(md, "income")
+    assert inc is not None
+    assert "营业收入" in inc["text"]
+    assert "其他收益" in inc["text"]
+    # 不得溢出到现金流量表
+    assert "经营活动现金流量" not in inc["text"]
+
+
+def test_trial_apply_closes_sets_bare_and_prefixed_keys(monkeypatch):
+    """wide 表列名混合 bare（oth_income/asset_disp_income/assets_impair_loss）与
+    前缀（income.credit_impa_loss）两种；get_income_value 优先读前缀键。trial_apply
+    必须同时设 bare + 前缀键，否则前缀字段（如 credit_impa_loss）override 不生效，
+    resolve_is_signs 看不到值→sign 不翻转→符号翻转型闭合误判不闭合（青岛啤酒 2018）。"""
+    import pandas as pd
+    from src import clean
+
+    period = "2018"
+    # credit_impa_loss 只存前缀键（模拟真实 wide 表）；oth_income bare
+    # wide 表：period 为 index，字段为列
+    wide = pd.DataFrame(
+        [{
+            "income.credit_impa_loss": 0.0,  # prefixed only
+            "oth_income": 0.0,  # bare
+            "assets_impair_loss": 100.0,  # bare, present
+        }],
+        index=[period],
+    )
+    wide.attrs["null_fields_by_period"] = {period: {"credit_impa_loss", "oth_income"}}
+    wide.attrs["raw_total_cogs_by_period"] = {period: 0.0}
+    present_by_period = {period: {"assets_impair_loss"}}
+
+    captured = {}
+
+    def fake_resolve(row, present, year, tolerance=None, raw_total_cogs=None):
+        return {}, []
+
+    def fake_check_is(row, present, year, sign_map=None, null_fields=None):
+        captured["row"] = dict(row)
+        captured["present"] = set(present)
+        captured["null_fields"] = set(null_fields or [])
+        return []  # 假装闭合
+
+    monkeypatch.setattr(clean, "resolve_is_signs", fake_resolve)
+    monkeypatch.setattr(clean, "check_is", fake_check_is)
+
+    closed, _ = ar.trial_apply_closes(
+        wide, present_by_period, period, "IS 1.2",
+        [("credit_impa_loss", 1.311608), ("oth_income", 523.174569)],
+    )
+    assert closed is True
+    row = captured["row"]
+    # bare 键已设
+    assert row["credit_impa_loss"] == 1.311608
+    assert row["oth_income"] == 523.174569
+    # 前缀键也必须已设（get_income_value 优先读它）——这是 2018 符号翻转 bug 的根因
+    assert row["income.credit_impa_loss"] == 1.311608
+    # present 已补、null_fields 已剔除
+    assert "credit_impa_loss" in captured["present"]
+    assert "oth_income" in captured["present"]
+    assert "credit_impa_loss" not in captured["null_fields"]
+    assert "oth_income" not in captured["null_fields"]
+
+
+def test_llm_propose_fallback_approves_sign_flip_closure_via_trial_apply(monkeypatch):
+    """符号翻转型闭合：LLM 找到 3 字段+金额，但加法 Σ≠residual（补 credit_impa 触发
+    assets_impair sign 翻转）。LLM 标 fix_classification / suspected_tushare_issue=False
+    （误诊为公式缺失）。有 trial-apply oracle 时放宽诊断闸门，oracle 验真闭合后批准整组。
+    无 oracle（wide=None）时严格守卫拒绝。"""
+    analysis = {
+        "failure": {
+            "period": "2018", "code": "IS 1.2", "statement": "income", "title": "营业利润",
+            "message": "IS 1.2 2018 营业利润: operate_profit=2377.5647 calc=2136.8049 residual=240.7597",
+            "residual": 240.7597, "target_value": 2377.5647, "calc_value": 2136.8049,
+            "direction": "target_gt_calc",
+        },
+        "annual_report_context": {"markdown_path": "fake.md", "snippets": []},
+        "candidate_tushare_fields": [
+            {"field": "oth_income", "description": "其他收益", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "asset_disp_income", "description": "资产处置收益", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "credit_impa_loss", "description": "信用减值损失", "value_million_cny": 0.0, "clean_category": None},
+        ],
+    }
+
+    def fake_call_llm(messages):
+        return {
+            "results": [{
+                "period": "2018", "code": "IS 1.2",
+                "suspected_tushare_issue": False,  # LLM 误诊
+                "confidence": "high",
+                "recommended_action": "fix_classification",  # LLM 误标
+                "missing_or_suspicious_items": [
+                    {"candidate_tushare_field": "oth_income", "annual_report_item": "其他收益", "value_million_cny": 523.1746, "residual_difference_million_cny": -282.4148},
+                    {"candidate_tushare_field": "asset_disp_income", "annual_report_item": "资产处置收益", "value_million_cny": 10.3391, "residual_difference_million_cny": 230.4206},
+                    {"candidate_tushare_field": "credit_impa_loss", "annual_report_item": "信用减值损失", "value_million_cny": 1.3116, "residual_difference_million_cny": 239.4481},
+                ],
+            }],
+            "_provider": "glm",
+        }
+
+    monkeypatch.setattr(ar, "call_llm", fake_call_llm)
+    # 让值验证放行（无真实 snippet 可重抽）
+    monkeypatch.setattr(ar, "_verify_llm_value_in_consolidated_statement", lambda a, items, c: (items, []))
+
+    # 无 oracle：严格守卫拒绝（suspected=False + fix_classification）
+    adj_no_oracle = ar._llm_propose_fallback("600600.SH", None, None, [analysis], approve_high_confidence=True)
+    assert adj_no_oracle == []
+
+    # 有 oracle：trial-apply 验真闭合后批准整组
+    closed_calls = []
+
+    def fake_trial(wide, pbp, period, code, overrides):
+        # 整组 3 字段才闭合（模拟符号翻转）；单字段不闭合
+        if len(overrides) == 3:
+            return True, 0.0
+        return False, 240.0
+
+    monkeypatch.setattr(ar, "trial_apply_closes", fake_trial)
+    adj = ar._llm_propose_fallback(
+        "600600.SH", None, None, [analysis],
+        approve_high_confidence=True,
+        wide=object(), present_by_period={},
+    )
+    fields = {a.get("field") for a in adj}
+    assert fields == {"oth_income", "asset_disp_income", "credit_impa_loss"}
+    assert all(a.get("status") == "approved" for a in adj)
+
+
 def test_llm_propose_fallback_batches_multiple_failures(monkeypatch):
     """Opt 3: residue failures are packed into one LLM call per chunk, not one
     call per failure. Two failures → one call_llm; each result attributed by

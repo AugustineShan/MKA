@@ -234,6 +234,61 @@ def collect_failures(
     return failures
 
 
+def trial_apply_closes(
+    wide: "pd.DataFrame",
+    present_by_period: dict[str, set[str]],
+    period: str,
+    code: str,
+    overrides: list[tuple[str, float]],
+) -> tuple[bool, float | None]:
+    """试应用提议 override 到该期 row 副本，重跑对应 check，看本失败 code 是否消失。
+
+    用 clean.py 自己的 check 作闭合 oracle（非加法打分），可识别符号翻转型闭合：
+    补一个 NULL 字段后 resolve_is_signs 数据驱动 regime 可能把另一字段 sign 翻转，
+    加法 Σ(value)≠residual 但 check_is 实际通过（青岛啤酒 2018 IS 1.2：补
+    credit_impa_loss 触发 assets_impair_loss +1→-1，calc 净增量含 Δ-294.07 闭合
+    240.76）。bridge 的加法闸门结构性识别不了符号翻转，这里用 check oracle 统一覆盖
+    加法型与符号翻转型闭合。返回 (是否闭合, 仍失败时的新残差)。
+    """
+    if period not in wide.index:
+        return False, None
+    row = dict(wide.loc[period].to_dict())
+    present = set(present_by_period.get(period, set()))
+    null_fields = set(wide.attrs.get("null_fields_by_period", {}).get(period, set()))
+    for field, value in overrides:
+        f = str(field)
+        v = float(value)
+        row[f] = v
+        # wide 表列名混合 bare（oth_income/asset_disp_income/assets_impair_loss）
+        # 与前缀（income.credit_impa_loss）两种；get_income_value/get_cashflow_value
+        # 优先读前缀键。两个都设，否则前缀字段（如 credit_impa_loss）override 不生效，
+        # resolve_is_signs 看不到值→sign 不翻转→符号翻转型闭合误判为不闭合。
+        for prefix in ("income.", "balancesheet.", "cashflow."):
+            pf = prefix + f
+            if pf in row:
+                row[pf] = v
+        present.add(f)
+        null_fields.discard(f)
+    raw_tc = wide.attrs.get("raw_total_cogs_by_period", {}).get(period)
+    messages: list[str] = []
+    if code.startswith("IS"):
+        sign_map, _ = clean.resolve_is_signs(row, present, period, raw_total_cogs=raw_tc)
+        messages = clean.check_is(row, present, period, sign_map=sign_map, null_fields=null_fields)
+    elif code.startswith("BS"):
+        bs_reclass = wide.attrs.get("bs_reclass", {})
+        par_value = clean.infer_par_value(wide, present_by_period, bs_reclass)
+        messages = clean.check_bs(row, present, period, par=par_value)[0]
+    elif code.startswith("CF"):
+        messages = clean.check_cf(row, present, period)
+    else:
+        return False, None
+    for m in messages:
+        f = parse_failure_message(m)
+        if f.code == code:
+            return False, f.residual
+    return True, 0.0
+
+
 def read_tushare_field_docs() -> dict[str, dict[str, str]]:
     docs = {
         "income": DOCS_DIR / "income.md",
@@ -489,6 +544,66 @@ def section_markers(failure: Failure) -> list[list[str]]:
     return [["合并及公司"], ["财务报表"]]
 
 
+# 内容关键词——真报表表头后几十行内必出现这些科目（营业收入/流动资产/经营活动），
+# 目录条目后只有页码/其他目录条目。用前向窗口内容区分，避免把目录页码引用当表头
+# （青岛啤酒 2017：目录"合并及公司利润表 81"在 L6039，真表头"2017 年度合并及公司
+# 利润表"在 L6867，find_line 首匹配取了目录条目，900 行窗口从目录起到 L6938 截断，
+# 刚好切掉 L6951 的 oth_income——snippet 喂不进 LLM 致 0 items）。
+_STATEMENT_CONTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "income": ("营业收入", "营业总收入", "营业利润", "营业成本"),
+    "balancesheet": ("流动资产", "资产总计", "货币资金", "非流动资产"),
+    "cashflow": ("经营活动", "投资活动", "筹资活动", "现金流量"),
+}
+
+# 单表并列布局（合并+母公司在同一张表，如青岛啤酒"合并及公司利润表"）没有独立
+# 母公司表头做结束边界，回退到下一张报表的表头。母公司变体优先（两表布局）。
+_STATEMENT_END_MARKERS: dict[str, list[str]] = {
+    "income": ["母公司利润表", "合并及公司现金流量表", "合并现金流量表", "现金流量表"],
+    "balancesheet": ["母公司资产负债表", "合并及公司利润表", "合并利润表", "利润表"],
+    "cashflow": ["母公司现金流量表", "合并及公司所有者权益变动表", "合并所有者权益变动表", "所有者权益变动表"],
+}
+
+# 表头短行筛选上限：真表头"2017 年度合并及公司利润表"=15 字。散文句（"⑤ 2017年
+# 受影响的合并利润表和母公司利润表项目："）远超 15 字，短行筛选挡掉。放宽到 20 会
+# 误命中"利润表及现金流量表相关科目变动分析表"(18 字)，故保持 15。
+_HEADER_MAX_LEN = 15
+
+
+def _is_header_line(line: str, markers: list[str]) -> bool:
+    stripped = line.strip()
+    return len(stripped) <= _HEADER_MAX_LEN and any(m in stripped for m in markers)
+
+
+def find_statement_header_line(
+    lines: list[str],
+    statement: str,
+    markers: list[list[str]],
+    *,
+    look_ahead: int = 60,
+) -> int | None:
+    """定位真合并报表表头行，跳过目录/页码引用条目。
+
+    section_markers 给出表头变体的优先级组（合并及公司利润表优先，利润表兜底）。
+    对每个变体组收集所有短行表头命中，优先返回前向窗口内含内容关键词的那个
+    （真表头后跟营业收入/流动资产；目录条目后跟页码）。全都不含内容关键词则
+    回退到该组首个命中。返回行索引或 None。
+    """
+    keywords = _STATEMENT_CONTENT_KEYWORDS.get(statement)
+    for marker_group in markers:
+        candidate_indices = [
+            idx for idx, line in enumerate(lines) if _is_header_line(line, marker_group)
+        ]
+        if not candidate_indices:
+            continue
+        if keywords:
+            for idx in candidate_indices:
+                window = "\n".join(lines[idx: idx + look_ahead])
+                if any(kw in window for kw in keywords):
+                    return idx
+        return candidate_indices[0]
+    return None
+
+
 def search_terms_for_failure(failure: Failure, field_context: list[dict[str, Any]]) -> list[str]:
     terms = [failure.title.strip()]
     alias_items = [item for item in field_context[:80] if COMMON_ANNUAL_ALIASES.get(str(item.get("field")))]
@@ -606,13 +721,21 @@ def extract_markdown_context(
     #    realistic filer; glm-5-turbo carries 150–200k context, and in
     #    --write-overrides mode this snippet is only used for rule matching +
     #    evidence (not fed to the LLM), so size is not the binding constraint.
-    for marker in section_markers(failure):
-        idx = find_line(lines, marker)
-        if idx is not None:
-            window = compact_window(lines, idx, before=10, after=900)
-            snippets.append({"kind": "statement", "patterns": marker, **window})
-            used_ranges.append((window["start_line"], window["end_line"]))
-            break
+    # 用 find_statement_header_line 跳过目录/页码引用条目，定位真合并报表表头，
+    # 否则 900 行窗口从目录条目起算会切掉真实数据行（青岛啤酒 2017 oth_income
+    # 落在目录条目后 900 行外被吞，致 LLM 0 items）。
+    markers = section_markers(failure)
+    idx = find_statement_header_line(lines, failure.statement, markers)
+    if idx is not None:
+        # 取命中 idx 的那个 marker 组做 patterns 标记（记录命中的变体，便于审计）
+        hit_marker = markers[0]
+        for mg in markers:
+            if _is_header_line(lines[idx], mg):
+                hit_marker = mg
+                break
+        window = compact_window(lines, idx, before=10, after=900)
+        snippets.append({"kind": "statement", "patterns": hit_marker, **window})
+        used_ranges.append((window["start_line"], window["end_line"]))
 
     # 2. Term-level snippets: supplementary occurrences beyond the statement
     #    snippet. The statement snippet (530-line window above) already covers
@@ -654,14 +777,18 @@ def extract_markdown_context(
 
 
 def _locate_consolidated_statement_section(md_path: Path, statement: str) -> dict[str, Any] | None:
-    """Opt 1: 定位合并利润表/合并资产负债表的连续行段（截至母公司对应表之前）。
+    """Opt 1: 定位合并利润表/合并资产负债表的连续行段（截至母公司对应表或下一张报表之前）。
 
     LLM-propose fallback 仿 subagent 读法喂连续合并报表整段，让 GLM 基于有序表格
     做多字段联合闭合（oth_income + asset_disp + credit_impa 之类），而非依赖
     extract_markdown_context 的散乱 snippet。定位失败不阻塞——fallback 仍走原 snippet。
 
-    镜像 recon_subagent_bridge._locate_consolidated_cf_cash_lines 的写法：合并表在
-    母公司对应表之前，取该块起点到母公司分界。返回 {start, end, text} 或 None。
+    通用布局：①两表布局（合并利润表 ... 母公司利润表）以母公司表头为结束边界；
+    ②单表并列布局（合并及公司利润表，合并+母公司同表，如青岛啤酒）没有独立母公司
+    表头，回退到下一张报表表头（现金流量表/利润表/所有者权益变动表）做结束边界。
+    起点用 find_statement_header_line 跳过目录/页码引用条目。返回 {start, end, text} 或 None。
+    CF 不走本定位器（CF 失败由 recon_subagent_bridge 的 _locate_consolidated_cf_cash_lines
+    处理 7.4 重述），故仅 income/balancesheet。
     """
     if statement not in ("income", "balancesheet"):
         return None
@@ -669,32 +796,27 @@ def _locate_consolidated_statement_section(md_path: Path, statement: str) -> dic
         lines = md_path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return None
-    cons = "合并利润表" if statement == "income" else "合并资产负债表"
-    parent = "母公司利润表" if statement == "income" else "母公司资产负债表"
-    # 表头是短行（"3、合并利润表" / "1、合并资产负债表"，≤15 字）；年报里"合并利润表"
-    # 还大量出现在会计政策调整附注、审计报告、目录的长散文句中（如"⑤ 2017年受影响的
-    # 合并利润表和母公司利润表项目："），首中即取会落在附注而非主表。用短行筛选只认表头。
-    HEADER_MAX_LEN = 15
-
-    def _is_header(line: str, marker: str) -> bool:
-        stripped = line.strip()
-        return marker in stripped and len(stripped) <= HEADER_MAX_LEN
-
-    parent_idx = None
-    for i, line in enumerate(lines):
-        if _is_header(line, parent):
-            parent_idx = i
-            break
-    scan_end = parent_idx if parent_idx is not None else len(lines)
-    start = None
-    for i in range(scan_end):
-        if _is_header(lines[i], cons):
-            start = i
-            break
+    # 用与 snippet 路径一致的 marker 优先级组定位真表头（跳过目录条目）。
+    markers = (
+        [["合并及公司利润表"], ["利润表"]]
+        if statement == "income"
+        else [["合并及公司资产负债表"], ["资产负债表"]]
+        if statement == "balancesheet"
+        else [["合并及公司现金流量表"], ["现金流量表"]]
+    )
+    start = find_statement_header_line(lines, statement, markers)
     if start is None:
         return None
-    section_lines = lines[start:scan_end]
-    return {"start": start + 1, "end": scan_end, "text": "\n".join(section_lines)}
+    # 结束边界：start 之后第一个命中 end_markers 的短行表头（母公司变体优先，
+    # 其次下一张报表表头）。找不到则取文档尾。
+    end_markers = _STATEMENT_END_MARKERS.get(statement, [])
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if _is_header_line(lines[i], end_markers):
+            end = i
+            break
+    section_lines = lines[start:end]
+    return {"start": start + 1, "end": end, "text": "\n".join(section_lines)}
 
 
 def llm_prompt(
@@ -1235,7 +1357,12 @@ def _verify_llm_value_in_consolidated_statement(
     return verified, rejections
 
 
-def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+def llm_override_suggestions(
+    analysis: dict[str, Any],
+    *,
+    wide: "pd.DataFrame | None" = None,
+    present_by_period: "dict[str, set[str]] | None" = None,
+) -> list[dict[str, Any]]:
     # audit R3:守卫拒绝一个本可闭合的提议时,旧实现 continue/return [] 静默丢掉理由,
     # 残差仍未闭合却查不到"为什么没补"。这里把每条拒绝理由记进 analysis(随 evidence
     # JSON 落盘),不改任何控制流。
@@ -1244,23 +1371,37 @@ def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     llm = analysis.get("llm")
     if not isinstance(llm, dict) or llm.get("error"):
         return []
-    if not llm.get("suspected_tushare_issue"):
-        return []
     if llm.get("confidence") != "high":
         return []
-    # Respect the LLM's own action recommendation. The propose path can return a
-    # missing item whose value happens to match the residual (diff<TOLERANCE) but
-    # whose recommended_action is fix_classification / fix_combo_resolve /
-    # manual_review — those are clean.py mapping or formula issues, NOT TuShare
-    # data gaps, and overriding them is 脏配平 (e.g. 资产减值损失's value written
-    # to the rd_exp field). Only accept an explicit add_override recommendation.
-    if llm.get("recommended_action") != "add_override":
+    action = llm.get("recommended_action")
+    can_trial = wide is not None and present_by_period is not None
+    # 诊断闸门（suspected_tushare_issue + action）：LLM 常把 TuShare NULL 字段误诊为
+    # clean.py 公式/分类问题（青岛啤酒 2018：oth_income/asset_disp/credit_impa 实为
+    # TuShare NULL，LLM 却标 suspected_tushare_issue=False / fix_classification，建议
+    # "加入公式"），原始严格闸门会整组丢弃本可闭合的提议。有 trial-apply oracle 时放宽
+    # 诊断闸门——LLM 诊断不可靠，但 oracle 用 clean.py check 验真闭合、值验证挡幻觉值，
+    # 双保险下可放行交 oracle 裁决。无 oracle（wide=None，如单测）保留原严格守卫
+    # （suspected_tushare_issue=True 且 action=add_override 才放行），防脏配平。
+    if not can_trial:
+        if not llm.get("suspected_tushare_issue"):
+            return []
+        if action != "add_override":
+            rej.append({
+                "stage": "action_gate",
+                "reason": f"recommended_action={action} != add_override"
+                          f"(LLM 自判为分类/公式/人工问题,非 TuShare 缺口,不补 override)",
+            })
+            return []
+    elif not llm.get("suspected_tushare_issue") or action not in (
+        "add_override", "fix_combo_resolve", "fix_classification",
+    ):
+        # 有 oracle：记录 LLM 非标准诊断作审计，但不 return——继续到 field mapping +
+        # 值验证 + trial-apply，由 oracle 裁决。
         rej.append({
-            "stage": "action_gate",
-            "reason": f"recommended_action={llm.get('recommended_action')} != add_override"
-                      "(LLM 自判为分类/公式/人工问题,非 TuShare 缺口,不补 override)",
+            "stage": "diagnosis_note",
+            "reason": f"LLM 诊断 suspected_tushare_issue={llm.get('suspected_tushare_issue')} "
+                      f"action={action}（可能误诊 NULL 为公式缺失），交 trial-apply oracle 裁决",
         })
-        return []
 
     provider = str(llm.get("_provider") or llm_provider())
     candidates = analysis.get("candidate_tushare_fields", []) or []
@@ -1296,37 +1437,67 @@ def llm_override_suggestions(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     )
     rej.extend(value_rejs)
 
-    # 单字段闭合优先：某 missing item 的值恰好解释残差（diff<TOLERANCE）。
+    # 闭合判定。有 trial-apply oracle 时，oracle 是唯一裁判（不盲信 LLM 的
+    # residual_difference_million_cny——青岛啤酒 2018 LLM 把 asset_disp 的 diff 错填
+    # 为 0，旧单字段快路径盲信后只返 1 字段、跳过联合闭合）。oracle 用 clean.py check
+    # 验真闭合：单字段逐个试，再整组试；覆盖加法型与符号翻转型闭合。脏配平（check 仍
+    # 失败）必被挡。无 oracle（wide=None，如单测/重建路径）退回加法打分。
+    failure = analysis.get("failure", {}) or {}
+    period_str = str(failure.get("period"))
+    code_str = str(failure.get("code"))
+    conf = llm.get("confidence")
+
+    if can_trial and mapped_items:
+        # 单字段优先：逐个试应用
+        for it in mapped_items:
+            ov = [(str(it["candidate_tushare_field"]), float(it["value_million_cny"]))]
+            closed, _ = trial_apply_closes(wide, present_by_period, period_str, code_str, ov)
+            if closed:
+                return [{"source": provider, "confidence": conf, **it}]
+        # 联合：整组试应用（符号翻转需多字段同补，单字段闭合不了）
+        overrides = [
+            (str(it["candidate_tushare_field"]), float(it["value_million_cny"]))
+            for it in mapped_items
+        ]
+        closed, new_res = trial_apply_closes(wide, present_by_period, period_str, code_str, overrides)
+        if closed:
+            return [{"source": provider, "confidence": conf, **it} for it in mapped_items]
+        residual = float(failure.get("residual") or 0.0)
+        signed_residual = (
+            -residual if str(failure.get("direction")) == "target_lt_calc" else residual
+        )
+        group_sum = sum(float(it["value_million_cny"]) for it in mapped_items)
+        rej.append({
+            "stage": "trial_apply",
+            "reason": "单字段与整组 trial-apply 均未通过 check（脏配平或字段/值不对）",
+            "signed_residual": signed_residual,
+            "group_sum": group_sum,
+            "new_residual_after_apply": new_res,
+            "n_items": len(mapped_items),
+        })
+        return []
+
+    # 无 oracle：加法打分（信任 LLM 的 residual_difference_million_cny 与 Σ(value)）
     out: list[dict[str, Any]] = []
     for it in mapped_items:
         diff = it.get("residual_difference_million_cny")
         if diff is not None and abs(float(diff)) >= clean.TOLERANCE:
             continue
-        out.append({"source": provider, "confidence": llm.get("confidence"), **it})
+        out.append({"source": provider, "confidence": conf, **it})
     if out:
         return out
 
-    # 联合闭合：单个字段都不闭合残差，但多个 missing items 的值之和闭合
-    # （IS 1.2 同时缺 oth_income/credit_impa_loss/asset_disp_income 等多个
-    # operating_adjustment，单字段 diff 都大，但三者合计 = signed_residual）。
-    # 这是 IS operating_adjustment TuShare-NULL 缺口的典型形态。联合闭合必须
-    # Σ(value) ≈ signed_residual，且每字段仍受 fallback 的 old_value=0 守卫约束
-    # （add_override 语义：只补 TuShare 漏录/为 0 的明细，不覆盖已有非 0 值）。
     if mapped_items:
-        failure = analysis.get("failure", {}) or {}
         residual = float(failure.get("residual") or 0.0)
         signed_residual = (
             -residual if str(failure.get("direction")) == "target_lt_calc" else residual
         )
         group_sum = sum(float(it["value_million_cny"]) for it in mapped_items)
         if abs(signed_residual - group_sum) < clean.TOLERANCE:
-            return [
-                {"source": provider, "confidence": llm.get("confidence"), **it}
-                for it in mapped_items
-            ]
+            return [{"source": provider, "confidence": conf, **it} for it in mapped_items]
         rej.append({
             "stage": "closure",
-            "reason": "单字段均不闭合(各 diff>=TOLERANCE)且联合闭合也不成立",
+            "reason": "单字段均不闭合(各 diff>=TOLERANCE)且联合加法闭合也不成立",
             "signed_residual": signed_residual,
             "group_sum": group_sum,
             "n_items": len(mapped_items),
@@ -1406,6 +1577,8 @@ def _llm_propose_fallback(
     residue_analyses: list[dict[str, Any]],
     *,
     approve_high_confidence: bool,
+    wide: "pd.DataFrame | None" = None,
+    present_by_period: "dict[str, set[str]] | None" = None,
 ) -> list[dict[str, Any]]:
     """Second tier: LLM PROPOSES the missing field for failures rule+confirm closed.
 
@@ -1536,7 +1709,7 @@ def _llm_propose_fallback(
                 field_value_by[str(item["field"])] = float(item.get("value_million_cny") or 0.0)
                 if item.get("clean_category"):
                     clean_cat_by[str(item["field"])] = str(item["clean_category"])
-        for sug in llm_override_suggestions(analysis):
+        for sug in llm_override_suggestions(analysis, wide=wide, present_by_period=present_by_period):
             field = str(sug.get("candidate_tushare_field"))
             value = sug.get("value_million_cny")
             if not field or value is None:
@@ -2257,6 +2430,8 @@ def main(argv: list[str] | None = None) -> int:
                 path,
                 residue,
                 approve_high_confidence=args.approve_high_confidence,
+                wide=wide,
+                present_by_period=present_by_period,
             )
             overrides["adjustments"].extend(fallback_adjustments)
             out["llm_propose_fallback"] = {

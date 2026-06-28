@@ -32,13 +32,15 @@ export function clampValue(value: number, min: number, max: number): number {
 }
 
 export function defaultReverseDcfInputs(base: ReverseDcfBase): ReverseDcfInputs {
-  return {
+  const inputs = {
     n1: base.defaults.n1,
     n2: base.defaults.n2,
     wacc: base.defaults.wacc,
     terminalGrowth: base.defaults.terminal_growth,
     referenceDecay: base.defaults.reference_decay,
   };
+  const anchoredWacc = solveWaccForModelG1Parity(base, inputs);
+  return anchoredWacc == null ? inputs : { ...inputs, wacc: anchoredWacc };
 }
 
 function yearAt(base: ReverseDcfBase, index: number): ReverseDcfYear | null {
@@ -259,6 +261,53 @@ export function referencePointForTargetG2(
   }
 
   return null;
+}
+
+export function solveWaccForModelG1Parity(
+  base: ReverseDcfBase,
+  inputs: ReverseDcfInputs,
+  options: { tolerance?: number } = {},
+): number | null {
+  const modelCagr = modelSegmentCagr(base, inputs.n1, inputs.n2);
+  const g1 = modelCagr.g1;
+  const g2 = modelCagr.g2;
+  if (g1 == null || g2 == null) return null;
+  if (!Number.isFinite(g1) || !Number.isFinite(g2)) return null;
+  if (g1 <= -1 || g2 <= -1) return null;
+
+  const low = Math.max(base.bounds.wacc[0], inputs.terminalGrowth + 0.001);
+  const high = base.bounds.wacc[1];
+  if (!Number.isFinite(low) || !Number.isFinite(high) || low >= high) return null;
+
+  const gap = (wacc: number): number | null => {
+    const point = evaluateReverseDcf(base, { ...inputs, wacc }, g1, g2);
+    return point ? point.equityValue - base.market.market_cap : null;
+  };
+
+  let lo = low;
+  let hi = high;
+  let fLo = gap(lo);
+  let fHi = gap(hi);
+  const tolerance = options.tolerance ?? 1e-6;
+  if (fLo == null || fHi == null) return null;
+  if (Math.abs(fLo) < tolerance) return lo;
+  if (Math.abs(fHi) < tolerance) return hi;
+  if (Math.sign(fLo) === Math.sign(fHi)) return null;
+
+  for (let i = 0; i < 70; i += 1) {
+    const mid = (lo + hi) / 2;
+    const fMid = gap(mid);
+    if (fMid == null) return null;
+    if (Math.abs(fMid) < tolerance) return mid;
+    if (Math.sign(fMid) === Math.sign(fLo)) {
+      lo = mid;
+      fLo = fMid;
+    } else {
+      hi = mid;
+      fHi = fMid;
+    }
+  }
+  return (lo + hi) / 2;
 }
 
 function compoundCagr(rates: number[], start: number, length: number): number | null {

@@ -33,6 +33,8 @@ DIMENSION_LABELS = {
     "product": "产品",
     "region": "地区",
     "sales_model": "销售模式",
+    "volume": "产销量",
+    "cost_composition": "成本构成",
 }
 
 DIMENSION_PATTERNS = [
@@ -43,6 +45,39 @@ DIMENSION_PATTERNS = [
     ("sales_model", re.compile(r"^(主营业务)?分销售模式(情况)?$")),
     ("sales_model", re.compile(r"^销售模式$")),
 ]
+
+# 产销量情况分析表 / 成本分析表 是"收入和成本分析"同节里的另两张表，
+# 结构与主营收四维表不同（列数/语义不同），由专用解析器处理，不走主状态机。
+VOLUME_SECTION_START_RE = re.compile(r"产销量情况分析表")
+COST_SECTION_START_RE = re.compile(r"成本分析表")
+
+VOLUME_UNIT_RE = re.compile(
+    r"^(万千升|千升|升|万吨|吨|千克|克|万件|件|万台|台|万套|套|千米|米|平方米|立方米|"
+    r"万千瓦时|千瓦时|度|万瓶|瓶|万箱|箱|万支|支|万盒|盒|万包|包|万桶|桶|张|块|"
+    r"万头|头|万只|只|万辆|部)$"
+)
+
+# 成本构成项目常见名（用于 segment 跨行时把上一行认作分部）。
+COST_ITEM_KEYWORDS = {
+    "直接材料", "直接人工", "制造费用", "制造费用及其他", "外购产成品",
+    "燃料及动力", "燃料动力", "折旧", "折旧费", "工资及福利", "工资",
+    "福利费", "动力", "材料", "人工", "其他",
+}
+
+_VOLUME_HEADER_NOISE = {
+    "主要", "产品", "主要产品", "生产量", "销售量", "库存量",
+    "生产量销售量", "年增减", "比上", "增减", "生产量比上",
+    "销售量比上年", "库存量比上年", "情况", "说明",
+}
+
+_COST_HEADER_NOISE = {
+    "分行业", "分产品", "分行业情况", "分产品情况", "成本构成项目",
+    "本期金额", "本期占总成本比例", "上年同期金额", "上年同期占总成本比例",
+    "本期金额较上年同期变动比例", "情况", "说明", "情况说明",
+}
+
+# 专用 section 内需要按片段过滤的表头残留。
+_SECTION_HEADER_FRAGMENTS = ("增减", "比上", "占总成本", "较上年同期变动", "成本构成")
 
 NUMBER_RE = re.compile(r"[-+]?\d{1,3}(?:,\d{3})*(?:\.\d+)?%?|[-+]?\d+(?:\.\d+)?%?")
 OUTPUT_CSV_NAME = "business_revenue_breakdown.csv"
@@ -83,6 +118,16 @@ class BusinessBreakdownRow:
     source_line: int
     confidence: str
     raw_values: str
+    # 产销量维度（dimension=volume）专用：物理量及其同比。
+    quantity_unit: str = ""
+    production_qty: float | None = None
+    sales_qty: float | None = None
+    inventory_qty: float | None = None
+    production_yoy_pct: float | None = None
+    sales_qty_yoy_pct: float | None = None
+    inventory_yoy_pct: float | None = None
+    # 成本构成维度（dimension=cost_composition）专用：成本构成项目名。
+    cost_item: str = ""
 
 
 @dataclass
@@ -153,9 +198,38 @@ def extract_report(path: Path, company_dir: Path | None = None) -> list[Business
     pending: _PendingRow | None = None
     active_context_lines = 0
 
+    # 产销量 / 成本构成两张表由专用解析器处理，主营收状态机跳过这些行区间。
+    extra_rows: list[BusinessBreakdownRow] = []
+    skip_set: set[int] = set()
+    skip_starts: set[int] = set()
+    for s, e in _find_section_ranges(lines, VOLUME_SECTION_START_RE):
+        extra_rows.extend(
+            _extract_volume_section(
+                lines, s, e, company_name, stock_code, year, period, period_type, period_label, path
+            )
+        )
+        skip_starts.add(s)
+        skip_set.update(range(s, e))
+    for s, e in _find_section_ranges(lines, COST_SECTION_START_RE):
+        extra_rows.extend(
+            _extract_cost_composition_section(
+                lines, s, e, company_name, stock_code, year, period, period_type, period_label, path
+            )
+        )
+        skip_starts.add(s)
+        skip_set.update(range(s, e))
+
     for line in lines:
         text = line.text
         if not text:
+            continue
+        idx = line.number - 1
+        if idx in skip_set:
+            # 进入专用 section 区间前，先把主状态机里挂起的营收行落盘，避免被跳过丢失。
+            if idx in skip_starts:
+                append_pending(rows, pending, company_name, stock_code, year, period, period_type, period_label, path)
+                pending = None
+                dimension = None
             continue
         if active_context_lines > 0:
             active_context_lines -= 1
@@ -226,6 +300,7 @@ def extract_report(path: Path, company_dir: Path | None = None) -> list[Business
             pending.name_parts.append(text)
 
     append_pending(rows, pending, company_name, stock_code, year, period, period_type, period_label, path)
+    rows.extend(extra_rows)
     return dedupe_rows(rows)
 
 
@@ -360,6 +435,274 @@ def infer_table_type(values: list[str], source_section: str = "") -> str:
             return "revenue_composition"
         return "business_profitability_yoy_split"
     return "major_business_profitability"
+
+
+def _is_section_boundary(compact: str) -> bool:
+    """专用 section 的结束边界：编号小节标题 / 情况说明 / 下一张分析表 / 已知硬截断关键词。"""
+    if re.match(r"^[（(]?\d+[.、)](?!\d)", compact):
+        return True
+    # 只认 section 尾的"其他情况说明"(成本分析表尾)/"产销量情况说明"(产销量表尾)，
+    # 不认裸"情况说明"——它是表内"情况说明"列头（常单字拆行，但合并成一行时不能误判为边界）。
+    if "其他情况说明" in compact or "产销量情况说明" in compact:
+        return True
+    if "分析表" in compact:
+        return True
+    for kw in (
+        "主要销售客户", "主要供应商", "研发投入", "资产及负债",
+        "采购模式", "销售费用", "现金流", "重大采购", "重大销售",
+        "报告期主要子公司", "公司报告期内业务", "主营业务数据统计口径",
+        "收入确认和计量",
+    ):
+        if kw in compact:
+            return True
+    return False
+
+
+def _find_section_ranges(lines: list[_Line], start_re: re.Pattern) -> list[tuple[int, int]]:
+    """定位 start_re 命中的 section 行区间 [start, end)（半开，含起始行、不含边界行）。"""
+    ranges: list[tuple[int, int]] = []
+    n = len(lines)
+    i = 0
+    while i < n:
+        compact = re.sub(r"\s+", "", lines[i].text)
+        if start_re.search(compact):
+            j = i + 1
+            while j < n:
+                cj = re.sub(r"\s+", "", lines[j].text)
+                if _is_section_boundary(cj):
+                    break
+                j += 1
+            ranges.append((i, j))
+            i = j
+        else:
+            i += 1
+    return ranges
+
+
+def _is_number_token(tok: str) -> bool:
+    """单个 token 是否为纯数字（含千分位/百分号/负号）。逐 token 判定，避免去空格合并相邻数字。"""
+    compact = tok.replace("，", ",").replace("％", "%")
+    return bool(
+        re.fullmatch(r"[-+]?\d{1,3}(?:,\d{3})*(?:\.\d+)?%?", compact)
+        or re.fullmatch(r"[-+]?\d+(?:\.\d+)?%?", compact)
+    )
+
+
+# 成本表表头残留片段：出现在非数字 token 里即判为表头丢弃（数据 token 如"啤酒销售""直接材料"不含这些）。
+_COST_NAME_FILTER_FRAGMENTS = (
+    "占", "成本", "比例", "金额", "变动", "同期", "本期", "上年", "较上",
+    "情况", "说明", "项目", "分行业", "分产品", "%", "(", ")", "（", "）",
+)
+
+# 产销量表表头残留片段：生产量/销售量/库存量/单位/主要产品 等列头拆分后按片段丢弃。
+_VOLUME_NAME_FILTER_FRAGMENTS = (
+    "生产", "销售", "库存", "主要", "产品", "单位", "增减", "上年",
+    "情况", "说明", "%", "(", ")", "（", "）",
+)
+
+
+def _cost_name_token_ok(compact: str) -> bool:
+    if compact == "合计":
+        return True
+    if len(compact) < 2:
+        return False
+    return not any(frag in compact for frag in _COST_NAME_FILTER_FRAGMENTS)
+
+
+def _flatten_tokens(
+    lines: list[_Line], start: int, end: int, header_noise: set[str], mode: str,
+) -> list[tuple[int, str, bool]]:
+    """把 section 展平成 (line_no, token, is_number) 流：按空白拆 token，逐 token 判数字/表头。
+    mode='volume' 按行级表头过滤（物理单位可能是单字，不能按 token 长度过滤）；
+    mode='cost' 按 token 级表头片段过滤（"啤酒销售 直接材料"拆成两个名字 token）。"""
+    out: list[tuple[int, str, bool]] = []
+    for k in range(start + 1, end):
+        text = lines[k].text
+        if not text:
+            continue
+        compact_line = re.sub(r"\s+", "", text)
+        if parse_unit(compact_line):
+            continue
+        if "适用" in compact_line and "不适用" in compact_line:
+            continue
+        if "年度报告" in compact_line:
+            continue
+        if compact_line in header_noise:
+            continue
+        if any(frag in compact_line for frag in _SECTION_HEADER_FRAGMENTS):
+            continue
+        for tok in text.split():
+            compact = re.sub(r"\s+", "", tok)
+            if not compact:
+                continue
+            if _is_number_token(compact):
+                out.append((lines[k].number, tok, True))
+            else:
+                if mode == "cost" and not _cost_name_token_ok(compact):
+                    continue
+                if mode == "volume" and (
+                    compact in _VOLUME_HEADER_NOISE
+                    or any(frag in compact for frag in _VOLUME_NAME_FILTER_FRAGMENTS)
+                ):
+                    continue
+                out.append((lines[k].number, tok, False))
+    return out
+
+
+def _flat_runs(
+    tokens: list[tuple[int, str, bool]],
+) -> list[tuple[list[str], list[str], int]]:
+    """返回 (name_tokens, values, first_value_line)：name_tokens 为上一 run 以来累积的非数字 token。"""
+    runs: list[tuple[list[str], list[str], int]] = []
+    name_buf: list[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        if tokens[i][2]:
+            run: list[str] = []
+            line_no = tokens[i][0]
+            while i < n and tokens[i][2]:
+                run.append(tokens[i][1])
+                i += 1
+            runs.append((name_buf, run, line_no))
+            name_buf = []
+        else:
+            name_buf.append(tokens[i][1])
+            i += 1
+    return runs
+
+
+def _section_unit(lines: list[_Line], start: int, end: int) -> tuple[str, float]:
+    """扫 section 内最后出现的'单位：'行，取货币单位与倍数（成本分析表常用千元）。"""
+    unit_label, unit_multiplier = "元", 1.0
+    for k in range(start + 1, end):
+        compact = re.sub(r"\s+", "", lines[k].text)
+        new_unit = parse_unit(compact)
+        if new_unit:
+            unit_label, unit_multiplier = new_unit
+    return unit_label, unit_multiplier
+
+
+def _extract_volume_section(
+    lines: list[_Line], start: int, end: int,
+    company_name: str, stock_code: str, year: int, period: str,
+    period_type: str, period_label: str, path: Path,
+) -> list[BusinessBreakdownRow]:
+    tokens = _flatten_tokens(lines, start, end, _VOLUME_HEADER_NOISE, mode="volume")
+    rows: list[BusinessBreakdownRow] = []
+    for name_buf, run, line_no in _flat_runs(tokens):
+        if not (3 <= len(run) <= 7):
+            continue
+        unit = ""
+        if name_buf and VOLUME_UNIT_RE.fullmatch(name_buf[-1]):
+            unit = name_buf[-1]
+            name = "".join(name_buf[:-1])
+        else:
+            name = "".join(name_buf)
+        name = clean_item_name(name)
+        if not name or is_bad_item_name(name):
+            continue
+        rows.append(
+            _build_volume_row(
+                name, unit, run, line_no,
+                company_name, stock_code, year, period, period_type, period_label, path,
+            )
+        )
+    return rows
+
+
+def _build_volume_row(
+    name: str, unit: str, values: list[str], source_line: int,
+    company_name: str, stock_code: str, year: int, period: str,
+    period_type: str, period_label: str, path: Path,
+) -> BusinessBreakdownRow:
+    def _nth(i: int) -> float | None:
+        return parse_number(values[i]) if i < len(values) else None
+
+    return BusinessBreakdownRow(
+        company_name=company_name, stock_code=stock_code, year=year, period=period,
+        period_type=period_type, period_label=period_label, source_file=str(path),
+        source_section="", source_table="volume", dimension="volume",
+        dimension_label=DIMENSION_LABELS["volume"], item_name=name,
+        revenue=None, revenue_unit="", revenue_yuan=None, revenue_pct=None,
+        revenue_previous=None, revenue_previous_yuan=None, revenue_previous_pct=None,
+        revenue_yoy_pct=None, cost=None, cost_yuan=None, cost_yoy_pct=None,
+        gross_margin_pct=None, gross_margin_change="",
+        source_line=source_line, confidence="high" if len(values) >= 5 else "medium",
+        raw_values="|".join(values),
+        quantity_unit=unit,
+        production_qty=_nth(0), sales_qty=_nth(1), inventory_qty=_nth(2),
+        production_yoy_pct=_nth(3), sales_qty_yoy_pct=_nth(4), inventory_yoy_pct=_nth(5),
+    )
+
+
+def _extract_cost_composition_section(
+    lines: list[_Line], start: int, end: int,
+    company_name: str, stock_code: str, year: int, period: str,
+    period_type: str, period_label: str, path: Path,
+) -> list[BusinessBreakdownRow]:
+    """成本分析表：每行 = [分部] 成本构成项目 + 4-6 个数(本期金额/本期占比/上年金额/上年占比/变动%)。
+    分部只写一次时（会稽山式）按 current_segment 继承；每行都写时（青岛啤酒式）按 name_buf 末位拆。"""
+    tokens = _flatten_tokens(lines, start, end, _COST_HEADER_NOISE, mode="cost")
+    unit_label, unit_multiplier = _section_unit(lines, start, end)
+    rows: list[BusinessBreakdownRow] = []
+    current_segment = ""
+    for name_buf, run, line_no in _flat_runs(tokens):
+        if not (4 <= len(run) <= 6):
+            continue
+        if not name_buf:
+            continue
+        if len(name_buf) >= 2:
+            segment = clean_item_name("".join(name_buf[:-1]))
+            cost_item = clean_item_name(name_buf[-1])
+            if segment:
+                current_segment = segment
+        else:
+            tok = clean_item_name(name_buf[0])
+            if tok == "合计":
+                segment, cost_item = "合计", ""
+            else:
+                segment, cost_item = current_segment, tok
+        if not segment:
+            continue
+        rows.append(
+            _build_cost_row(
+                segment, cost_item, run, unit_label, unit_multiplier, line_no,
+                company_name, stock_code, year, period, period_type, period_label, path,
+            )
+        )
+    return rows
+
+
+def _build_cost_row(
+    name: str, cost_item: str, values: list[str],
+    unit_label: str, unit_multiplier: float, source_line: int,
+    company_name: str, stock_code: str, year: int, period: str,
+    period_type: str, period_label: str, path: Path,
+) -> BusinessBreakdownRow:
+    def _nth(i: int) -> float | None:
+        return parse_number(values[i]) if i < len(values) else None
+
+    revenue = _nth(0)
+    revenue_pct = parse_percent(values[1]) if len(values) > 1 else None
+    revenue_previous = _nth(2) if len(values) > 2 else None
+    revenue_previous_pct = parse_percent(values[3]) if len(values) > 3 else None
+    revenue_yoy_pct = parse_percent(values[4]) if len(values) > 4 else None
+    return BusinessBreakdownRow(
+        company_name=company_name, stock_code=stock_code, year=year, period=period,
+        period_type=period_type, period_label=period_label, source_file=str(path),
+        source_section="", source_table="cost_composition", dimension="cost_composition",
+        dimension_label=DIMENSION_LABELS["cost_composition"], item_name=name,
+        revenue=revenue, revenue_unit=unit_label,
+        revenue_yuan=scale_amount(revenue, unit_multiplier), revenue_pct=revenue_pct,
+        revenue_previous=revenue_previous,
+        revenue_previous_yuan=scale_amount(revenue_previous, unit_multiplier),
+        revenue_previous_pct=revenue_previous_pct, revenue_yoy_pct=revenue_yoy_pct,
+        cost=None, cost_yuan=None, cost_yoy_pct=None,
+        gross_margin_pct=None, gross_margin_change="",
+        source_line=source_line, confidence="high", raw_values="|".join(values),
+        cost_item=cost_item,
+    )
 
 
 def discover_reports(
@@ -663,6 +1006,8 @@ def is_bad_item_name(item_name: str) -> bool:
         "营业收入比上年同期",
         "营业成本比上年同期",
         "适用不适用",
+        "分部间抵消",
+        "抵消",
     )
     return any(fragment in item_name for fragment in bad_fragments)
 
@@ -741,6 +1086,8 @@ def dedupe_rows(rows: list[BusinessBreakdownRow]) -> list[BusinessBreakdownRow]:
     seen: set[tuple[object, ...]] = set()
     out: list[BusinessBreakdownRow] = []
     for row in rows:
+        # 不含 source_line：成本分析表"分行业/分产品"两张子表常完全重复，
+        # 按 (维度+科目+表+数值+成本项+物理量) 去重即整组合并。
         key = (
             row.company_name,
             row.year,
@@ -750,7 +1097,10 @@ def dedupe_rows(rows: list[BusinessBreakdownRow]) -> list[BusinessBreakdownRow]:
             row.source_table,
             row.revenue,
             row.cost,
-            row.source_line,
+            row.cost_item,
+            row.quantity_unit,
+            row.production_qty,
+            row.sales_qty,
         )
         if key in seen:
             continue

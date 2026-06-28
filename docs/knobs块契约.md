@@ -12,6 +12,7 @@
 - 不导出 `base`、`history`、完整拆分树或 stash。
 - 不做 defaults 路径映射、会计化对齐或 compiler 翻译。
 - 不替代正文判断；正文仍是人话权威，`knobs` 只做同源回声。
+- 不写前端展示去向。`display` 契约属于 `docs/yaml1前端展示契约.md`，只决定 yaml1 在工作台如何摆放；它不是 knob，也不能被 `/adj quick` 当成可拨旋钮。
 
 术语区分：
 
@@ -48,7 +49,9 @@ terminal:
     kind: linear
     target_growth: 0.055
     fade_paths: [model.revenue_yoy]
-    hold_paths: [income.gpm]
+    hold_paths: [income.cost_rates.sell_exp]
+    path_targets:
+      income.gpm: 0.32
   perpetual_growth: 0.025
 knobs:
   - anchor: "#整体毛利率"
@@ -65,7 +68,7 @@ knobs:
 | 字段 | 必须性 | 说明 |
 |---|---:|---|
 | `horizon` | 必须 | 显式预测期年轴。`values[0]` 对应 `horizon[0]`。 |
-| `terminal` | 正式稿必须 | 末值信息的同源回声。`fade.target_growth` 是衰减交接增速，`perpetual_growth` 是 Gordon 永续增速；二者都是标量，不放进 `knobs` 数组。 |
+| `terminal` | 正式稿必须 | 末值信息的同源回声。`fade.target_growth` 是衰减交接增速，`perpetual_growth` 是 Gordon 永续增速；`fade.path_targets` 是路径级衰减期目标值；这些都不放进 `knobs` 数组。 |
 | `knobs` | 必须 | 预测输入数组。正式稿不能为空；draft 可以为空但必须写原因。 |
 | `reason` | draft 可选 | 当 `knobs: []` 或某 draft 条目缺值时，说明为什么没有明确数值。 |
 
@@ -127,6 +130,14 @@ values: "全程 15.4%"
 
 `family` 不是 yaml1 path。它描述正文旋钮的语义族。
 
+> ⚠️ **同名陷阱：另一组 `family` 枚举。** 这里有两个易混的同名枚举，加上本节共三层，见到 `family` 先确认它在哪一层：
+>
+> 1. 本节 knobs `family`： knobs 块内 `family:` 语义标签，`growth` = "这格旋钮属于收入增速类输入"。
+> 2. yaml1 `revenue_family`： revenue leaf 上的**收入算法模板**（`factor_product / driver_rate / growth / abs / vol_price / formula …`），由 `docs/yaml1算法模板契约.md` 定义；`revenue_family: growth` = "这条线收入按增速递推折叠"。与本节共用 `growth`/`abs` 之名但含义不同。
+> 3. 源语言 §B4 块头 `compiler: <family>`： `.md` 块头声明（`factor_product / driver_rate / growth / abs / leaf margin / bs_scalar_pct …`），与本节共用 `growth`/`abs`/`bs_*` 之名但管的是块头声明，不是 knobs 回声。
+>
+> 三处 `family` 各管各的层，不要互相套用。
+
 | family | 常见 `sub` | unit | 对应输入 |
 |---|---|---|---|
 | `factor_yoy` | `销量`、`吨价`、`门店数`、`ARPU` 等 | `pct` | `factor_product` / `vol_price` leaf 的因子增速。 |
@@ -143,7 +154,7 @@ values: "全程 15.4%"
 | `other_fin_exp_abs` | 省略 | `abs_mn` | 其他财务费用外生项。 |
 | `bs_revenue_pct` | BS 科目字段名 | `pct` | 人工覆盖 `balance_sheet.revenue_pct.*`，如应收账款/收入、合同负债/收入。只在最高权重材料或分析师明示为核心 thesis 时使用。 |
 | `bs_cogs_days` | BS 科目字段名 | `ratio` | 人工覆盖 `balance_sheet.cogs_days.*`，如存货周转天数、应付账款天数。`values` 写天数原值。 |
-| `bs_scalar_pct` | defaults 标量字段名 | `pct` | 人工覆盖 `balance_sheet.capex_pct`、`balance_sheet.depr_rate` 等轻资产/稳态标量路径；重资产排程优先 `/da`。 |
+| `bs_scalar_pct` | defaults 标量字段名 | `pct` | 人工覆盖 `balance_sheet.capex_pct`、`balance_sheet.depr_rate`、`balance_sheet.dividend_payout` 等轻资产/稳态标量路径；其中 `dividend_payout` 是 `/ka` 强制检测项，但只有需要覆盖 defaults 时才进入 `knobs`；重资产排程优先 `/da`。 |
 | `formula_input` | 变量名 | `pct` / `ratio` / `abs_mn` | 受限 formula 的人工输入变量。当前 Gate C 只会校验能落成 top-level `kind: knob` 或 revenue leaf 输入的值；其他 formula input 暂不写独立条目。 |
 
 如果现有表装不下，优先在正文里举旗说明，不要临时自创模糊族名。确需新增 family 时，先更新本文和相关校验/编辑映射。
@@ -157,6 +168,7 @@ values: "全程 15.4%"
 - revenue leaf 的因子预测输入，如销量 yoy、价格 yoy。
 - revenue leaf 的 `revenue_yoy` 或 `revenue_abs`。
 - 人工 BS/CF 覆盖闸中已拍板、且能落到 defaults.yaml 现有路径的 `balance_sheet.revenue_pct.*`、`balance_sheet.cogs_days.*`、`balance_sheet.capex_pct`、`balance_sheet.depr_rate` 等输入。
+- `/ka` 分红率强制检测后决定覆盖 defaults 的 `balance_sheet.dividend_payout`，使用 `family: bs_scalar_pct`、`sub: dividend_payout`、`unit: pct`；若只是明确沿用 defaults，只在正文说明，不写入 `knobs`。
 
 禁止进入：
 
@@ -164,12 +176,12 @@ values: "全程 15.4%"
 - 派生预测值，例如收入、毛利额、毛利率占比、费用金额、净利率等由引擎从旋钮算出的未来序列。若正文展示这些数，必须标注 `派生·引擎算·非翻译输入`。
 - yaml1 path、defaults path、segment slug、base、history、stash。
 - terminal fade 期展开序列。
-- 未被明示为核心 thesis 的 BS/CF/DCF 驱动因素；这些维持 defaults/引擎/专门流程。
+- 未被明示为核心 thesis 的 BS/CF/DCF 驱动因素；这些维持 defaults/引擎/专门流程。`balance_sheet.dividend_payout` 是强制检测例外：可以明确沿用 defaults，也可以在需要覆盖时按 `bs_scalar_pct` 写入。
 
 特例：
 
 - `terminal.perpetual_growth` 放在顶层 `terminal.perpetual_growth`，不放入 `knobs` 数组。
-- `terminal.explicit_end`、`terminal.fade.to_year`、`terminal.fade.target_growth`、`fade_paths`、`hold_paths` 是 terminal 结构，不是可 quick 拨动的 knobs。
+- `terminal.explicit_end`、`terminal.fade.to_year`、`terminal.fade.target_growth`、`terminal.fade.path_targets`、`fade_paths`、`hold_paths` 是 terminal 结构，不是可 quick 拨动的 knobs。
 - 分线毛利率 `leaf_margin` 与非标准 formula input 是已知覆盖缺口；当前不要写成 official block 独立条目，否则 Gate C 会把它识别为 block 多写。需要纳入双射时，先扩展 `yaml1_fidelity_check.py` 的收集逻辑和本文 family 表。
 
 ## 9. anchor 与 sub 映射
@@ -254,7 +266,7 @@ knobs: []
 
 - 只能改已有 knob 的 `values[i]` 或 `terminal.perpetual_growth` 标量。
 - 不得新增或删除条目。
-- 不得改 `horizon`、`terminal.explicit_end`、`terminal.fade.to_year`、`family`、`anchor`、`sub`、结构、历史、来源、stash。
+- 不得改 `horizon`、`terminal.explicit_end`、`terminal.fade.to_year`、`family`、`anchor`、`sub`、结构、历史、来源、stash、display。
 - 写入前必须核对 old value：正文、`knobs`、yaml1 三处同源。
 - 写入后必须跑 fidelity。失败时 md 赢，回 `/comp` 重编译，不手 patch yaml1 去凑一致。
 
@@ -276,7 +288,9 @@ terminal:
     kind: linear
     target_growth: 0.055
     fade_paths: [model.revenue_yoy]
-    hold_paths: [income.gpm]
+    hold_paths: [income.cost_rates.sell_exp]
+    path_targets:
+      income.gpm: 0.32
   perpetual_growth: 0.025
 knobs:
   - {anchor: "#低温鲜奶", sub: 销量, family: factor_yoy, unit: pct, values: [7, 6, 6, 6, 6], status: official}

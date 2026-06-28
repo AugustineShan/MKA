@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type {
   AnnualRevenueBreakdownRow,
+  AppSettings,
   ArchiveModelsResult,
   AssumptionPatch,
   AssumptionPreview,
@@ -15,7 +16,7 @@ import type {
   EditableAssumption,
   EditableAssumptionCell,
   HomeFolderOverview,
-  HomeTab,
+  IndustryData,
   PipelineStage,
   QuarterlyRow,
   QuarterlyView,
@@ -256,7 +257,7 @@ function Sidebar({
             type="button"
           >
             <span className="company-name">{company.name}</span>
-            <span className="company-code">{company.code}</span>
+            <span className="company-code">{company.industry ?? company.code}</span>
           </button>
         ))}
       </div>
@@ -4352,35 +4353,486 @@ function DetailView({
   return <Overview detail={detail} />;
 }
 
-const HOME_TABS: Array<{ key: HomeTab; label: string }> = [
-  { key: "folder-overview", label: "文件夹总览" },
-];
-
 const STAGE_TONE: Record<PipelineStage, string> = {
   "未初始化": "stage-0",
   "初始化完毕": "stage-1",
-  "核心假设完毕": "stage-2",
+  "预加载完毕": "stage-2",
   "建模完毕": "stage-3",
   "建模完毕且有DA表": "stage-4",
 };
 
 const fmtMv = (v: number | null | undefined) =>
-  typeof v === "number" && !Number.isNaN(v) ? formatYiFromMillion(v, 1) : "";
+  typeof v === "number" && !Number.isNaN(v) ? formatYiFromMillion(v, 0) : "—";
 const fmtYoy = (v: number | null | undefined) =>
-  typeof v === "number" && !Number.isNaN(v) ? formatSignedPercent(v, 1) : "";
-const fmtPe = (v: number | null | undefined) =>
-  typeof v === "number" && !Number.isNaN(v) ? formatMultiple(v, 1) : "";
+  typeof v === "number" && !Number.isNaN(v) ? formatSignedPercent(v, 1) : "—";
+const fmtPe = (v: number | null | undefined) => {
+  if (typeof v !== "number" || Number.isNaN(v)) return "—";
+  const digits = v < 0 || v >= 15 ? 0 : 1;
+  return formatMultiple(v, digits);
+};
 
-function FolderOverview({ onOpenTutorial }: { onOpenTutorial: () => void }) {
+function homeToday(): string {
+  try {
+    return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric" }).format(new Date());
+  } catch {
+    return "";
+  }
+}
+
+const UNCLASSIFIED_SECTOR = "未分类";
+
+function getSector(code: string, industry: IndustryData): string {
+  const name = industry.companies[code];
+  if (!name) return UNCLASSIFIED_SECTOR;
+  if (!industry.sectors_order.includes(name)) return UNCLASSIFIED_SECTOR;
+  return name;
+}
+
+function sortCompaniesByIndustry(companies: CompanySummary[], industry: IndustryData): CompanySummary[] {
+  return [...companies].sort((a, b) => {
+    const sectorA = getSector(a.code, industry);
+    const sectorB = getSector(b.code, industry);
+    if (sectorA === UNCLASSIFIED_SECTOR && sectorB !== UNCLASSIFIED_SECTOR) return -1;
+    if (sectorB === UNCLASSIFIED_SECTOR && sectorA !== UNCLASSIFIED_SECTOR) return 1;
+    const rankA = industry.sectors_order.indexOf(sectorA);
+    const rankB = industry.sectors_order.indexOf(sectorB);
+    if (rankA !== rankB) return rankA - rankB;
+    return (b.market_cap ?? -Infinity) - (a.market_cap ?? -Infinity);
+  });
+}
+
+type GroupedRowContext = {
+  displayYear: number;
+  nextYear: number;
+  archiving: string | "__all__" | null;
+  openFolder: (companyId: string) => Promise<void>;
+  onSelectCompany: (companyId: string) => void;
+};
+
+function renderGroupedRows(
+  rows: HomeFolderOverview[],
+  industry: IndustryData,
+  onIndustryChange: (next: IndustryData) => Promise<void>,
+  ctx: GroupedRowContext,
+) {
+  const { displayYear, nextYear, archiving, openFolder, onSelectCompany } = ctx;
+  if (rows.length === 0) {
+    return (
+      <tr>
+        <td colSpan={11} className="home-empty">暂无覆盖公司。在 companies/ 下新建公司目录后将自动出现。</td>
+      </tr>
+    );
+  }
+
+  const order = new Map<string, number>();
+  industry.sectors_order.forEach((sector, index) => order.set(sector, index));
+
+  function sectorRank(code: string) {
+    const sector = getSector(code, industry);
+    if (sector === UNCLASSIFIED_SECTOR) return -1;
+    return order.get(sector) ?? Number.MAX_SAFE_INTEGER;
+  }
+
+  const sorted = [...rows].sort((a, b) => {
+    const rankA = sectorRank(a.code);
+    const rankB = sectorRank(b.code);
+    if (rankA !== rankB) return rankA - rankB;
+    const mvA = a.signals?.forecast?.market_cap ?? -Infinity;
+    const mvB = b.signals?.forecast?.market_cap ?? -Infinity;
+    return mvB - mvA;
+  });
+
+  const groups: { sector: string; rows: HomeFolderOverview[] }[] = [];
+  for (const row of sorted) {
+    const sector = getSector(row.code, industry);
+    const last = groups[groups.length - 1];
+    if (last && last.sector === sector) {
+      last.rows.push(row);
+    } else {
+      groups.push({ sector, rows: [row] });
+    }
+  }
+
+  async function handleDropSector(targetSector: string, draggedSector: string) {
+    if (targetSector === draggedSector) return;
+    const next = { ...industry, sectors_order: [...industry.sectors_order] };
+    const draggedIndex = next.sectors_order.indexOf(draggedSector);
+    const targetIndex = next.sectors_order.indexOf(targetSector);
+    if (draggedIndex === -1 || targetIndex === -1) return;
+    next.sectors_order.splice(draggedIndex, 1);
+    next.sectors_order.splice(targetIndex, 0, draggedSector);
+    await onIndustryChange(next);
+  }
+
+  async function handleAssignSector(code: string, sectorName: string) {
+    const trimmed = sectorName.trim();
+    const next: IndustryData = {
+      version: industry.version,
+      sectors_order: [...industry.sectors_order],
+      companies: { ...industry.companies },
+    };
+    if (!trimmed || trimmed === UNCLASSIFIED_SECTOR) {
+      delete next.companies[code];
+    } else {
+      next.companies[code] = trimmed;
+      if (!next.sectors_order.includes(trimmed)) {
+        next.sectors_order.push(trimmed);
+      }
+    }
+    await onIndustryChange(next);
+  }
+
+  const out: React.ReactNode[] = [];
+  let rowIndex = 0;
+  for (const group of groups) {
+    out.push(
+      <SectorHeader
+        key={`sector-${group.sector}`}
+        sector={group.sector}
+        count={group.rows.length}
+        onDropSector={handleDropSector}
+      />,
+    );
+    for (const r of group.rows) {
+      const s = r.signals;
+      const f = s?.forecast ?? null;
+      const revY1v = f?.revenue_yoy[String(displayYear)] ?? null;
+      const revY2v = f?.revenue_yoy[String(nextYear)] ?? null;
+      const profY1v = f?.profit_yoy[String(displayYear)] ?? null;
+      const profY2v = f?.profit_yoy[String(nextYear)] ?? null;
+      out.push(
+        <tr key={r.company_id} style={{ animationDelay: `${Math.min(rowIndex, 12) * 28}ms` }}>
+          <td className="company-cell">
+            <span className="company-name">{r.name}</span>
+            <span className="company-code">{r.code}</span>
+          </td>
+          <td className="status-cell">
+            {s ? <span className={`stage-pill ${STAGE_TONE[s.pipeline_stage]}`}>{s.pipeline_stage}</span> : "读取失败"}
+          </td>
+          <td className="sector-cell">
+            <SectorPicker
+              value={getSector(r.code, industry)}
+              sectors={industry.sectors_order}
+              onChange={(sector) => handleAssignSector(r.code, sector)}
+            />
+          </td>
+          <td className="actions-cell">
+            <button className="ghost-btn" onClick={() => onSelectCompany(r.company_id)} type="button">跳转页面</button>
+            <button className="ghost-btn" onClick={() => openFolder(r.company_id)} type="button">打开目录</button>
+          </td>
+          <td className="numeric group-start col-bold">{fmtMv(f?.market_cap)}</td>
+          <td className="numeric col-bold">{fmtPe(f?.pe[String(displayYear)] ?? null)}</td>
+          <td className="numeric col-bold">{fmtPe(f?.pe[String(nextYear)] ?? null)}</td>
+          <td className={`numeric group-start ${revY1v != null && revY1v < 0 ? "negative" : ""}`}>{fmtYoy(revY1v)}</td>
+          <td className={`numeric ${revY2v != null && revY2v < 0 ? "negative" : ""}`}>{fmtYoy(revY2v)}</td>
+          <td className={`numeric group-start ${profY1v != null && profY1v < 0 ? "negative" : ""}`}>{fmtYoy(profY1v)}</td>
+          <td className={`numeric ${profY2v != null && profY2v < 0 ? "negative" : ""}`}>{fmtYoy(profY2v)}</td>
+        </tr>,
+      );
+      rowIndex += 1;
+    }
+  }
+  return out;
+}
+
+function SectorHeader({
+  sector,
+  count,
+  onDropSector,
+}: {
+  sector: string;
+  count: number;
+  onDropSector: (targetSector: string, draggedSector: string) => void;
+}) {
+  const [dragOver, setDragOver] = useState(false);
+  const isUnclassified = sector === UNCLASSIFIED_SECTOR;
+  return (
+    <tr
+      className={`sector-header ${dragOver ? "drag-over" : ""}`}
+      draggable={!isUnclassified}
+      onDragStart={(event) => {
+        event.dataTransfer.setData("text/plain", sector);
+        event.dataTransfer.effectAllowed = "move";
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragOver(false);
+        const dragged = event.dataTransfer.getData("text/plain");
+        if (dragged && dragged !== sector) {
+          onDropSector(sector, dragged);
+        }
+      }}
+    >
+      <td colSpan={11}>
+        <span className="sector-title">{sector} {count} 家</span>
+      </td>
+    </tr>
+  );
+}
+
+function SectorPicker({
+  value,
+  sectors,
+  onChange,
+}: {
+  value: string;
+  sectors: string[];
+  onChange: (sector: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value === UNCLASSIFIED_SECTOR ? "" : value);
+  const selectRef = useRef<HTMLSelectElement>(null);
+
+  useEffect(() => {
+    if (editing && selectRef.current) {
+      selectRef.current.focus();
+    }
+  }, [editing]);
+
+  const apply = (next: string) => {
+    onChange(next.trim());
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="sector-picker">
+        <select
+          ref={selectRef}
+          value={draft}
+          onChange={(event) => apply(event.currentTarget.value)}
+          onBlur={() => apply(draft)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              setDraft(value === UNCLASSIFIED_SECTOR ? "" : value);
+              setEditing(false);
+            }
+          }}
+        >
+          <option value="">未分类</option>
+          {sectors.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      className={`sector-badge sector-badge-button ${value === UNCLASSIFIED_SECTOR ? "sector-unclassified" : ""}`}
+      onClick={() => setEditing(true)}
+      type="button"
+    >
+      {value === UNCLASSIFIED_SECTOR ? "选择行业" : value}
+    </button>
+  );
+}
+
+function ModelSettingsPanel({
+  rows,
+  industry,
+  onIndustryChange,
+  onArchiveAll,
+  onClose,
+  archiving,
+}: {
+  rows: HomeFolderOverview[];
+  industry: IndustryData;
+  onIndustryChange: (next: IndustryData) => Promise<void>;
+  onArchiveAll: () => Promise<void>;
+  onClose: () => void;
+  archiving: boolean;
+}) {
+  const [newSector, setNewSector] = useState("");
+
+  const staleCompanies = useMemo(() => {
+    const stale: { name: string; code: string; date: string; days: number }[] = [];
+    const today = new Date();
+    for (const r of rows) {
+      const d = r.signals?.yaml1_date;
+      if (!d) continue;
+      const then = new Date(`${d}T00:00:00`);
+      const days = Math.floor((today.getTime() - then.getTime()) / (1000 * 60 * 60 * 24));
+      if (days > 90) {
+        stale.push({ name: r.name, code: r.code, date: d, days });
+      }
+    }
+    stale.sort((a, b) => b.days - a.days);
+    return stale;
+  }, [rows]);
+
+  const sectorCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const r of rows) {
+      const sector = getSector(r.code, industry);
+      counts[sector] = (counts[sector] ?? 0) + 1;
+    }
+    return counts;
+  }, [rows, industry]);
+
+  async function addSector() {
+    const trimmed = newSector.trim();
+    if (!trimmed || trimmed === UNCLASSIFIED_SECTOR) return;
+    if (industry.sectors_order.includes(trimmed)) return;
+    await onIndustryChange({
+      ...industry,
+      sectors_order: [...industry.sectors_order, trimmed],
+    });
+    setNewSector("");
+  }
+
+  async function removeSector(sector: string) {
+    if (sector === UNCLASSIFIED_SECTOR) return;
+    const count = sectorCounts[sector] ?? 0;
+    if (count > 0) {
+      if (!window.confirm(`删除行业“${sector}”会把 ${count} 家公司设为未分类，确认吗？`)) return;
+    }
+    const next: IndustryData = {
+      version: industry.version,
+      sectors_order: industry.sectors_order.filter((s) => s !== sector),
+      companies: { ...industry.companies },
+    };
+    for (const [code, name] of Object.entries(next.companies)) {
+      if (name === sector) delete next.companies[code];
+    }
+    await onIndustryChange(next);
+  }
+
+  return (
+    <div className="tutorial-overlay" role="dialog" aria-modal="true" aria-label="模型设置区">
+      <div className="tutorial-page config-page">
+        <header className="tutorial-header">
+          <div>
+            <div className="eyebrow">Coverage settings</div>
+            <h1>模型设置区</h1>
+          </div>
+          <button className="tutorial-close" onClick={onClose} type="button" aria-label="关闭">×</button>
+        </header>
+
+        <section className="tutorial-section">
+          <h2>归档与同步</h2>
+          <div className="model-settings-grid">
+            {staleCompanies.length > 0 ? (
+              <div className="model-settings-card model-settings-warning">
+                <span>太久没更新建模</span>
+                <strong>{staleCompanies.length} 家公司超过 90 天未更新</strong>
+                <ul className="stale-company-list">
+                  {staleCompanies.map((c) => (
+                    <li key={c.code}>
+                      <b>{c.name}</b>
+                      <span>{c.date}</span>
+                      <em>已 {c.days} 天</em>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <div className="model-settings-card">
+                <span>模型新鲜度</span>
+                <strong>没有太久没更新的模型</strong>
+                <p>所有已建模公司都在 90 天内更新过。</p>
+              </div>
+            )}
+            <div className="model-settings-card">
+              <span>一键归档</span>
+              <button className="archive-btn" disabled={archiving} onClick={onArchiveAll} type="button">
+                {archiving ? "归档中…" : "归档所有符合条件"}
+              </button>
+              <p>将 yaml1 旧版本、根目录旧 Excel 移入历史区；各留最新一份。</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="tutorial-section">
+          <h2>行业编辑区</h2>
+          <div className="sector-manager">
+            <div className="sector-manager-add">
+              <input
+                type="text"
+                value={newSector}
+                onChange={(event) => setNewSector(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void addSector();
+                }}
+                placeholder="输入新行业名称"
+              />
+              <button className="secondary-button" onClick={() => void addSector()} type="button">增加行业</button>
+            </div>
+            <div className="sector-manager-list">
+              {industry.sectors_order.length === 0 ? (
+                <div className="sector-manager-empty">暂无行业，请在上方添加。</div>
+              ) : (
+                industry.sectors_order.map((sector) => (
+                  <div className="sector-manager-row" key={sector}>
+                    <span className="sector-manager-name">{sector}</span>
+                    <span className="sector-manager-count">{sectorCounts[sector] ?? 0} 家</span>
+                    <button className="ghost-btn" onClick={() => void removeSector(sector)} type="button">删除</button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function FolderOverview({
+  onOpenTutorial,
+  industry,
+  onIndustryChange,
+  sortedCompanies,
+  onSelectCompany,
+}: {
+  onOpenTutorial: () => void;
+  industry: IndustryData;
+  onIndustryChange: (next: IndustryData) => Promise<void>;
+  sortedCompanies: CompanySummary[];
+  onSelectCompany: (companyId: string) => void;
+}) {
   const [rows, setRows] = useState<HomeFolderOverview[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [archiving, setArchiving] = useState<string | null>(null);
-  const [homeTab, setHomeTab] = useState<HomeTab>("folder-overview");
+  const [archiving, setArchiving] = useState<string | "__all__" | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [displayYear, setDisplayYear] = useState<number>(() => {
+    const raw = window.localStorage.getItem("mka.home_display_start_year");
+    return raw ? Number(raw) : 2026;
+  });
+  const nextYear = displayYear + 1;
+  const displayYearShort = String(displayYear).slice(-2);
+  const nextYearShort = String(nextYear).slice(-2);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const settings = await apiGet<AppSettings>("/api/settings");
+        const year = settings.home_display_start_year ?? 2026;
+        setDisplayYear(year);
+        window.localStorage.setItem("mka.home_display_start_year", String(year));
+      } catch {
+        // keep localStorage fallback
+      }
+    })();
+  }, []);
 
   async function load() {
     try {
-      setRows(await apiGet<HomeFolderOverview[]>("/api/home/folder-overview"));
+      const data = await apiGet<HomeFolderOverview[]>("/api/home/folder-overview");
+      const ordered = sortCompaniesByIndustry(
+        data.map((row) => ({ id: row.company_id, name: row.name, code: row.code, market_cap: row.signals?.forecast?.market_cap ?? null } as CompanySummary)),
+        industry,
+      );
+      const orderMap = new Map(ordered.map((c, index) => [c.id, index]));
+      const sortedRows = [...data].sort((a, b) => (orderMap.get(a.company_id) ?? 0) - (orderMap.get(b.company_id) ?? 0));
+      setRows(sortedRows);
       setError(undefined);
     } catch (err) {
       setError(String(err));
@@ -4395,7 +4847,7 @@ function FolderOverview({ onOpenTutorial }: { onOpenTutorial: () => void }) {
       if (document.visibilityState === "visible") void load();
     }, 3000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [industry]);
 
   async function openFolder(companyId: string) {
     try {
@@ -4419,90 +4871,93 @@ function FolderOverview({ onOpenTutorial }: { onOpenTutorial: () => void }) {
     }
   }
 
+  async function archiveAll() {
+    const eligible = rows.filter((r) => r.signals && (r.signals.yaml1_archive_eligible || r.signals.root_models.archive_eligible));
+    if (eligible.length === 0) return;
+    if (!window.confirm(`确认归档 ${eligible.length} 家公司的历史模型？`)) return;
+    setArchiving("__all__");
+    try {
+      for (const r of eligible) {
+        await apiPost<ArchiveModelsResult>(`/api/companies/${encodeURIComponent(r.company_id)}/archive-models`);
+      }
+      await load();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setArchiving(null);
+    }
+  }
+
   return (
-    <div className="view-stack folder-overview-page">
-      <header className="topbar">
-        <div>
-          <div className="eyebrow">Home</div>
-          <h1>文件夹总览</h1>
+    <div className="view-stack home-page">
+      <header className="home-masthead">
+        <div className="masthead-brand">
+          <div className="masthead-wordmark">ModelKing</div>
+          <div className="masthead-tagline">Buy-side equity research workbench</div>
         </div>
-        <div className="topbar-right">
-          <button className="tutorial-btn" onClick={onOpenTutorial} type="button">配置和教程</button>
-        </div>
+        <button className="tutorial-btn" onClick={onOpenTutorial} type="button">配置和教程</button>
       </header>
-      <nav className="tabbar">
-        {HOME_TABS.map((t) => (
-          <button key={t.key} className={homeTab === t.key ? "active" : ""} onClick={() => setHomeTab(t.key)} type="button">{t.label}</button>
-        ))}
-      </nav>
-      {error ? <div className="error-banner">{error}</div> : null}
-      {loading ? <div className="activity content-activity">Loading folder overview</div> : null}
-      {!loading && homeTab === "folder-overview" ? (
-        <div className="table-scroll workbook-scroll">
-          <table className="financial-table folder-overview-table folder-overview-rows">
-            <thead>
-              <tr className="group-header-row">
-                <th rowSpan={2} className="col-company">公司</th>
-                <th colSpan={4} className="group-status">建模状态</th>
-                <th colSpan={7} className="group-forecast">预测与估值</th>
-                <th rowSpan={2} className="col-actions">操作</th>
-              </tr>
-              <tr>
-                <th>管线推进</th>
-                <th>DCF建模日期</th>
-                <th>历史版本</th>
-                <th>工作台素材</th>
-                <th className="forecast-start">最新市值(亿)</th>
-                <th>26营收</th>
-                <th>27营收</th>
-                <th>26利润</th>
-                <th>27利润</th>
-                <th>26 PE</th>
-                <th>27 PE</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const s = r.signals;
-                const f = s?.forecast ?? null;
-                const archiveEligible = Boolean(s && (s.yaml1_archive_eligible || s.root_models.archive_eligible));
-                const rev26 = f?.revenue_yoy["2026"] ?? null;
-                const rev27 = f?.revenue_yoy["2027"] ?? null;
-                const prof26 = f?.profit_yoy["2026"] ?? null;
-                const prof27 = f?.profit_yoy["2027"] ?? null;
-                return (
-                  <tr key={r.company_id}>
-                    <td className="company-cell">
-                      <span className="company-name">{r.name}</span>
-                      <span className="company-code">{r.code}</span>
-                    </td>
-                    <td>
-                      {s ? <span className={`stage-pill ${STAGE_TONE[s.pipeline_stage]}`}>{s.pipeline_stage}</span> : "读取失败"}
-                    </td>
-                    <td className="numeric dcf-date">{s?.yaml1_date ?? "尚未完整建模"}</td>
-                    <td className="numeric">{s ? s.yaml1_versions : ""}</td>
-                    <td className="numeric">{s ? s.workbench_materials : ""}</td>
-                    <td className="numeric forecast-start">{fmtMv(f?.market_cap)}</td>
-                    <td className={`numeric ${rev26 != null && rev26 < 0 ? "negative" : ""}`}>{fmtYoy(rev26)}</td>
-                    <td className={`numeric ${rev27 != null && rev27 < 0 ? "negative" : ""}`}>{fmtYoy(rev27)}</td>
-                    <td className={`numeric ${prof26 != null && prof26 < 0 ? "negative" : ""}`}>{fmtYoy(prof26)}</td>
-                    <td className={`numeric ${prof27 != null && prof27 < 0 ? "negative" : ""}`}>{fmtYoy(prof27)}</td>
-                    <td className="numeric">{fmtPe(f?.pe["2026"] ?? null)}</td>
-                    <td className="numeric">{fmtPe(f?.pe["2027"] ?? null)}</td>
-                    <td className="actions-cell">
-                      <button className="ghost-btn" onClick={() => openFolder(r.company_id)} type="button">打开目录</button>
-                      {archiveEligible ? (
-                        <button className="archive-btn" disabled={archiving === r.company_id} onClick={() => archive(r.company_id)} type="button">
-                          {archiving === r.company_id ? "归档中…" : "一键归档"}
-                        </button>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+
+      <div className="home-section-header">
+        <div>
+          <div className="eyebrow">Coverage universe</div>
+          <h2>公司覆盖与建模进度</h2>
         </div>
+        <button className="tutorial-btn" onClick={() => setShowSettings(true)} type="button">模型设置区</button>
+      </div>
+
+      {error ? <div className="error-banner">{error}</div> : null}
+      {loading ? (
+        <div className="home-loading">
+          <span className="home-loading-bar" />
+          <span>Loading coverage</span>
+        </div>
+      ) : null}
+      {!loading ? (
+        <section className="home-table-card">
+          <div className="table-scroll workbook-scroll">
+            <table className="home-coverage-table">
+              <thead>
+                <tr className="home-header-row">
+                  <th className="col-company">公司</th>
+                  <th className="col-status">建模状态</th>
+                  <th className="col-sector">行业</th>
+                  <th className="col-actions">操作</th>
+                  <th className="col-metric group-start col-bold">市值(亿)</th>
+                  <th className="col-metric col-bold">{displayYearShort}E PE</th>
+                  <th className="col-metric col-bold">{nextYearShort}E PE</th>
+                  <th className="col-metric group-start">{displayYearShort}E 营收同比</th>
+                  <th className="col-metric">{nextYearShort}E 营收同比</th>
+                  <th className="col-metric group-start">{displayYearShort}E 利润同比</th>
+                  <th className="col-metric">{nextYearShort}E 利润同比</th>
+                </tr>
+              </thead>
+              <tbody>
+                  {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={11} className="home-empty">暂无覆盖公司。在 companies/ 下新建公司目录后将自动出现。</td>
+                  </tr>
+                )                 : renderGroupedRows(rows, industry, onIndustryChange, {
+                    displayYear,
+                    nextYear,
+                    archiving,
+                    openFolder,
+                    onSelectCompany,
+                  })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+      {showSettings ? (
+        <ModelSettingsPanel
+          rows={rows}
+          industry={industry}
+          onIndustryChange={onIndustryChange}
+          onArchiveAll={archiveAll}
+          onClose={() => setShowSettings(false)}
+          archiving={archiving === "__all__"}
+        />
       ) : null}
     </div>
   );
@@ -4519,6 +4974,32 @@ export default function App() {
   const [error, setError] = useState<string>();
   const [showTutorial, setShowTutorial] = useState(false);
   const [homeActive, setHomeActive] = useState(true);
+  const [industry, setIndustry] = useState<IndustryData>({ version: 1, sectors_order: [], companies: {} });
+  const [industryLoading, setIndustryLoading] = useState(true);
+
+  async function loadIndustry() {
+    setIndustryLoading(true);
+    try {
+      const result = await apiGet<IndustryData>("/api/industry");
+      setIndustry(result);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setIndustryLoading(false);
+    }
+  }
+
+  async function saveIndustry(next: IndustryData) {
+    try {
+      const result = await apiPutJson<IndustryData>("/api/industry", next as Record<string, unknown>);
+      setIndustry(result);
+    } catch (err) {
+      setError(String(err));
+      throw err;
+    }
+  }
+
+  const sortedCompanies = useMemo(() => sortCompaniesByIndustry(companies, industry), [companies, industry]);
 
   async function loadCompanies() {
     setLoading(true);
@@ -4564,6 +5045,7 @@ export default function App() {
 
   useEffect(() => {
     void loadCompanies();
+    void loadIndustry();
   }, []);
 
   useEffect(() => {
@@ -4581,8 +5063,8 @@ export default function App() {
   return (
     <div className="app-shell">
       <Sidebar
-        companies={companies}
-        loading={loading}
+        companies={sortedCompanies}
+        loading={loading || industryLoading}
         onSelect={(id) => { setSelectedId(id); setHomeActive(false); }}
         selectedId={selectedId}
         homeActive={homeActive}
@@ -4590,7 +5072,13 @@ export default function App() {
       />
       <main className="main-pane">
         {homeActive ? (
-          <FolderOverview onOpenTutorial={() => setShowTutorial(true)} />
+          <FolderOverview
+            onOpenTutorial={() => setShowTutorial(true)}
+            industry={industry}
+            onIndustryChange={saveIndustry}
+            sortedCompanies={sortedCompanies}
+            onSelectCompany={(id) => { setSelectedId(id); setHomeActive(false); }}
+          />
         ) : (
           <>
             <header className="topbar">

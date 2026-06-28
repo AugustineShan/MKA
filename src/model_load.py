@@ -26,6 +26,7 @@ from src.company_paths import (
     annual_reports_dir,
     db_path as company_db_path,
     find_company_dir,
+    ka_reference_dir,
     load_model_dir,
 )
 from src.defaults_gen import build_defaults
@@ -556,13 +557,13 @@ def prepare_load(
     )
     _write_text(load_dir / "model_boundary.md", _boundary_markdown(boundary))
     _write_text(load_dir / "forbidden_materials.md", _forbidden_markdown(boundary, forbidden_reports, removed_rows, company_dir))
-    # Root/sandbox LOAD outputs must not look like official core assumptions.
-    # Keep the model stem for traceability, and suffix the load run date so /ka
-    # can consume it as a model-extracted candidate without /comp/forecast
-    # mistaking it for the current official source.
-    core_filename = f"{model.stem or '模型'}_核心假设_load{datetime.now().strftime('%Y%m%d')}.md"
+    # LOAD 参考稿统一落 KA 参考稿区（ka_reference_dir），命名 核心假设参考load_YYYYMMDD.md，
+    # 与 brkd/alphapai 参考稿同处，/ka 到该目录找 核心假设参考*.md。沙箱副本同名保留在
+    # load_dir，供 /load 编译 yaml1_load 与沙箱 DCF；两份内容必须一字不差。
+    core_filename = f"核心假设参考load_{datetime.now().strftime('%Y%m%d')}.md"
     core_path = load_dir / core_filename
-    root_core_path = company_dir / core_filename
+    root_core_path = ka_reference_dir(company_dir) / core_filename
+    ka_reference_dir(company_dir).mkdir(parents=True, exist_ok=True)
     _write_text(core_path, _core_assumption_scaffold(company_dir, boundary))
 
     manifest = {

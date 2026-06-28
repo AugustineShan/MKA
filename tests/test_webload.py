@@ -5,7 +5,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from src.company_paths import load_model_dir, webclaude_dir
+from src.company_paths import ka_reference_dir, load_model_dir, webclaude_dir
 from src.webload import MERGED_WEBLOAD_FILE, WEBLOAD_SUBDIR, copy_to_webload, newest_versioned_file
 
 
@@ -36,7 +36,7 @@ def test_copy_to_webload_prepares_sandbox_and_packages_safe_materials(tmp_path: 
     package = copy_to_webload(company_dir, load_id="case", overwrite=True)
     load_dir = Path(package["source_load_manifest"]["load_dir"])
     package_dir = webclaude_dir(company_dir) / WEBLOAD_SUBDIR
-    expected_core_name = f"model20250527_核心假设_load{datetime.now().strftime('%Y%m%d')}.md"
+    expected_core_name = f"核心假设参考load_{datetime.now().strftime('%Y%m%d')}.md"
 
     assert Path(package["package_dir"]) == package_dir
     assert load_dir.name == "case"
@@ -73,9 +73,9 @@ def test_copy_to_webload_prepares_sandbox_and_packages_safe_materials(tmp_path: 
     assert "data_cutoff.db 不打包到网页端" in prompt
     assert "主产物回填路径" in prompt
     assert expected_core_name in prompt
-    assert str(company_dir / expected_core_name) in prompt
+    assert str(ka_reference_dir(company_dir) / expected_core_name) in prompt
     assert "沙箱副本同步路径" in prompt
-    assert "根目录主产物供 `/ka` 读取" in prompt
+    assert "主产物供 `/ka` 读取" in prompt
 
     contract = package["package_contract"]
     assert MERGED_WEBLOAD_FILE in contract["include"]

@@ -35,6 +35,8 @@ KA_MODEL_SUBDIR = "LOAD外部EXCEL模型理解器（一次最多一个）"
 BRKD_MATERIAL_SUBDIR = "BRKD业务理解器（研报和纪要放在这里）"
 TOP_WEIGHT_MATERIAL_SUBDIR = "最高权重材料-放Agent最应对齐的材料"
 ADJ_INCREMENT_SUBDIR = "ADJ增量信息（用来改模型的边际信息）"
+PJBG_RATING_REPORT_SUBDIR = "PJBG评级报告素材区"
+KA_REFERENCE_SUBDIR = "KA（ALPHAPAI拆出来的东西放在这里）"
 BRKD_MARKDOWN_STORE_SUBDIR = "markdown存储区"
 TOP_WEIGHT_MARKDOWN_STORE_SUBDIR = "markdown存储区"
 ADJ_MARKDOWN_STORE_SUBDIR = "markdown存储区"
@@ -213,18 +215,28 @@ def load_model_dir(company_dir: Path) -> Path:
 
 
 def top_weight_material_dir(company_dir: Path) -> Path:
-    """最高权重材料子文件夹（Agent 最应该对齐的材料放这里）。当前无消费方，仅建目录占位。"""
+    """最高权重材料子文件夹（Agent 最应该对齐的材料放这里）。/ka 经 ka_prepare 读取并 markdown 化。"""
     return active_vore_dir(company_dir) / TOP_WEIGHT_MATERIAL_SUBDIR
 
 
 def adj_increment_dir(company_dir: Path) -> Path:
-    """ADJ增量信息子文件夹（用来改模型的边际信息放这里）。当前无消费方，仅建目录占位。"""
+    """ADJ增量信息子文件夹（用来改模型的边际信息放这里）。/adj incremental 经 adj_prepare 读取并 markdown 化。"""
     return active_vore_dir(company_dir) / ADJ_INCREMENT_SUBDIR
 
 
 def adj_markdown_store_dir(company_dir: Path) -> Path:
     """/adj deterministic prepare 输出的 markdown 存储区。"""
     return adj_increment_dir(company_dir) / ADJ_MARKDOWN_STORE_SUBDIR
+
+
+def pjbg_rating_report_dir(company_dir: Path) -> Path:
+    """PJBG 评级报告素材区（评级报告素材放这里）。当前无消费方，仅建目录占位。"""
+    return active_vore_dir(company_dir) / PJBG_RATING_REPORT_SUBDIR
+
+
+def ka_reference_dir(company_dir: Path) -> Path:
+    """KA 参考稿区：brkd/load/alphapai 产出的 核心假设参考*.md 统一放这里，/ka 到这里找。"""
+    return active_vore_dir(company_dir) / KA_REFERENCE_SUBDIR
 
 
 def top_weight_markdown_store_dir(company_dir: Path) -> Path:
@@ -266,6 +278,8 @@ def ensure_workspace_layout(company_dir: Path) -> None:
         top_weight_markdown_store_dir(company_dir),
         adj_increment_dir(company_dir),
         adj_markdown_store_dir(company_dir),
+        pjbg_rating_report_dir(company_dir),
+        ka_reference_dir(company_dir),
         webclaude_dir(company_dir),
     ):
         path.mkdir(parents=True, exist_ok=True)

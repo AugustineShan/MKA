@@ -161,7 +161,7 @@ def _write_merged_webload_markdown(
 {core_assumption_path}
 ```
 
-根目录主产物供 `/ka` 读取；沙箱副本供本地继续编译 `yaml1_load_*.yaml` 并运行：
+主产物供 `/ka` 读取；沙箱副本供本地继续编译 `yaml1_load_*.yaml` 并运行：
 
 ```bash
 py -m src.model_load dcf --load-dir "{load_dir}" --yaml1 "<yaml1_load_path>"

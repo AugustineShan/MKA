@@ -55,11 +55,13 @@ companies/{公司}/Agent/core_metrics_overview.csv
 
 它只读 `clean_annual`，不读 forecast/yaml/defaults，不调用 LLM，不写生成时间；同一份 `clean_annual` 重跑应保持字节稳定。`--mode quarterly` 不更新这份年度速览。
 
+clean 通过后，`init.py` 还会生成 `Agent/defaults.yaml` 机器平推底座。报告里的 `[6/6] defaults.yaml` 会显示 `base_period` 和 `review_flags` 数量；若 `review_flags>0`，只转述前几项 flag（如 `latest_outlier: balance_sheet.dividend_payout`、`one_off_candidate: income.cost_abs.*`、`financial_expense_evidence_failed: income.financial_expense`），并说明它们是不阻塞 init 的机器审计标识，会在 `/ka` 被读取和裁决。
+
 ### 第 2 步：按退出码决定下一步
 
 | 退出码 | 含义 | 你要做的 |
 |--------|------|----------|
-| **0** | 全链路成功 | 把 init.py 打印的「数据拉取报告」转述给用户。重点说明：哪些是纯 TuShare 通过、哪些科目经年报确认后补全（如美的的 `lending_funds`），以及 `core_metrics_overview.*` 是否已刷新。 |
+| **0** | 全链路成功 | 把 init.py 打印的「数据拉取报告」转述给用户。重点说明：哪些是纯 TuShare 通过、哪些科目经年报确认后补全（如美的的 `lending_funds`）、`core_metrics_overview.*` 是否已刷新，以及 `defaults.yaml` 的 `review_flags` 是否为 0；若非 0，说明这些 flag 后续由 `/ka` 消化，不是 clean blocker。 |
 | **2** | 输入无法解析为唯一 ticker（中文名歧义/无匹配） | 看 stderr 列出的候选；**用 websearch 查"<公司名> A股 股票代码"** 确认正确代码，然后用完整 ticker 重新 `python init.py 000333.SZ`。 |
 | **3** | 应用年报补数后仍有年度硬校验失败（**真数据问题**） | **先如实告知用户**：哪一期/哪条 check 失败、reconciler 为何没能闭合。**然后**（agent 在线时）走下面的「退出码 3 subagent 升级通道」——派并发 subagent 啃残差。若用户明确不要升级或 subagent 也找不到证据，才如实留 exit 3。**绝不静默改判成功**。 |
 | **1** | 其它异常（API/网络/鉴权/缺 .env） | 报错并给出可能原因（TUSHARE_TOKEN、网络、中转站、年报缺失）。 |
@@ -170,39 +172,35 @@ python -m src.clean --ticker 002594.SZ --mode annual
 
 exit 3 的失败里若混有 `跨表 7.4`（上期CF期末 ≠ 本期CF期初），**走这条完全不同的通道**——不是 BS 残差的"找缺数补 override"，而是"确认重述 → 证据化豁免 → clean 降级软 warning"。
 
-**为什么 7.4 不能用 override 闭合（踩过坑，别再试）**：7.4 残差来自年报重述——公司在新一年年报比较列里追溯重述上年期末现金，TuShare 存的却是各年原始披露值，边界不衔接。override 一侧会破坏该侧 CF 5.5（期末=期初+净增加），改净增加又级联到 CF 5.4/5.1-5.3；多年连续重述（每年报都在再追溯）要彻底闭合得整体重载被重述年份的整张现金流量表，fragile 且破坏 TuShare 口径。**重述是公司披露的会计事件、非数据错误**，故走豁免降级（与 2010 闸门同性质：有据、可审计，非静默改判）。潍柴动力 000338 实测：2021/2022 两条 7.4 经此通道豁免后年度 10 期全过。
+**为什么 7.4 不能用 override 闭合（踩过坑，别再试）**：7.4 残差来自年报重述——公司在新一年年报比较列里追溯重述上年期末现金，TuShare 存的却是各年原始披露值，边界不衔接。override 一侧会破坏该侧 CF 5.5（期末=期初+净增加），改净增加又级联到 CF 5.4/5.1-5.3；多年连续重述（每年报都在再追溯）要彻底闭合得整体重载被重述年份的整张现金流量表，fragile 且破坏 TuShare 口径。**重述是公司自己披露的会计事件、非数据错误**，故走豁免降级（与 2010 闸门同性质：有据、可审计，非静默改判）。
 
-**5 步流程**：
+**为什么不需要 subagent 复核年报**：公司自己重述的，没必要给他留脸。TuShare 本期期初已采纳本期年报的重述后值（TuShare 取最新年报），上年期末是原始披露值——残差 = |本期期初 − 上年期末| 天然就是重述幅度，结构上自证。agent 看 context 确认是 7.4 边界错配即可直接放行；clean.py 每次加载按 TuShare 现值重验残差，数据变动后旧豁免自动失效，不会脏放行。
+
+**3 步流程**（轻量，默认）：
 
 1. **算失败 + 上下文**（确定性）：
    ```bash
    python -m src.recon_subagent_bridge context --ticker <t>
    ```
-   bridge 重跑 clean 取净残差失败，为每个 `跨表 7.4` 失败算 `build_restatement_context`：从 message 解析 `prev_end_cash`/`cur_beg_cash`/残差/方向，定位本期年报合并现金流量表期初/期末现金行号（`cf_section_hint`），写到 `subagent_context.json`（`kind:"restatement"`）。
+   bridge 重跑 clean 取净残差失败，为每个 `跨表 7.4` 失败算 `build_restatement_context`：从 message 解析 `prev_end_cash`/`cur_beg_cash`/残差/方向，写到 `subagent_context.json`（`kind:"restatement"`）。读 summary 确认有几个 7.4 残差、各有年报 MD 没有。
 
-2. **并发派 subagent 确认重述**（一个 7.4 失败一个）：subagent 读本期年报合并现金流量表期末段（两列：本期 | 上年比较列），抽两个数——**本期期初现金**（本期列）与**上年比较列期末现金**（上年列，重述后）+ 证据行号，返回：
-   ```json
-   [{"confirmed": true, "period": "<本期>", "cur_beg_disclosed_yuan": <元>,
-     "prev_end_comparative_yuan": <元>, "evidence_lines": "<行号-行号; 行号-行号>",
-     "reasoning": "<为何是披露重述>"}]
-   ```
-   把各 subagent 输出合并到 `companies/{公司}/Agent/recon/subagent_restatement_proposals.json`。读不到/对不上 → `{"confirmed": false, ...}`，**不凑数**。
-
-3. **服务端验证据 + 写豁免**（确定性，6 道闸门全在代码）：
+2. **agent 确认 → 直接写豁免**（确定性，最小守卫在代码）：
    ```bash
    python -m src.recon_subagent_bridge apply-restatements --ticker <t>
    ```
-   `evaluate_restatement_proposal` 闸门：① `confirmed==true`；② subagent 引用的行号里**真实出现**其声称的两个元金额（反幻觉，bridge 自己读 markdown 行号校验，不信自报）；③ 本期期初(披露)==上年比较列期末(披露)（年报内部自洽）；④ 本期期初(披露)==TuShare 本期期初（TuShare 本期值是对的）；⑤ 本期期初(披露)≠TuShare 上年期末（确属重述，非数据错误）；⑥ 残差吻合。全过才写 `restatement_exemptions.json`（`source=claude`，带 evidence_lines+reason），同 period 已有则跳过。
+   `approve_restatement_auto` 最小守卫：① `kind==restatement`；② 残差 > 容差（确有错配非噪声）；③ 本期有年报 MD（pre-IPO 年由 clean 的 pre-IPO 闸门降级，不会到这）。全过即写 `restatement_exemptions.json`（`source=claude`、`approved_by=claude:agent_confirmed`，带 prev/cur/残差/方向+reason），同 period 已有则跳过。**不读年报行号、不派 subagent、不需要 proposals 文件。**
 
-4. **重跑 clean 验证**（闭环必做）：
+3. **重跑 clean 验证**（闭环必做）：
    ```bash
    python -m src.clean --ticker <t> --mode annual
    ```
    clean.py 加载 `restatement_exemptions.json`，对豁免边界把 7.4 从硬错误降级为 `clean_warnings`（带"重述豁免…source=claude…非数据错误"），残差需与豁免记录吻合（防脏豁免：TuShare 值变动后旧豁免自动失效）。过了再 `--mode all`。
 
-5. **如实汇报**：哪些边界被豁免（期 × 上期 × 残差 × 年报行号）、哪些 subagent 没确认（诚实留 exit 3）。`raw_tushare` 未动；豁免审计在 `clean_warnings`（source=claude）。
+**如实汇报**：哪些边界被豁免（期 × 上期 × 残差 × 方向）。`raw_tushare` 未动；豁免审计在 `clean_warnings`（source=claude）。
 
-**纪律**：subagent 只读只确认；验证据/写豁免/降级全在 bridge+clean 代码。`--no-restatement-exemptions` 可关闭。**关键**：豁免只降级 7.4 这一类经年报确认的重述边界，**绝不**用来掩盖 BS/IS/CF 内部配平失败——那些仍走 override 通道或诚实留 exit 3。
+**`--strict` 旧路径（可选，仅当 agent 想对个别边界做严格复核）**：`apply-restatements --strict` 走旧 subagent 证据闸门（需 `subagent_restatement_proposals.json`，读年报行号反幻觉校验 6 道闸门）。常规不需要——重述是公司自己的会计事件，轻量放行即可。
+
+**纪律**：写豁免/降级全在 bridge+clean 代码。`--no-restatement-exemptions` 可关闭。**关键**：豁免只降级 7.4 这一类经确认的重述边界，**绝不**用来掩盖 BS/IS/CF 内部配平失败——那些仍走 override 通道或诚实留 exit 3。
 
 ### 为什么 subagent 赢 reconciler 的 GLM（理解原理，便于排查）
 
@@ -246,6 +244,8 @@ init.py 已打印结构化报告，包含：
 - 年度/季度期数
 - `clean_adjustments`：年报确认后补全的科目（字段 × 期数 × failure_code）
 - `clean_warnings`：季度 QA plug、软校验等
+- `defaults.yaml`：`base_period`、`review_flags` 数量和前几项机器审计标识
 
 转述时突出两点：**①纯 TuShare 是否全部配平通过；②哪些科目动用了年报确认补全、为什么**。
 若 `clean_adjustments` 为空，明确告诉用户"全部为 TuShare 原始数据，未使用任何年报补数"。
+若 `defaults.yaml review_flags>0`，补一句："机器底座已生成，但这些 flag 会带入 /ka 做拍板或收纳，不阻塞当前 init。"

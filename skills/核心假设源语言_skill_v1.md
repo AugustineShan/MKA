@@ -136,6 +136,7 @@ BRKD、LOAD、KA 默认收窄为“利润表 + 业务层盈利模型”这套源
 常用 family：
 
 - `factor_product`：量 x 价、门店 x 单店、用户 x ARPU、产能 x 利用率 x 价格等。
+- `driver_rate`：`factor_product` 的等价别名，费率型 driver 场景（生息资产 × 净息差等），cleaner 按连乘处理。
 - `growth`：收入或标准科目的增速。
 - `abs`：绝对值。
 - `income.gpm knob`：整体毛利率手拍。
@@ -147,6 +148,13 @@ BRKD、LOAD、KA 默认收窄为“利润表 + 业务层盈利模型”这套源
 - `bs_cogs_days`：以营业成本天数表达的营运资本人工覆盖，例如存货周转天数、应付账款天数，必须落到 `balance_sheet.cogs_days.*` 现有路径。
 - `bs_scalar_pct`：轻资产/稳态下对 `balance_sheet.capex_pct`、`balance_sheet.depr_rate` 等 defaults 标量路径的人工覆盖；重资产排程优先 `/da`。
 - `formula`：受限长尾，不是默认选择。
+
+family 硬规则（`/ka` 写稿时守）：
+
+- **不得自创族名**：只能用上面列出的 family；模板装不下的跨期/DAG/分段/中间变量复用，走 §B5 受限 formula，不发明新 family。
+- **margin 互斥（二选一）**：毛利要么整体手拍（`income.gpm` knob），要么分线派生（每条 revenue leaf 都挂 `leaf margin`）。两者不可同篇混用；分线派生时**所有** revenue leaf 都必须挂 margin，部分有部分无 = 写稿失败。这是 `/ka` 骨架门"毛利是分线派生还是整体手拍"的硬约束。
+- **leaf margin 的 knobs 回声**：分线毛利率在末尾 `knobs` 块的回声见 `docs/knobs块契约.md` §7（`leaf_margin` 当前是 Gate C 已知缺口，official block 暂不写独立条目，否则被判 block 多写）。
+- **family 仅是 .md 块头声明**：`/ka` 在块头写 `compiler: <family>` 即可，不写 unit_factor、fold_direction、factors[] 结构——那些是 `/comp` 翻译成 yaml1 时的事。cleaner 折叠机制、unit_factor 换算、family→前端行可编辑性等 yaml1 侧细节见 `docs/yaml1算法模板契约.md`（`/comp` 读，`/ka` 不需加载）。
 
 ## B5. 受限 formula
 
@@ -216,7 +224,7 @@ yoy、毛利率、占比等可推导量只能写在观察或 sanity 中，不作
 
 不进计算但有复盘价值的信息进入收纳区：
 
-- 副拆分：地区、渠道、产品号、子公司。
+- 副拆分：地区、渠道、产品号、子公司。**副拆分收入**写进收纳区；**毛利率/同比由 /comp 从 /init 产物 `OfficialBreakdowns/business_revenue_breakdown.csv` 自动提取注入 yaml1 stash，KA 不需手写**（年报未披露 major 毛利率的 item 自动缺，前端不渲染）。
 - 口径差和加总差。
 - 管理层定性表述。
 - load-vintage 风险。

@@ -29,9 +29,16 @@ def test_skill_classification_doc_covers_active_entrypoints():
         assert skill in text
 
     assert "Alphapai-load prompt" in text
+    assert "Alphapai业务拆分抓取器" in text
+    assert "docs/Alphapai/Alphapai业务拆分抓取器.md" in text
+    assert "docs/Alphapai/Alphapai-load核心假设参考提示词.md" in text
     assert "不是本地启动器" in text
-    assert "{原Excel文件名}_核心假设_load{YYYYMMDD}.md" in text
-    assert "核心假设参考.md" in text
+    assert "只抓历史 factpack" in text
+    assert "不写预测、不写 knobs、不写 terminal" in text
+    assert "定向 leaf 表" in text
+    assert "最近 5 年完整性优先" in text
+    assert "核心假设参考load_{YYYYMMDD}.md" in text
+    assert "核心假设参考alphapai_{YYYYMMDD}.md" in text
     assert "核心假设.md 是判断源头" in text
     assert "yaml1" in text
     assert "Agent/forecast/" in text

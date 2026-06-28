@@ -38,8 +38,6 @@ def test_shared_knobs_docs_point_to_single_contract():
         ROOT / ".claude" / "skills" / "load" / "SKILL.md",
         ROOT / ".claude" / "skills" / "webload" / "SKILL.md",
         ROOT / "skills" / "yaml1compiler_v5.md",
-        ROOT / "skills" / "业务预理解器_skill_v1.md",
-        ROOT / "skills" / "业务预理解器_skill_v2.md",
         ROOT / "skills" / "业务预理解器_skill_v3.md",
         ROOT / "skills" / "年度更新器_skill_v1.md",
         ROOT / "skills" / "核心假设源语言_skill_v1.md",
@@ -66,8 +64,13 @@ def test_knobs_contract_defines_manual_bs_cf_override_families():
     assert "balance_sheet.cogs_days.*" in text
     assert "balance_sheet.capex_pct" in text
     assert "balance_sheet.depr_rate" in text
+    assert "balance_sheet.dividend_payout" in text
+    assert "`dividend_payout` 是 `/ka` 强制检测项" in text
+    assert "`family: bs_scalar_pct`、`sub: dividend_payout`、`unit: pct`" in text
+    assert "若只是明确沿用 defaults，只在正文说明，不写入 `knobs`" in text
     assert "重资产排程优先 `/da`" in text
     assert "未被明示为核心 thesis 的 BS/CF/DCF 驱动因素" in text
+    assert "`balance_sheet.dividend_payout` 是强制检测例外" in text
     assert "`terminal.fade.target_growth`" in text
     assert "不是可 quick 拨动的 knobs" in text
 
