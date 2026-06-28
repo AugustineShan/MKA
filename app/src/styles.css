@@ -337,6 +337,14 @@ p {
   align-items: stretch;
 }
 
+.dcf-pe-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 10px;
+}
+.dcf-pe-grid .metric-card {
+  min-height: 72px;
+  padding: 14px 16px;
+}
 .dcf-metric-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

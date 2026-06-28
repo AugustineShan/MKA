@@ -362,18 +362,6 @@ function Overview({ detail }: { detail: CompanyDetail }) {
   const marketCap = asNumber(market.total_mv ?? overviewMetric(detail, "market_cap", forecastFirstYear));
   const firstForecastPe = overviewMetric(detail, "pe", forecastFirstYear) ?? asNumber(valuation.forward_pe);
   const secondForecastPe = overviewMetric(detail, "pe", forecastSecondYear);
-  const dcfEquityValue = asNumber(dcf?.equity_value);
-  const dcfTargetPe = (year: number): number | null => {
-    const eps = overviewMetric(detail, "eps", year);
-    if (perShareValue != null && eps != null && eps !== 0) return perShareValue / eps;
-    const attrNetIncome = overviewMetric(detail, "n_income_attr_p", year);
-    if (dcfEquityValue != null && attrNetIncome != null && attrNetIncome !== 0) {
-      return dcfEquityValue / attrNetIncome;
-    }
-    return null;
-  };
-  const firstDcfTargetPe = dcfTargetPe(forecastFirstYear);
-  const secondDcfTargetPe = dcfTargetPe(forecastSecondYear);
   const revenueCagr = forecastFirstYear && forecastLastYear
     ? calcCagr(
       overviewMetric(detail, "revenue", forecastFirstYear) ?? 0,
@@ -434,16 +422,6 @@ function Overview({ detail }: { detail: CompanyDetail }) {
           <span>{forecastYearLabel(forecastSecondYear)} PE</span>
           <strong>{formatMultiple(secondForecastPe, 1)}</strong>
           <small>未来估值</small>
-        </div>
-        <div className="overview-kpi">
-          <span>{forecastYearLabel(forecastFirstYear)} DCF目标价对应PE</span>
-          <strong>{formatMultiple(firstDcfTargetPe, 1)}</strong>
-          <small>DCF视角下的PE</small>
-        </div>
-        <div className="overview-kpi">
-          <span>{forecastYearLabel(forecastSecondYear)} DCF目标价对应PE</span>
-          <strong>{formatMultiple(secondDcfTargetPe, 1)}</strong>
-          <small>DCF视角下的PE</small>
         </div>
       </section>
 
@@ -2981,38 +2959,10 @@ function YamlWorkbook({
   const refBase = revenueBase || asmBase;
   const { groups: refGroups, rest: refRest } = buildReferenceGroups(refBlocks, displayBlocks);
   const refYears = unionYears(refGroups.map((g) => g.rows.flatMap((r) => Object.keys(r.values))));
-  const revenueLastYear = revenueView?.years.length ? revenueView.years[revenueView.years.length - 1] : null;
-  const yamlHeroStats = [
-    { label: "BASE", value: String(revenueBase || asmBase || "-") },
-    { label: "FORECAST", value: revenueView?.years.length ? `${revenueView.years[0]}-${revenueLastYear}` : "-" },
-    { label: "SEGMENTS", value: String(revenueView?.segments.length ?? 0) },
-    { label: "DISPLAY", value: displayContract?.mode ?? "-" },
-  ];
   const displayWarningItems = displayContract?.warnings ?? [];
 
   return (
     <div className="view-stack yaml1-spec">
-      <section className="hero-block yaml-hero-card">
-        <div className="yaml-hero-copy">
-          <div className="eyebrow">YAML1 · 模型说明书</div>
-          <h1>{presentation?.title || "收入拆分 + 关键假设 + 参考项"}</h1>
-          <div className="hero-meta">
-            <span>{path ?? "yaml1_*.yaml"}</span>
-          </div>
-          {presentation?.subtitle ? <p className="hero-subtitle">{presentation.subtitle}</p> : null}
-        </div>
-        <div className="yaml-hero-side">
-          <div className="yaml-hero-stats">
-            {yamlHeroStats.map((item) => (
-              <div key={item.label}>
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {displayWarningItems.length ? (
         <div className="yaml-display-warnings">
           <strong>展示契约提示</strong>
@@ -3307,11 +3257,7 @@ function SensitivityPanel({
   const [values, setValues] = useState(initial);
 
   useEffect(() => {
-    setValues(initial);
-  }, [initial.wacc, initial.terminalGrowth, initial.terminalCapexDaRatio]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => onChange(values), 300);
+    const timer = setTimeout(() => onChange(values), 700);
     return () => clearTimeout(timer);
   }, [values, onChange]);
 
@@ -3440,6 +3386,20 @@ function StatementsView({ detail }: { detail: CompanyDetail }) {
   );
 }
 
+function dcfSensitivityStorageKey(companyId: string): string {
+  return `mka.dcf_sensitivity_${companyId}`;
+}
+
+function loadSavedSensitivity(companyId: string): SensitivityState | null {
+  try {
+    const raw = window.localStorage.getItem(dcfSensitivityStorageKey(companyId));
+    if (raw) return clampSensitivity(JSON.parse(raw) as SensitivityState);
+  } catch {
+    // ignore corrupt storage
+  }
+  return null;
+}
+
 function DcfView({ detail }: { detail: CompanyDetail }) {
   const [dcf, setDcf] = useState(detail.dcf_summary);
   const [sensitivityLoading, setSensitivityLoading] = useState(false);
@@ -3449,7 +3409,19 @@ function DcfView({ detail }: { detail: CompanyDetail }) {
     setDcf(detail.dcf_summary);
   }, [detail.dcf_summary]);
 
+  const initialSensitivity = useMemo<SensitivityState>(() => {
+    const saved = loadSavedSensitivity(detail.summary.id);
+    return saved ?? {
+      wacc: Number(detail.dcf_summary?.wacc ?? 0.08),
+      terminalGrowth: Number(detail.dcf_summary?.terminal_growth ?? 0.025),
+      terminalCapexDaRatio: Number(detail.dcf_summary?.terminal_capex_da_ratio ?? 1.0),
+    };
+  }, [detail.summary.id, detail.dcf_summary?.wacc, detail.dcf_summary?.terminal_growth, detail.dcf_summary?.terminal_capex_da_ratio]);
+
   async function handleSensitivityChange(state: SensitivityState) {
+    if (detail.summary.id) {
+      window.localStorage.setItem(dcfSensitivityStorageKey(detail.summary.id), JSON.stringify(state));
+    }
     if (!detail.summary.id) return;
     setSensitivityLoading(true);
     setSensitivityError(null);
@@ -3470,22 +3442,50 @@ function DcfView({ detail }: { detail: CompanyDetail }) {
     }
   }
 
-  const initialSensitivity: SensitivityState = {
-    wacc: Number(detail.dcf_summary?.wacc ?? 0.08),
-    terminalGrowth: Number(detail.dcf_summary?.terminal_growth ?? 0.025),
-    terminalCapexDaRatio: Number(detail.dcf_summary?.terminal_capex_da_ratio ?? 1.0),
+  const marketCap = detail.summary.market_cap ?? detail.derived_metrics?.market_snapshot?.total_mv;
+  const equityValue = dcf?.equity_value;
+  const upside = (typeof equityValue === "number" && typeof marketCap === "number" && marketCap !== 0)
+    ? equityValue / marketCap - 1
+    : null;
+
+  const ratingConfig = detail.rating_report ?? DEFAULT_RATING_REPORT_CONFIG;
+  const years = overviewRange(detail.rating_report);
+  const forecastYears = years.filter((year) => year.forecast);
+  const forecastFirstYear = forecastYears[0]?.year ?? ratingConfig.forecast_start_year;
+  const forecastSecondYear = forecastYears[1]?.year ?? forecastFirstYear + 1;
+  const firstForecastPe = overviewMetric(detail, "pe", forecastFirstYear) ?? asNumber(detail.derived_metrics?.valuation?.forward_pe);
+  const secondForecastPe = overviewMetric(detail, "pe", forecastSecondYear);
+  const dcfEquityValue = asNumber(dcf?.equity_value);
+  const perShareValue = asNumber(dcf?.per_share_value ?? detail.derived_metrics?.valuation?.per_share_value ?? detail.summary.per_share_value);
+  const dcfTargetPe = (year: number): number | null => {
+    const eps = overviewMetric(detail, "eps", year);
+    if (perShareValue != null && eps != null && eps !== 0) return perShareValue / eps;
+    const attrNetIncome = overviewMetric(detail, "n_income_attr_p", year);
+    if (dcfEquityValue != null && attrNetIncome != null && attrNetIncome !== 0) {
+      return dcfEquityValue / attrNetIncome;
+    }
+    return null;
   };
+  const firstDcfTargetPe = dcfTargetPe(forecastFirstYear);
+  const secondDcfTargetPe = dcfTargetPe(forecastSecondYear);
 
   return (
     <div className="view-stack">
+      <section className="metric-grid dcf-pe-grid">
+        <MetricCard label={`${forecastYearLabel(forecastFirstYear)} PE`} value={formatMultiple(firstForecastPe, 1)} caption="未来估值" />
+        <MetricCard label={`${forecastYearLabel(forecastSecondYear)} PE`} value={formatMultiple(secondForecastPe, 1)} caption="未来估值" />
+        <MetricCard label={`${forecastYearLabel(forecastFirstYear)} DCF目标价对应PE`} value={formatMultiple(firstDcfTargetPe, 1)} caption="DCF视角下的PE" />
+        <MetricCard label={`${forecastYearLabel(forecastSecondYear)} DCF目标价对应PE`} value={formatMultiple(secondDcfTargetPe, 1)} caption="DCF视角下的PE" />
+      </section>
       <div className="dcf-topline">
         <section className="metric-grid dcf-metric-grid">
           <MetricCard label="Equity value" value={formatYiFromMillion(dcf?.equity_value)} caption="亿元" tone="highlight" />
+          <MetricCard label="目前市值" value={formatYiFromMillion(detail.summary.market_cap ?? detail.derived_metrics?.market_snapshot?.total_mv)} caption="亿元" tone="highlight" />
           <MetricCard label="Per-share value" value={formatNumber(dcf?.per_share_value)} caption="元/股" />
-          <MetricCard label="Enterprise value" value={formatYiFromMillion(dcf?.enterprise_value)} caption="亿元" />
-          <MetricCard label="Terminal PV" value={formatYiFromMillion(dcf?.terminal_pv)} caption="亿元" />
+          <MetricCard label="模型相对市值空间" value={formatPercent(upside, 1)} caption={upside != null ? (upside >= 0 ? "模型溢价" : "模型折价") : "-"} />
         </section>
         <SensitivityPanel
+          key={detail.summary.id}
           compact
           error={sensitivityError}
           initial={initialSensitivity}
@@ -4397,7 +4397,10 @@ function sortCompaniesByIndustry(companies: CompanySummary[], industry: Industry
     const rankA = industry.sectors_order.indexOf(sectorA);
     const rankB = industry.sectors_order.indexOf(sectorB);
     if (rankA !== rankB) return rankA - rankB;
-    return (b.market_cap ?? -Infinity) - (a.market_cap ?? -Infinity);
+    const mvA = a.market_cap ?? -Infinity;
+    const mvB = b.market_cap ?? -Infinity;
+    if (mvB !== mvA) return mvB - mvA;
+    return a.name.localeCompare(b.name, "zh-CN");
   });
 }
 

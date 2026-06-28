@@ -651,6 +651,36 @@ def _empty_terminal_from_yaml2(yaml2: dict[str, Any], explicit_horizon: list[int
     }
 
 
+def _persist_terminal_summary(forecast_params: dict[str, Any], terminal: Any) -> None:
+    """Persist explicit_end + fade.to_year into forecast_params.terminal.
+
+    The cleaner expands fade into the horizon but historically did not keep the
+    terminal structure in forecast_params (terminal ended up `{}`). Downstream
+    consumers (notably the reverse-DCF base pack) need explicit_end / fade to_year
+    to derive n1/n2 from the company's actual explicit+fade split instead of
+    hardcoded 4/5 defaults that can exceed forecast_years and make g2 null.
+    """
+    if not isinstance(terminal, dict):
+        return
+    summary: dict[str, Any] = {}
+    explicit_end = terminal.get("explicit_end")
+    if explicit_end is not None:
+        try:
+            summary["explicit_end"] = int(explicit_end)
+        except (TypeError, ValueError):
+            pass
+    fade = terminal.get("fade")
+    if isinstance(fade, dict):
+        to_year = fade.get("to_year")
+        if to_year is not None:
+            try:
+                summary["fade_to_year"] = int(to_year)
+            except (TypeError, ValueError):
+                pass
+    if summary:
+        forecast_params.setdefault("terminal", {}).update(summary)
+
+
 def clean_yaml1_data(
     yaml1: dict[str, Any],
     defaults_path: str | Path,
@@ -698,6 +728,7 @@ def clean_yaml1_data(
     # terminal.perpetual_growth 必须覆盖 model.terminal_growth，否则 calc.py Gordon 终值
     # 用 defaults 0.025 而 fade 末端用 perpetual_growth，永续增速双源分裂。
     _apply_terminal_growth_override(yaml1, forecast_params, report)
+    _persist_terminal_summary(forecast_params, terminal)
     report["yearly_paths"] = yearly_paths
 
     if defaults_only:

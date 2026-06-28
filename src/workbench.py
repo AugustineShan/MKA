@@ -2554,7 +2554,9 @@ def _company_summary(company_dir: Path) -> dict[str, Any]:
     defaults_path = company_defaults_path(company_dir)
     defaults = _read_yaml(defaults_path)
     meta = _read_meta(company_dir)
-    forecast = _forecast_summary(company_dir)
+    forecast_summary = _forecast_summary(company_dir)
+    forecast_snapshot = _forecast_snapshot(company_dir)
+    forecast = forecast_summary if forecast_summary else {}
     manifest = _manifest(company_dir)
     yaml1_path = _latest_yaml1(company_dir)
     core_path = _core_assumption(company_dir)
@@ -2569,7 +2571,7 @@ def _company_summary(company_dir: Path) -> dict[str, Any]:
         updated_at = (forecast_dir / "run_manifest.json").stat().st_mtime
     elif forecast_dir.exists():
         updated_at = forecast_dir.stat().st_mtime
-    market_cap = forecast.get("market_cap") if isinstance(forecast, dict) else None
+    market_cap = forecast_snapshot.get("market_cap") if isinstance(forecast_snapshot, dict) else None
     industry = _read_industry().get("companies", {}).get(code) or _read_industry().get("companies", {}).get(company_dir.name) or None
     return {
         "id": company_dir.name,
@@ -2903,6 +2905,45 @@ def _reverse_dcf_market_pack(
     }
 
 
+def _reverse_dcf_default_segments(
+    forecast_years: int,
+    base_period: str,
+    explicit_end: Any,
+    fade_to_year: Any,
+) -> tuple[int, int]:
+    """Derive reverse-DCF n1 (explicit) / n2 (mid/fade) from the company's actual
+    terminal structure, instead of hardcoded 4/5.
+
+    Hardcoded 4+5=9 silently exceeds an 8-year forecast (e.g. 3 explicit + 5 fade),
+    leaving g2's 5-year window one year short → null → "-" on the card. Deriving
+    n1 = explicit_end - base_period and n2 = fade_to_year - explicit_end aligns the
+    lens with the model's real split and guarantees n1+n2 == forecast_years.
+
+    Falls back to 4/5 capped to forecast_years when terminal structure is absent
+    (defaults-only runs / old forecast_params), always ensuring n1+n2 <= forecast_years
+    so g2 stays computable.
+    """
+    try:
+        base = int(str(base_period)[:4])
+        e_end = int(explicit_end) if explicit_end is not None else None
+        f_end = int(fade_to_year) if fade_to_year is not None else None
+    except (TypeError, ValueError):
+        base = 0
+        e_end = None
+        f_end = None
+    if e_end is not None and f_end is not None and f_end > e_end and e_end > base:
+        n1 = e_end - base
+        n2 = f_end - e_end
+        if n1 >= 1 and n2 >= 1 and n1 + n2 <= forecast_years:
+            return n1, n2
+    n2 = min(5, max(1, forecast_years - 1))
+    n1 = max(1, min(4, forecast_years - n2))
+    if n1 + n2 > forecast_years:
+        n2 = max(1, forecast_years - 1)
+        n1 = max(1, forecast_years - n2)
+    return n1, n2
+
+
 def _reverse_dcf_profit_yoy(base_nopat: float, yearly: list[dict[str, Any]]) -> list[float]:
     values: list[float] = []
     previous = base_nopat
@@ -2994,6 +3035,17 @@ def _reverse_dcf_base_pack(company_dir: Path) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Base NOPAT is missing")
     current_model_profit_yoy = _reverse_dcf_profit_yoy(base_nopat, yearly)
 
+    terminal_params = params.get("terminal") if isinstance(params, dict) else None
+    if not isinstance(terminal_params, dict):
+        terminal_params = {}
+    forecast_years_int = int(dcf_summary.get("forecast_years") or len(yearly))
+    n1_default, n2_default = _reverse_dcf_default_segments(
+        forecast_years_int,
+        base_period,
+        terminal_params.get("explicit_end"),
+        terminal_params.get("fade_to_year"),
+    )
+
     return {
         "schema_version": 1,
         "company": {
@@ -3004,8 +3056,8 @@ def _reverse_dcf_base_pack(company_dir: Path) -> dict[str, Any]:
         },
         "market": market,
         "defaults": {
-            "n1": 4,
-            "n2": 5,
+            "n1": n1_default,
+            "n2": n2_default,
             "wacc": 0.08,
             "terminal_growth": 0.025,
             "reference_decay": 0.55,
@@ -3061,6 +3113,16 @@ class SensitivityPayload(BaseModel):
     wacc: float
     terminal_growth: float
     terminal_capex_da_ratio: float
+
+
+_dcf_sensitivity_cache: dict[str, dict[str, Any]] = {}
+
+
+def _sensitivity_cache_key(company_id: str, payload: SensitivityPayload, build_mtime: float) -> str:
+    return (
+        f"{company_id}:{build_mtime}:"
+        f"{payload.wacc}:{payload.terminal_growth}:{payload.terminal_capex_da_ratio}"
+    )
 
 
 class AssumptionPatchPayload(BaseModel):
@@ -3354,6 +3416,11 @@ def dcf_sensitivity(company_id: str, payload: SensitivityPayload) -> dict[str, A
             status_code=400,
             detail="WACC must be greater than terminal growth",
         )
+    build_mtime = build_path.stat().st_mtime
+    cache_key = _sensitivity_cache_key(company_id, payload, build_mtime)
+    cached = _dcf_sensitivity_cache.get(cache_key)
+    if cached is not None:
+        return cached
     build = _load_forecast_build(build_path)
     result = value_from_statements(
         build,
@@ -3361,7 +3428,9 @@ def dcf_sensitivity(company_id: str, payload: SensitivityPayload) -> dict[str, A
         terminal_growth=payload.terminal_growth,
         terminal_capex_da_ratio=payload.terminal_capex_da_ratio,
     )
-    return {"summary": result["summary"]}
+    out: dict[str, Any] = {"summary": result["summary"]}
+    _dcf_sensitivity_cache[cache_key] = out
+    return out
 
 
 @app.get("/api/companies/{company_id}/yaml1/presentation/stream")

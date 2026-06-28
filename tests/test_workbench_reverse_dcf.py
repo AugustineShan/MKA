@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from src import app_config
 from src.workbench import app
+from src.workbench import _reverse_dcf_default_segments
 
 
 def _write_csv(path: Path, rows: list[dict[str, float | int]]) -> None:
@@ -145,8 +146,8 @@ def test_reverse_dcf_base_endpoint_returns_market_and_yearly_pack(tmp_path: Path
     pack = response.json()
     assert pack["schema_version"] == 1
     assert pack["company"]["id"] == company_id
-    assert pack["defaults"]["n1"] == 4
-    assert pack["defaults"]["n2"] == 5
+    assert pack["defaults"]["n1"] == 1
+    assert pack["defaults"]["n2"] == 2
     assert pack["defaults"]["wacc"] == 0.08
     assert pack["market"]["market_cap"] == 800.0
     assert pack["market"]["target_enterprise_value"] == 900.0
@@ -200,3 +201,31 @@ def test_reverse_dcf_base_endpoint_rejects_missing_market_cap(tmp_path: Path, mo
 
     assert response.status_code == 400
     assert "Market cap is missing" in response.text
+
+
+def test_reverse_dcf_default_segments_derives_from_terminal_structure():
+    # n1 = explicit_end - base_period, n2 = fade_to_year - explicit_end
+    # 伊利-like: 3 explicit (2026-2028) + 5 fade (2029-2033) = 8 forecast years
+    assert _reverse_dcf_default_segments(8, "2025", 2028, 2033) == (3, 5)
+    # 4 explicit (2026-2029) + 4 fade (2030-2033) = 8 forecast years
+    assert _reverse_dcf_default_segments(8, "2025", 2029, 2033) == (4, 4)
+    # 2 explicit + 3 fade = 5 forecast years
+    assert _reverse_dcf_default_segments(5, "2024", 2026, 2029) == (2, 3)
+
+
+def test_reverse_dcf_default_segments_fallback_when_terminal_absent():
+    # No terminal info → fall back to 4 explicit / 5 mid, but capped so n1+n2 <= forecast_years
+    # (the old hardcoded 4+5=9 would exceed an 8-year forecast and make g2 null).
+    assert _reverse_dcf_default_segments(8, "2025", None, None) == (3, 5)
+    assert _reverse_dcf_default_segments(9, "2025", None, None) == (4, 5)
+    assert _reverse_dcf_default_segments(3, "2024", None, None) == (1, 2)
+
+
+def test_reverse_dcf_default_segments_handles_bad_terminal_values():
+    # fade_to_year not greater than explicit_end → fall back
+    assert _reverse_dcf_default_segments(8, "2025", 2028, 2028) == (3, 5)
+    # non-numeric terminal values → fall back
+    assert _reverse_dcf_default_segments(8, "2025", "n/a", None) == (3, 5)
+    # n1+n2 would exceed forecast_years → fall back
+    assert _reverse_dcf_default_segments(6, "2025", 2028, 2033) == (1, 5)
+
