@@ -124,7 +124,7 @@ def _write_merged_webload_markdown(
 - 沙箱副本同步路径：`{core_assumption_path}`
 - 先给用户完整 overview，讲清你对模型公式层、业务线、毛利/成本、费用、below-OP 与税、利润表预测期边界的理解。
 - overview 和逐段确认必须用会议 memo 风格：先讲你的理解、预测、关键旋钮和风险，再等用户确认；不要机械倾倒单元格、完整 markdown、所有 source range 或逐条 knobs。
-- 用户确认前，不要补完核心假设、不要编译 yaml1、不要跑 DCF。
+- 用户确认前，不要补完核心假设。`/load` 止于这份 markdown，全程不编译 yaml1、不跑 DCF。
 - 用户确认后，按时间轴 -> 收入 -> 毛利/成本 -> 费用 -> below-OP 与税 -> 利润表预测期边界逐段先押再问。
 - 每段聊天里只给结论、紧凑表格和待拍板点；完整 `/comp` 源语言、历史原子、source range 和 `knobs` 块写进 `{core_assumption_path.name}`。
 - 末尾必须带 `knobs` 机器自报清单代码块。
@@ -144,7 +144,7 @@ def _write_merged_webload_markdown(
 - 后来的真实业绩不是纠错材料；不能把后验事实写进模型预测。
 - 只读 `allowed_materials/`，不要读取禁读清单里的材料正文。
 - 若 Excel 有 `年度和半年度` sheet，默认只看这个利润表主视图；不要继续打开或导出 `Model-BS` / `DCF` 表里的 `financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC` 等驱动因素。
-- data_cutoff.db 不打包到网页端；它留在本地 load 沙箱，供后续本地编译和 DCF 使用。
+- data_cutoff.db 不打包到网页端；它留在本地 load 沙箱，留作后续流程备用，`/load` 本身不消费。
 - 公司根目录旧正式核心假设、正式 `Agent/forecast/`、正式 `Agent/data.db` 都不是本次网页端阅读材料。
 
 ## 本地后续动作
@@ -161,11 +161,7 @@ def _write_merged_webload_markdown(
 {core_assumption_path}
 ```
 
-主产物供 `/ka` 读取；沙箱副本供本地继续编译 `yaml1_load_*.yaml` 并运行：
-
-```bash
-py -m src.model_load dcf --load-dir "{load_dir}" --yaml1 "<yaml1_load_path>"
-```
+`/load` 止于此 markdown，不编译 `yaml1_load`、不跑 DCF；主产物供 `/ka` 读取。要变成当前正式 forecast，另走 `/ka` → `/comp`。
 """
     ]
 

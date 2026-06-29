@@ -2,7 +2,8 @@
 
 This module deliberately keeps /load outputs isolated from the official
 ``Agent/forecast`` pipeline.  It builds a time-capped sandbox from an external
-workbook model, then runs DCF only inside ``Agent/Load/<load_id>/forecast``.
+workbook model and writes the load-vintage core-assumption scaffold; /load
+stops there and does not compile yaml1 or run DCF.
 """
 
 from __future__ import annotations
@@ -30,7 +31,6 @@ from src.company_paths import (
     load_model_dir,
 )
 from src.defaults_gen import build_defaults
-from src.forecast import ForecastRun, run_company_forecast
 from src.yaml2_schema import write_yaml2
 
 
@@ -472,13 +472,12 @@ def _forbidden_markdown(
         lines.extend(f"- {table}: {count}" for table, count in sorted(removed_rows.items()))
     else:
         lines.append("- none")
-    # 其余禁读类:即使已结构性隔离(run_load_dcf 只读沙箱 defaults / 只写 load forecast),
-    # 也显式列入 AI 禁读清单,给模型理解阶段完整边界(SKILL §5 承诺 6 类)。
+    # 其余禁读类:也显式列入 AI 禁读清单,给模型理解阶段完整边界(SKILL §5 承诺 6 类)。
     agent = agent_dir(company_dir)
     root_core = sorted(company_dir.glob("*核心假设*.md"))
     lines.extend(["", "## Other forbidden materials (formal current-state artifacts)"])
     lines.append(f"- formal `{agent / 'defaults.yaml'}` (use sandbox defaults.yaml only)")
-    lines.append(f"- formal `{agent / 'forecast'}` (load DCF writes only to Load forecast dir)")
+    lines.append(f"- formal `{agent / 'forecast'}` (load writes no forecast; /load stops at markdown)")
     if root_core:
         lines.extend(f"- root core-assumption: {p}" for p in root_core)
     else:
@@ -559,7 +558,7 @@ def prepare_load(
     _write_text(load_dir / "forbidden_materials.md", _forbidden_markdown(boundary, forbidden_reports, removed_rows, company_dir))
     # LOAD 参考稿统一落 KA 参考稿区（ka_reference_dir），命名 核心假设参考load_YYYYMMDD.md，
     # 与 brkd/alphapai 参考稿同处，/ka 到该目录找 核心假设参考*.md。沙箱副本同名保留在
-    # load_dir，供 /load 编译 yaml1_load 与沙箱 DCF；两份内容必须一字不差。
+    # load_dir，供 /load 续写/同步与审计留痕；两份内容必须一字不差。
     core_filename = f"核心假设参考load_{datetime.now().strftime('%Y%m%d')}.md"
     core_path = load_dir / core_filename
     root_core_path = ka_reference_dir(company_dir) / core_filename
@@ -589,60 +588,6 @@ def prepare_load(
     return manifest
 
 
-def _check_load_core_consistency(load_path: Path) -> None:
-    """audit H5:/load 主产物(公司根目录)与沙箱副本是两份各自 LLM 手写的副本,无代码保同步。
-
-    DCF 是 load 出结果的关口:此处比对两份内容,漂移即 raise——避免 `/ka` 读到的根目录主产物
-    与本次 load DCF 实际依据的沙箱稿静默不一致(模型理解与估值脱节)。只有两份都存在且内容
-    不同才拦;根稿尚未回填(LLM 还没写)则跳过,不阻塞沙箱内的独立试算。
-    """
-    manifest_path = load_path / "load_manifest.json"
-    if not manifest_path.exists():
-        return
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    sandbox = manifest.get("core_assumption_path")
-    root = manifest.get("root_core_assumption_path")
-    if not sandbox or not root:
-        return
-    sp, rp = Path(sandbox), Path(root)
-    if not (sp.exists() and rp.exists()):
-        return
-
-    def _norm(p: Path) -> str:
-        return "\n".join(line.rstrip() for line in p.read_text(encoding="utf-8").splitlines()).strip()
-
-    if _norm(sp) != _norm(rp):
-        raise ModelLoadError(
-            "load 主产物(公司根目录核心假设)与沙箱副本内容已漂移——/ka 读根稿、本次 load "
-            "DCF 依据沙箱稿,两者不一致会让模型理解与估值脱节。请以一份为准同步另一份后重跑。\n"
-            f"  根目录: {rp}\n  沙箱  : {sp}"
-        )
-
-
-def run_load_dcf(load_dir: str | Path, yaml1_path: str | Path) -> ForecastRun:
-    load_path = Path(load_dir)
-    defaults = load_path / "defaults.yaml"
-    cutoff_db = load_path / "data_cutoff.db"
-    if not defaults.exists():
-        raise ModelLoadError(f"missing load defaults.yaml: {defaults}")
-    if not cutoff_db.exists():
-        raise ModelLoadError(f"missing load data_cutoff.db: {cutoff_db}")
-    _check_load_core_consistency(load_path)
-    return run_company_forecast(
-        yaml1_path=Path(yaml1_path),
-        defaults_path=defaults,
-        clean_annual_path=cutoff_db,
-        output_dir=load_path / "forecast",
-        internal_dir=load_path / ".modelking",
-        skip_staleness_gate=True,
-        mode="load_vintage",
-        write_derived_outputs=False,
-    )
-
-
 def _print_prepare_result(result: dict[str, Any]) -> None:
     boundary = result["boundary"]
     print(f"Load sandbox: {result['load_dir']}")
@@ -658,7 +603,7 @@ def _print_prepare_result(result: dict[str, Any]) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prepare and run vintage /load model sandboxes.")
+    parser = argparse.ArgumentParser(description="Prepare a vintage /load model sandbox.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     prepare = sub.add_parser("prepare", help="Create a load sandbox from the latest active model")
@@ -667,10 +612,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     prepare.add_argument("--load-id", help="Deterministic load sandbox id")
     prepare.add_argument("--overwrite", action="store_true", help="Replace an existing sandbox with the same load id")
     prepare.add_argument("--json", action="store_true", help="Print the manifest JSON")
-
-    dcf = sub.add_parser("dcf", help="Run sandbox DCF from a load yaml1")
-    dcf.add_argument("--load-dir", required=True, help="Agent/Load/<load_id> directory")
-    dcf.add_argument("--yaml1", required=True, help="yaml1_load*.yaml path")
     return parser.parse_args(argv)
 
 
@@ -687,13 +628,6 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
             _print_prepare_result(result)
-        return 0
-    if args.command == "dcf":
-        run = run_load_dcf(args.load_dir, args.yaml1)
-        print(f"Written load forecast: {run.output_dir}")
-        print(f"Per-share value: {run.summary['per_share_value']}")
-        if run.warnings_count:
-            print(f"Warnings: {run.warnings_count} (details in load clean report)")
         return 0
     raise ModelLoadError(f"unknown command: {args.command}")
 

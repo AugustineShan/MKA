@@ -550,7 +550,7 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
 
               <div className="workspace-map-note">
                 <strong>记住：</strong>
-                <span>截图里的 <code>内部报告</code>、<code>研报</code>、<code>纪要</code>、<code>收集</code>、<code>重要文件</code> 都是资料仓；要让 Agent 阅读，复制到 <code>Skills素材包</code>。</span>
+                <span><code>内部报告</code>、<code>研报</code>、<code>纪要</code>、<code>收集</code> 是普通资料仓；<code>重要文件</code> 是外部最高权重材料入口，建议只放 1-3 份最新、最可靠的纪要。</span>
               </div>
             </section>
 
@@ -572,9 +572,9 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
             <section className="tutorial-section codex-copy-hero">
               <div className="codex-copy-hero-copy">
                 <span>给 Codex 的使用指南</span>
-                <h2>不用解释项目，直接复制这些话。</h2>
+                <h2>现在可以直接用 MKA 路由下任务。</h2>
                 <p>
-                  先复制第一条开场，让 Codex 读项目地图；后面按你要做的任务复制模板，把【公司名】和需求替换掉。
+                  新线程先贴一次工作协议；之后直接说 /init、/ka、/comp 这类任务。Codex 会自己读取本地启动器、动态 runbook 和门禁。
                 </p>
               </div>
               {starterPrompt ? (
@@ -650,9 +650,9 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
               <h2>只记住这一句</h2>
               <div className="codex-guide-hero">
                 <div>
-                  <strong>Codex 不是直接吃 slash command，而是先读本地说明书再执行。</strong>
+                  <strong>斜杠词是 MKA 的任务路由，Codex 负责从本地协议恢复执行状态。</strong>
                   <p>
-                    所以每个模板都会明确让它读取 <code>D:\MKA\Codex.md</code> 和对应的 <code>.claude/skills</code>。
+                    所以你可以直接下令；它每次执行前都要读取 <code>D:\MKA\Codex.md</code>、对应 <code>.claude/skills</code> 和最新版动态 runbook。
                   </p>
                 </div>
                 <code>D:\MKA\Codex.md</code>

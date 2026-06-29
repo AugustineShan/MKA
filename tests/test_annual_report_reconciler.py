@@ -769,6 +769,97 @@ def test_llm_propose_fallback_approves_sign_flip_closure_via_trial_apply(monkeyp
     assert all(a.get("status") == "approved" for a in adj)
 
 
+def test_is12_deterministic_joint_fill_closes_multi_null_wrapped_labels(tmp_path, monkeypatch):
+    """IS 1.2 确定性联合补缺：残差是多个 TuShare-NULL optional 字段的净值时，读合并
+    利润表把所有 NULL 字段的年报非零值整组 trial-apply 闭合。覆盖三个易错点：
+    ① PDF 折行标签（信用减值损失/列）」）须合并；② 空科目（净敞口套期收益无值）不得
+    抓下一科目（公允价值变动收益）的值；③ 单位由 revenue 锚点推断。LLM-free，闭合
+    由 trial-apply oracle 裁判。"""
+    import pandas as pd
+    md = tmp_path / "2025_年度报告.md"
+    md.write_text(
+        "3、合并利润表\n单位：元\n项目\n2025 年度\n2024 年度\n"
+        "一、营业总收入\n9,490,739,030.88\n6,169,673,655.75\n"
+        "其中：营业收入\n9,490,739,030.88\n6,169,673,655.75\n"
+        "加：其他收益\n19,293,834.37\n13,827,893.61\n"
+        "净敞口套期收益（损失以“－”号填\n列）\n"
+        "公允价值变动收益（损失以“－”号填\n列）\n10,140,090.39\n6,139,904.71\n"
+        "信用减值损失（损失以“-”号填\n列）\n-16,644,018.71\n1,640,860.28\n"
+        "资产减值损失（损失以“-”号填\n列）\n-46,645,434.37\n-38,834,864.96\n"
+        "资产处置收益（损失以“-”号填\n列）\n-27,293.43\n29,414.17\n"
+        "三、营业利润（亏损以“－”号填列）\n811,709,136.55\n517,471,917.97\n"
+        "母公司利润表\n（母公司表，应被裁掉）\n",
+        encoding="utf-8",
+    )
+    analysis = {
+        "failure": {"period": "2025", "code": "IS 1.2", "statement": "income",
+                    "title": "营业利润", "message": "IS 1.2 2025 ... residual=2.6225",
+                    "residual": 2.6225, "target_value": 811.7091, "calc_value": 809.0866,
+                    "direction": "target_gt_calc"},
+        "annual_report_context": {"markdown_path": str(md)},
+        "candidate_tushare_fields": [
+            {"field": "assets_impair_loss", "description": "减:资产减值损失", "value_million_cny": -46.6454, "clean_category": None},
+            {"field": "fv_value_chg_gain", "description": "加:公允价值变动净收益", "value_million_cny": 10.1401, "clean_category": None},
+            {"field": "invest_income", "description": "加:投资净收益", "value_million_cny": 6.8949, "clean_category": None},
+            {"field": "oth_income", "description": "其他收益", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "credit_impa_loss", "description": "信用减值损失", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "asset_disp_income", "description": "资产处置收益", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "forex_gain", "description": "加:汇兑净收益", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "net_expo_hedging_benefits", "description": "净敞口套期收益", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "oth_impair_loss_assets", "description": "其他资产减值损失", "value_million_cny": 0.0, "clean_category": None},
+        ],
+    }
+    wide = pd.DataFrame({"revenue": [9490.739030879999]}, index=["2025"])
+
+    seen = {}
+
+    def fake_trial(w, pbp, period, code, overrides):
+        seen["overrides"] = overrides
+        # 整组 3 字段（oth_income +19.2938 − credit_impa_loss 16.644 − asset_disp 0.0273
+        # = 2.6225）才闭合
+        return (True, 0.0) if len(overrides) == 3 else (False, 2.6225)
+
+    monkeypatch.setattr(ar, "trial_apply_closes", fake_trial)
+
+    proposals = ar._is12_deterministic_joint_fill(analysis, wide, {})
+    by_field = {p["field"]: p for p in proposals}
+    assert set(by_field) == {"oth_income", "credit_impa_loss", "asset_disp_income"}
+    assert round(by_field["oth_income"]["value_million_cny"], 4) == 19.2938
+    assert round(by_field["credit_impa_loss"]["value_million_cny"], 4) == -16.6440
+    assert round(by_field["asset_disp_income"]["value_million_cny"], 4) == -0.0273
+    # 空科目 net_expo_hedging_benefits 不得抓到公允价值变动收益的值 10.14
+    assert "net_expo_hedging_benefits" not in by_field
+    # 证据行号来自合并利润表（非母公司表）
+    assert "母公司" not in by_field["oth_income"]["evidence_lines"]
+    # 单位为元（revenue 锚点 9490.739 Mn 对应年报 9,490,739,030.88 元）
+    assert by_field["oth_income"]["annual_report_unit"] == "元人民币"
+
+
+def test_is12_deterministic_joint_fill_returns_empty_when_not_closed(tmp_path, monkeypatch):
+    """整组 trial-apply 不闭合（年报值凑不上残差）→ 返回 []，退回 LLM 提议路径。"""
+    import pandas as pd
+    md = tmp_path / "2025_年度报告.md"
+    md.write_text(
+        "合并利润表\n单位：元\n一、营业收入\n9,490,739,030.88\n8,000,000,000.00\n"
+        "加：其他收益\n19,293,834.37\n13,827,893.61\n"
+        "信用减值损失（损失以“-”号填\n列）\n-16,644,018.71\n1,640,860.28\n"
+        "母公司利润表\n",
+        encoding="utf-8",
+    )
+    analysis = {
+        "failure": {"period": "2025", "code": "IS 1.2", "statement": "income",
+                    "residual": 2.6225, "direction": "target_gt_calc"},
+        "annual_report_context": {"markdown_path": str(md)},
+        "candidate_tushare_fields": [
+            {"field": "oth_income", "description": "其他收益", "value_million_cny": 0.0, "clean_category": None},
+            {"field": "credit_impa_loss", "description": "信用减值损失", "value_million_cny": 0.0, "clean_category": None},
+        ],
+    }
+    wide = pd.DataFrame({"revenue": [9490.739030879999]}, index=["2025"])
+    monkeypatch.setattr(ar, "trial_apply_closes", lambda *a, **k: (False, 2.6225))
+    assert ar._is12_deterministic_joint_fill(analysis, wide, {}) == []
+
+
 def test_llm_propose_fallback_batches_multiple_failures(monkeypatch):
     """Opt 3: residue failures are packed into one LLM call per chunk, not one
     call per failure. Two failures → one call_llm; each result attributed by

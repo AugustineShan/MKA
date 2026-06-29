@@ -14,7 +14,7 @@ Agent业务讨论.md
 
 这份文件不是文献综述，而是 `/ka` 可以接手、`/comp` 源语言也能理解的业务假设草稿。它的状态是 `draft`，所有预测旋钮都待 `/ka` 拍板。
 
-范围边界：`/brkd` 明确收窄为“利润表 + 业务层盈利模型理解器”。只处理收入、成本/毛利、费用率、below-OP、税率、少数股东等利润表相关判断；不处理由 BS/现金/债务派生的 `financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC` 等 BS/CF/DCF 驱动因素。这些材料若出现，只能按接缝纪律写入收纳区或丢弃原因，标注“非 BRKD 范围”，不在 BRKD 中裁决；是否升格为 `/ka` 的人工 BS/CF 覆盖，只能由最高权重材料或分析师明示触发。只有材料明确给出利润表外生“其他财务费用”时，才可单独提示 `other_fin_exp_abs` 草稿。
+范围边界：`/brkd` 明确收窄为“利润表 + 业务层盈利模型理解器”。只处理收入、成本/毛利、费用率、below-OP、税率、少数股东等利润表相关判断；不处理由 BS/现金/债务派生的 `financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC` 等 BS/CF/DCF 驱动因素。这些材料若出现，只能按接缝纪律写入收纳区或丢弃原因，标注“非 BRKD 范围”，不在 BRKD 中裁决；是否升格为 `/ka` 的人工 BS/CF 覆盖，只能由同权重判断材料或分析师明示触发。只有材料明确给出利润表外生“其他财务费用”时，才可单独提示 `other_fin_exp_abs` 草稿。
 
 ## 核心指导
 
@@ -41,8 +41,8 @@ docs/knobs块契约.md
 
 ## 1. 输入优先级
 
-1. `公司判断和最新观点.md`：定调锚点，不覆盖、不另起 thesis。
-2. `markdown存储区/*.md`：外部研报、纪要、表格等材料的确定性 markdown 版本。
+1. 同权重判断材料：`公司判断和最新观点.md` + `重要文件/` 顶层材料（经 `src.ka_prepare` 进入最高权重 `markdown存储区/`）。这是定调锚点，不覆盖、不另起 thesis；凡读公司判断，必须等权重读 `重要文件/`。
+2. BRKD `markdown存储区/*.md`：外部研报、纪要、表格等材料的确定性 markdown 版本。
 3. `/init` 历史事实：`Agent/core_metrics_overview.*` 或 `Agent/data.db: clean_annual`。这是标准利润表历史事实权威来源；`Agent/OfficialBreakdowns/*` 是官方披露业务拆分的快查口。
 4. 最新年报 Markdown：年报是 X 光片，只做按需查证；外部材料为空时才作为保守底稿。
 5. `brkd_prepare_manifest.json`：检查哪些源文件 unsupported/error，不得静默忽略。
@@ -94,6 +94,8 @@ docs/knobs块契约.md
 `Agent业务讨论.md` 要尽量长成 `核心假设.md` 的半成品，而不是自由散文。
 
 `Agent业务讨论.md` 是 BRKD canonical 产物，留在公司根目录。若被要求另存核心假设式参考稿，统一输出到 KA 参考稿区 `companies\{公司}\Skills素材包\KA（ALPHAPAI拆出来的东西放在这里）\核心假设参考brkd_{运行YYYYMMDD}.md`，并声明 `状态: draft` 或 `状态: reference`；它仍是 `/ka` 候选，不是 official。
+
+无论是 `Agent业务讨论.md` 还是另存的 `核心假设参考brkd_*.md`，都必须包含 `## 待 /ka 裁决清单`。这张表是 BRKD 交给 `/ka` 的晋升议程：事项、候选值/方向、证据、分歧/缺口、建议处理。不要只散落成“待拍板问题” bullet。
 
 每条业务线尽量写清：
 
@@ -234,7 +236,7 @@ docs/knobs块契约.md
 
 大额、波动、反号、一次性项目必须提示。税收优惠、到期日、适用税率要主动查年报附注。
 
-### 第六幕：/ka 接手清单
+### 第六幕：待 /ka 裁决清单
 
 明确列：
 
@@ -244,6 +246,13 @@ docs/knobs块契约.md
 - 不应默认平推的项目。
 - prepare 阶段未成功转换的材料。
 
+落盘时使用固定表：
+
+```markdown
+| 事项 | 候选值/方向 | 证据 | 分歧/缺口 | 建议处理 |
+|---|---|---|---|---|
+```
+
 ## 6. Agent业务讨论.md 模板
 
 ````markdown
@@ -252,7 +261,7 @@ docs/knobs块契约.md
 > 状态: draft，待 /ka 拍板
 > 材料模式: 外部材料增强 / 年报 + 历史财务
 > markdown存储区: Skills素材包/BRKD业务理解器（研报和纪要放在这里）/markdown存储区/
-> 已读材料: 公司判断和最新观点.md；/init 核心指标速览或 clean_annual；最新年报；markdown 存储区材料清单
+> 已读材料: 公司判断和最新观点.md；重要文件/；/init 核心指标速览或 clean_annual；最新年报；markdown 存储区材料清单
 > 性质: /ka 前置业务理解草稿；非正式核心假设；非 yaml1
 
 ## 0. 快速结论
@@ -324,7 +333,7 @@ docs/knobs块契约.md
 ### 管理费用 [compiler: cost_rate; status: draft]
 ### 研发费用 [compiler: cost_rate; status: draft]
 ### 财务费用
-- `financial expense` 派生项: 非 BRKD 范围，默认交引擎/defaults/专门流程；是否升格为 /ka 人工覆盖，需最高权重材料或分析师明示
+- `financial expense` 派生项: 非 BRKD 范围，默认交引擎/defaults/专门流程；是否升格为 /ka 人工覆盖，需同权重判断材料或分析师明示
 - 其他财务费用 [compiler: other_fin_exp_abs; status: draft，仅限明确利润表外生项]:
 
 ## 6. below-OP 与所得税
@@ -341,12 +350,15 @@ docs/knobs块契约.md
 - 管理层定性表述:
 - 口径说明:
 
-## 8. /ka 接手清单
-- 可以直接作为 /ka 起点的假设:
-- 必须问分析师的问题:
-- 年报/历史事实中的异常:
-- 不应默认平推的项目:
-- prepare 未成功转换的材料:
+## 8. 待 /ka 裁决清单
+
+| 事项 | 候选值/方向 | 证据 | 分歧/缺口 | 建议处理 |
+|---|---|---|---|---|
+| 可以作为 /ka 起点的假设 | | | | |
+| 必须问分析师的问题 | | | | |
+| 年报/历史事实中的异常 | | | | |
+| 不应默认平推的项目 | | | | |
+| prepare 未成功转换的材料 | | | | |
 
 ## 机器自报清单（draft knobs，非 YAML1，待 /ka 拍板）
 ```knobs

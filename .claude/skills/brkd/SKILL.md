@@ -104,9 +104,13 @@ D:\MKA\skills\业务预理解器_skill_v*.md
 
 两种模式各自怎么读、怎么写见 runbook §2。
 
-## 6. 读取定调、/init 与年报查证材料
+## 6. 读取同权重定调、/init 与年报查证材料
 
-1. 读取 `companies\{公司}\公司判断和最新观点.md`（背景锚点，不覆盖、不另起 thesis）。不存在则停止。
+1. 先运行 `py -m src.ka_prepare "{公司}"`，读取同权重判断材料 markdown 存储区与 manifest：
+   ```text
+   companies\{公司}\Skills素材包\最高权重材料-放Agent最应对齐的材料\markdown存储区\
+   ```
+   其中 `公司判断和最新观点.md` 是背景锚点，不覆盖、不另起 thesis；`companies\{公司}\重要文件\` 下材料与其同等权重，常放最重要、最新的会议纪要，凡读公司判断必须一起读。`公司判断和最新观点.md` 不存在则停止；manifest 中 `unsupported/error` 必须进入缺口区。
 2. 读取 `/init` 历史事实包：优先 `Agent/core_metrics_overview.*`，否则 `Agent/data.db` 的 `clean_annual`；不可用则停止提示先跑 `/init`。
 3. 年报是 X 光片不是主材料，按需查证口径——查证纪律见 runbook §1/§2。
 
@@ -147,5 +151,5 @@ py -m src.brkd_prepare 新乳业 --force
 
 - `0`：`Agent业务讨论.md` 生成成功。
 - `2`：输入无法解析为唯一公司目录，或 `src.brkd_prepare` 失败。
-- `3`：缺 `公司判断和最新观点.md`，或 `/init` 历史事实不可用，或在无外部材料时缺最新年报 Markdown。
+- `3`：缺 `公司判断和最新观点.md`，`ka_prepare` 同权重判断材料准备失败，或 `/init` 历史事实不可用，或在无外部材料时缺最新年报 Markdown。
 - `1`：其他 IO 异常。

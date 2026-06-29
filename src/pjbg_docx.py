@@ -47,6 +47,7 @@ SECTION_HEADER_RESEARCH = "研究结论"
 SECTION_HEADER_FORECAST = "盈利预测(年度)"
 LABEL_REPORT_TITLE = "报告标题"
 LABEL_RESEARCHER = "研究员"
+LABEL_STOCK_CODE = "股票代码"
 CAPTION = "单位：百万元；倍数除外"
 TABLE_FONT = "微软雅黑"
 TABLE_SIZE = 9.0
@@ -86,6 +87,12 @@ def resolve_company_dir(raw: str | Path) -> Path:
     if not cands:
         raise SystemExit(f"未找到匹配的公司目录: {text}")
     raise SystemExit(f"匹配到多个公司目录 {text}: {[c.name for c in cands]}")
+
+
+def _extract_stock_code(company_dir: Path) -> str | None:
+    """从公司目录名（如 `绿联科技_301606`）提取 6 位数字代码。"""
+    m = re.search(r"\d{6}", company_dir.name)
+    return m.group(0) if m else None
 
 
 # ---------- 研究结论.md 解析 ----------
@@ -229,8 +236,12 @@ def _find_section_content_cell(table, header_text: str):
 
 
 # ---------- 注入 ----------
-def inject_title(value_cell, title: str) -> None:
-    name, size, bold = _sample_font(value_cell)
+def inject_title(value_cell, title: str, bold: bool | None = True) -> None:
+    """写入标题/研究员值格。bold=True 强制加粗（报告标题用）；
+    bold=None 沿用单元格采样加粗（研究员格保留模板原有样式）。"""
+    name, size, sampled_bold = _sample_font(value_cell)
+    if bold is None:
+        bold = sampled_bold
     p0 = _clear_cell_paragraphs(value_cell)
     run = p0.add_run(title)
     _set_run_font(run, name, size, bold)
@@ -241,11 +252,35 @@ def inject_research(content_cell, r06_paragraphs: list[list[tuple[str, bool]]]) 
     p0 = _clear_cell_paragraphs(content_cell)
     first = True
     for segments in r06_paragraphs:
+        # big-part 节标题（短期/中长期/投资建议）：非首段前插一个空段落，做空行分隔
+        if (not first and len(segments) == 1 and segments[0][1]
+                and segments[0][0].startswith(("短期", "中长期", "投资建议"))):
+            content_cell.add_paragraph()
         p = p0 if first else content_cell.add_paragraph()
         first = False
         for text, bold in segments:
             run = p.add_run(text)
             _set_run_font(run, name, size, bold)
+
+
+def _normalize_doc_font(doc, font: str = TABLE_FONT) -> None:
+    """全局统一字体：把文档 body 内所有 run 的字体设为 font（保留字号/加粗/颜色）。
+
+    修模板里 font-less run（典型是「投资要点/正文部分 见附件」占位符）回退到
+    doc 默认字体（Calibri/宋体）的问题——保证输出报告字体一律微软雅黑。
+    在 XML 层遍历所有 w:r（覆盖正文/表格/嵌套表），idempotent。
+    """
+    for r_el in doc.element.body.iter(qn("w:r")):
+        rPr = r_el.find(qn("w:rPr"))
+        if rPr is None:
+            rPr = OxmlElement("w:rPr")
+            r_el.insert(0, rPr)
+        rFonts = rPr.find(qn("w:rFonts"))
+        if rFonts is None:
+            rFonts = OxmlElement("w:rFonts")
+            rPr.insert(0, rFonts)
+        for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
+            rFonts.set(qn(attr), font)
 
 
 def _format_value(val, fmt: str) -> str:
@@ -426,7 +461,13 @@ def build_rating_report_docx(
     if researcher:
         researcher_cell = _find_label_value_cell(table, LABEL_RESEARCHER)
         if researcher_cell is not None:
-            inject_title(researcher_cell, researcher)
+            inject_title(researcher_cell, researcher, bold=None)
+
+    stock_code = _extract_stock_code(company_dir)
+    if stock_code:
+        code_cell = _find_label_value_cell(table, LABEL_STOCK_CODE)
+        if code_cell is not None:
+            inject_title(code_cell, stock_code, bold=None)
 
     research_cell = _find_section_content_cell(table, SECTION_HEADER_RESEARCH)
     if research_cell is None:
@@ -447,6 +488,7 @@ def build_rating_report_docx(
         out_path = md.parent / f"{docx_stem}.docx"
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
+    _normalize_doc_font(doc)
     doc.save(str(out))
     return out
 

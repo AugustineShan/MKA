@@ -16,6 +16,8 @@ def test_alphapai_business_split_prompt_is_factpack_not_forecast():
     assert "模式：`alphapai-business-split`" in text
     assert "状态：`factpack/reference`" in text
     assert "只抓历史事实、口径桥和缺口" in text
+    assert "## 待 /ka 裁决清单" in text
+    assert "只列口径、缺口、可信度和下一步取证/裁决事项" in text
     assert "禁止写预测、目标价、评级、DCF、terminal、knobs" in text
     assert "禁止: 预测、knobs、DCF、目标价、评级" in text
     assert "没有 `knobs` fenced block" in text
@@ -71,4 +73,5 @@ def test_alphapai_business_split_prompt_makes_auxiliary_splits_optional_and_usef
     assert "地区" in text
     assert "渠道/客户/门店/用户/订单" in text
     assert "口径冲突与裁决备忘" in text
+    assert "待 /ka 裁决清单" in text
     assert "缺口写到具体年份、线、指标、来源" in text

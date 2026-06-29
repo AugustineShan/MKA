@@ -18,6 +18,38 @@
 - 只有核心假设源文需要变成 yaml1 -> `/comp`。
 - 重资产公司的固定资产/产能/capex 排程要建模 -> `/da`(轻资产或稳态公司别用)。
 
+## A0.1 Markdown staging 与状态头
+
+MKA 的投研材料先进入 markdown 语义层，再进入裁决或编译。不要让 Agent 把 raw PDF/Word/Excel/网页正文直接冒充正式判断。
+
+标准链路：
+
+```text
+raw 投研材料
+-> prepared markdown / manifest
+-> candidate 或 reference markdown
+-> /ka 裁决后的 official 核心假设.md
+-> /comp 翻译出的 yaml1
+```
+
+`公司判断和最新观点.md`、`重要文件/` 顶层材料与 `Skills素材包/最高权重材料-放Agent最应对齐的材料/` 顶层材料共同构成**同权重判断材料**。文件夹名里的“最高权重材料”只是历史目录名，不表示它压过分析师手写 thesis 或 `重要文件/`。
+
+凡是会被后续 skill 读取的中间 markdown，抬头必须尽量写清五件事：
+
+```text
+状态: draft / reference / model-extracted / factpack/reference / official
+来源层级: brkd / load-vintage / alphapai / ka / annual-update / adj
+可被谁读取: /ka / /comp / /adj / 前端 / 人工
+不可被谁读取: 例如不可直接 /comp、不可作为 official forecast
+上游材料: raw 文件、markdown存储区、load_id、网页端 factpack 或人工对话
+```
+
+没有状态头、状态不是 `official`、或写着 `reference` / `draft` / `model-extracted` 的稿子，只能当候选理解，不能静默进入 `/comp` official forecast。prepare manifest 中的 `unsupported/error` 必须进入缺口/待补或显式丢弃原因，禁止当作已经读完。
+
+reference 晋升路径只有一条：`reference/draft/model-extracted/factpack` -> `/ka` 裁决 -> 公司根目录 `状态: official` 的 `核心假设.md` -> `/comp`。任何 reference 产物都不能靠改名、复制到根目录或补一个 `knobs` 块直接晋升。
+
+新的 reference 产物必须包含一节 `## 待 /ka 裁决清单`，逐条写清：事项、候选值/方向、证据、分歧/缺口、建议处理。旧 reference 若没有这节，`/ka` 读取时必须在 overview 里把它补成议程，并标记为 reference 完整性缺口；不得因为缺清单就把候选内容静默并入 official。
+
 ## A1. 历史基年神圣 + 历史保全
 
 - 历史基年原子神圣不可改。任何情况下都不允许为了配平、好看、接近 headline 而回改历史原子。

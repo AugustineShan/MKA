@@ -33,8 +33,12 @@ def test_comp_launcher_requires_compiler_audit_before_forecast():
     assert "audit_clean" in text
     assert "覆盖双射" in text
     assert "B 类完整性" in text
-    assert "`unaligned` / 路径待核" in text
+    assert "`unaligned`/路径待核" in text
     assert "语义待核" in text
+    assert "A 类覆盖" in text
+    assert "B 类保全" in text
+    assert "主动覆盖回读" in text
+    assert "Forecast 状态" in text
     assert "reference yaml1" in text
     assert "不跑 official forecast" in text
     assert "落盘即 official 成功" in text
@@ -52,6 +56,9 @@ def test_yaml1compiler_declares_official_audit_gate():
     assert "`unaligned`/路径待核为空" in text
     assert "不得**继续跑 official forecast" in text
     assert "verdict: audit_clean / reference_only" in text
+    assert "## 9. 翻译后:校对 + 固定报告" in text
+    for heading in ["A 类覆盖", "B 类保全", "路径待核", "语义待核", "主动覆盖回读", "Forecast 状态"]:
+        assert heading in text
 
 
 def test_architecture_comp_contract_matches_launcher_order():

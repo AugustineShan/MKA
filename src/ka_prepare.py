@@ -2,7 +2,8 @@
 
 The /ka AI step should align to analyst-provided high-weight materials, but it
 should not read raw Office/PDF files directly.  This module converts the root
-``公司判断和最新观点.md`` plus top-level files under
+``公司判断和最新观点.md`` plus top-level files under the company root
+``重要文件`` folder and
 ``Skills素材包/最高权重材料-放Agent最应对齐的材料`` into that folder's
 ``markdown存储区`` and writes a manifest.
 """
@@ -20,6 +21,7 @@ from src.brkd_prepare import _safe_output_name, _source_files, convert_material
 from src.company_paths import (
     COMPANIES_DIR,
     find_company_dir,
+    important_files_dir,
     top_weight_markdown_store_dir,
     top_weight_material_dir,
 )
@@ -56,11 +58,15 @@ def resolve_company(raw: str | Path, *, companies_dir: Path = COMPANIES_DIR) -> 
 
 def _source_entries(company_dir: Path) -> list[tuple[Path, str, str | None]]:
     source_dir = top_weight_material_dir(company_dir)
+    important_dir = important_files_dir(company_dir)
     entries: list[tuple[Path, str, str | None]] = []
 
     core_view = company_dir / DEFAULT_CORE_VIEW
     if core_view.exists() and core_view.is_file():
         entries.append((core_view, "default_core_view", f"00_{_safe_output_name(core_view)}"))
+
+    for source in _source_files(important_dir):
+        entries.append((source, "root_important_material", f"01_重要文件_{_safe_output_name(source)}"))
 
     for source in _source_files(source_dir):
         entries.append((source, "top_weight_material", None))
@@ -75,8 +81,10 @@ def prepare_top_weight_materials(
 ) -> dict[str, Any]:
     company_dir = resolve_company(company, companies_dir=companies_dir)
     source_dir = top_weight_material_dir(company_dir)
+    important_dir = important_files_dir(company_dir)
     markdown_dir = top_weight_markdown_store_dir(company_dir)
     source_dir.mkdir(parents=True, exist_ok=True)
+    important_dir.mkdir(parents=True, exist_ok=True)
     markdown_dir.mkdir(parents=True, exist_ok=True)
 
     materials: list[dict[str, Any]] = []
@@ -92,6 +100,7 @@ def prepare_top_weight_materials(
         "mode": "ka_top_weight_prepare",
         "company_dir": str(company_dir),
         "source_dir": str(source_dir),
+        "important_dir": str(important_dir),
         "markdown_dir": str(markdown_dir),
         "default_core_view": str(company_dir / DEFAULT_CORE_VIEW),
         "force": force,

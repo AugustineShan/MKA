@@ -26,7 +26,7 @@ BRKD、LOAD、KA 默认收窄为“利润表 + 业务层盈利模型”这套源
 - `DA`、`CAPEX`、`CWC`、`shares`、`WACC` 等默认交引擎/defaults/专门流程处理，不在 `/brkd` 或 `/ka` 中主动裁决。
 - 材料中出现这些驱动因素但没有被分析师明示为核心 thesis 时，按核心纪律 A2 给明确去处：写入收纳区并标“非本层范围”，或写明丢弃原因；禁止静默删掉，也禁止包装成利润表预测。
 
-人工注入例外：如果最高权重材料或分析师明确说某个 BS/CF 因素是核心投资假设，例如周转率提升、库存去化、应收压降、合同负债改善、资本开支变化、折旧政策变化，则 `/ka` 可以单独开“资产负债表/营运资本/现金流人工覆盖”块。该例外必须同时满足：
+人工注入例外：如果同权重判断材料或分析师明确说某个 BS/CF 因素是核心投资假设，例如周转率提升、库存去化、应收压降、合同负债改善、资本开支变化、折旧政策变化，则 `/ka` 可以单独开“资产负债表/营运资本/现金流人工覆盖”块。该例外必须同时满足：
 
 1. 先确认它是核心 thesis，不是为了“模型完整”顺手补。
 2. 必须落到现有 defaults.yaml/yaml1 命名空间，例如 `balance_sheet.revenue_pct.*`、`balance_sheet.cogs_days.*`、`balance_sheet.capex_pct`、`balance_sheet.depr_rate` 等；`/comp` 不得发明路径。
@@ -50,14 +50,26 @@ BRKD、LOAD、KA 默认收窄为“利润表 + 业务层盈利模型”这套源
 
 ```text
 模式: ka / load / annual-update / adj
-状态: official / reference / draft / model-extracted
+状态: official / reference / draft / model-extracted / factpack/reference / estimated·待校准
 历史数据至: YYYY
 显式预测期: [YYYY, ...]
 衰减期至: YYYY 或 none
 衰减交接增速: x% / none
 永续增长: x%
 门槛来源: BRKD / LOAD / BRKD+LOAD / old official draft / annual-update
+来源层级: ka / brkd / load-vintage / alphapai / annual-update / adj
+可被谁读取: /ka / /comp / /adj / 前端 / 人工
+不可被谁读取: 例如不可直接 /comp、不可作为 official forecast
+上游材料: markdown存储区 / Agent业务讨论.md / load_id / Alphapai factpack / 人工对话
 ```
+
+`状态: reference`、`状态: draft`、`状态: model-extracted` 或 `状态: factpack/reference` 的文件必须包含：
+
+```text
+## 待 /ka 裁决清单
+```
+
+清单逐条写事项、候选值/方向、证据、分歧/缺口、建议处理。它是 reference 晋升为 official 的会议议程，不是正式拍板结果。
 
 `/brkd` 草稿可不锁最终四数，但必须写：
 
@@ -125,7 +137,7 @@ BRKD、LOAD、KA 默认收窄为“利润表 + 业务层盈利模型”这套源
 - defaults/yaml1 目标路径: balance_sheet.cogs_days.inventories
 - 历史: 2022=55天，2023=51天，2024=48天；来源: /init clean_annual + 年报存货披露。
 - 预测: 2025=46天，2026=44天，2027=42天，2028=40天。
-- 三件套: 谁定=分析师；为什么=供应链改革 + SKU 精简；来源=公司判断和最新观点.md。
+- 三件套: 谁定=分析师；为什么=供应链改革 + SKU 精简；来源=同权重判断材料（公司判断和最新观点.md + 重要文件/）。
 - 唯一旋钮声明: 只拍存货周转天数，不手填未来存货金额。
 ```
 
@@ -203,7 +215,7 @@ yoy、毛利率、占比等可推导量只能写在观察或 sanity 中，不作
 每个预测旋钮必须回答：
 
 ```text
-谁定: 分析师 / 最高权重材料 / LOAD原模型 / BRKD草稿 / 年报查证
+谁定: 分析师 / 同权重判断材料 / LOAD原模型 / BRKD草稿 / 年报查证
 为什么: 业务逻辑、趋势、管理层指引、竞争格局、会计口径
 来源: 文件/段落/模型range/对话拍板
 ```
@@ -276,7 +288,8 @@ knobs:
 - `draft`：草稿，待 `/ka` 拍板。
 - `model-extracted`：来自 `/load` 的原模型 vintage。
 - `official`：`/ka` 或正式更新流程拍板。
-- `reference`：有悬项，不可直接 `/comp`。
+- `reference`：有悬项，不可直接 `/comp`；必须带 `待 /ka 裁决清单`。
+- `factpack/reference`：只含事实抓取或网页端参考，供 `/ka` 裁决，不含正式预测拍板。
 - `estimated·待校准`：年度更新声明式估算的实际值，不能冒充真实披露。
 
 状态必须跟随块，而不是只写在文件开头。

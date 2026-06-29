@@ -36,6 +36,8 @@ def test_core_discipline_defines_cross_cutting_rules():
     assert "会议 memo" in text
     assert "聊天为人读，文件为机器读" in text
     assert "terminal.fade.target_growth" in text
+    assert "reference 晋升路径只有一条" in text
+    assert "## 待 /ka 裁决清单" in text
 
 
 def test_core_source_language_defines_shared_comp_grammar():
@@ -68,3 +70,5 @@ def test_core_source_language_defines_shared_comp_grammar():
     assert "```knobs" in text
     assert "target_growth: 0.055" in text
     assert "不写 yaml1 path" in text
+    assert "`状态: reference`、`状态: draft`、`状态: model-extracted` 或 `状态: factpack/reference`" in text
+    assert "待 /ka 裁决清单" in text

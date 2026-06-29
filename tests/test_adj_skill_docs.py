@@ -23,7 +23,10 @@ def test_adj_launcher_defines_quick_and_incremental_modes():
     assert "核心假设.md` 是 canonical" in text
     assert "yaml1 是派生缓存" in text
     assert "不直接改 yaml1" in text
+    assert "py -m src.ka_prepare" in text
     assert "py -m src.adj_prepare" in text
+    assert "同权重判断材料" in text
+    assert "重要文件" in text
     assert "ADJ增量信息（用来改模型的边际信息）" in text
     assert "markdown存储区" in text
     assert "这个不能在 quick 模式直接拨" in text
@@ -52,7 +55,10 @@ def test_adj_editor_skill_keeps_quick_narrow_and_incremental_compiled():
     assert "禁止" in text
     assert "terminal.fade.to_year" in text
     assert "terminal.fade.target_growth" in text
+    assert "py -m src.ka_prepare" in text
     assert "py -m src.adj_prepare" in text
+    assert "同权重判断材料" in text
+    assert "重要文件" in text
     assert "必须走 `/comp`，不直接 patch yaml1" in text
     assert "unsupported" in text
 

@@ -22,6 +22,8 @@ def test_ka_launcher_loads_shared_sources_and_editor_before_materials():
     assert "最高权重材料-放Agent最应对齐的材料" in text
     assert "markdown存储区" in text
     assert "公司判断和最新观点.md" in text
+    assert "重要文件" in text
+    assert "凡读公司判断" in text
     assert "至少具备 BRKD 产物、已完成 LOAD 产物或 KA 参考稿区 reference 候选之一" in text
     assert "Agent业务讨论.md" in text
     assert "核心假设参考load_*.md" in text
@@ -31,6 +33,9 @@ def test_ka_launcher_loads_shared_sources_and_editor_before_materials():
     assert "Agent\\Load\\` 沙箱副本" in text
     assert "模式: load" in text
     assert "没有末尾 ` ```knobs`" in text
+    assert "## 待 /ka 裁决清单" in text
+    assert "缺待 /ka 裁决清单" in text
+    assert "采纳入 official / 收纳 / 缺口待补 / 丢弃并说明理由" in text
     assert "不要再把旧 v19" in text
     assert "当 `/ka` 主工作流" in text
 
@@ -108,8 +113,12 @@ def test_core_assumption_editor_is_slim_comp_source_editor():
     assert "所有人机确认点都继承核心纪律 A4 的会议 memo 风格" in text
     assert "聊天为人读，落盘稿为机器读" in text
     assert "最高权重材料 + BRKD/LOAD" in text
+    assert "`重要文件/` 与公司判断同等权重" in text
     assert "和分析师裁决预测，同时忠实收集与这些预测有关的历史" in text
     assert "KA 参考稿区 `核心假设参考load_*.md`" in text
+    assert "`## 待 /ka 裁决清单` 是晋升前议程" in text
+    assert "reference 晋升事项逐条处理完毕" in text
+    assert "采纳：转成 official 正文判断" in text
     assert "load-vintage" in text
     assert "```knobs" in text
 

@@ -152,7 +152,7 @@ values: "全程 15.4%"
 | `cost_abs` | 省略 | `abs_mn` | 资产减值损失、信用减值损失等成本侧绝对值项。 |
 | `below_line_abs` | 省略 | `abs_mn` | 营业外收入、营业外支出。 |
 | `other_fin_exp_abs` | 省略 | `abs_mn` | 其他财务费用外生项。 |
-| `bs_revenue_pct` | BS 科目字段名 | `pct` | 人工覆盖 `balance_sheet.revenue_pct.*`，如应收账款/收入、合同负债/收入。只在最高权重材料或分析师明示为核心 thesis 时使用。 |
+| `bs_revenue_pct` | BS 科目字段名 | `pct` | 人工覆盖 `balance_sheet.revenue_pct.*`，如应收账款/收入、合同负债/收入。只在同权重判断材料或分析师明示为核心 thesis 时使用。 |
 | `bs_cogs_days` | BS 科目字段名 | `ratio` | 人工覆盖 `balance_sheet.cogs_days.*`，如存货周转天数、应付账款天数。`values` 写天数原值。 |
 | `bs_scalar_pct` | defaults 标量字段名 | `pct` | 人工覆盖 `balance_sheet.capex_pct`、`balance_sheet.depr_rate`、`balance_sheet.dividend_payout` 等轻资产/稳态标量路径；其中 `dividend_payout` 是 `/ka` 强制检测项，但只有需要覆盖 defaults 时才进入 `knobs`；重资产排程优先 `/da`。 |
 | `formula_input` | 变量名 | `pct` / `ratio` / `abs_mn` | 受限 formula 的人工输入变量。当前 Gate C 只会校验能落成 top-level `kind: knob` 或 revenue leaf 输入的值；其他 formula input 暂不写独立条目。 |

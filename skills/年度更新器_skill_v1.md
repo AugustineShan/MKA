@@ -32,7 +32,7 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> --forecast-m
 - 年报 Markdown
 - `annual_update_fetcher` 输出 JSON
 - 复盘分诊单，若存在
-- `公司判断和最新观点.md`
+- 同权重判断材料：`公司判断和最新观点.md` + `重要文件/` 顶层材料（经 `src.ka_prepare` 进入最高权重 `markdown存储区/`）
 
 不联网，不重新拉数据，不编译 yaml1，不重建判断引擎。
 
@@ -139,7 +139,7 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> --forecast-m
 - 第 3 步挂旗待填的项。
 - 年报新 segment 或旧 segment 消失。
 - 新补那一年带来的预测窗口变化。
-- 最高权重材料或 thesis 有明确变化。
+- 同权重判断材料（公司判断、重要文件、最高权重材料文件夹）或 thesis 有明确变化。
 
 干净的块可以明确写“无新信息，平移”，并在总账划掉。
 

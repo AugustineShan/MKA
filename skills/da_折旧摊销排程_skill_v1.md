@@ -102,6 +102,8 @@ py -m src.da_facts --ticker {代码} --base-year {base_year} --years 5
 
 `da_schedule.yaml` 是假设层审计产物,不是纯参数文件。里面每个数字必须能立刻归入三类之一:事实(`da_facts` 带来源)、人的判断(三件套/decision_log)、显式缺口旗(`待校准`/`待补旗`)。不得出现来历不明的数。
 
+`/da` launcher 已在最前面读取同权重定调材料：`公司判断和最新观点.md` + `重要文件/` + 最高权重材料文件夹 `markdown存储区/`。凡引用分析师 thesis、会议纪要或 capex 定调，来源应指向这组材料，而不是只写单个判断文件。
+
 ```yaml
 enabled: true                      # true 才被 forecast.py 消费
 base_year: 2024                    # 必须 = defaults.base_period 的年份(load_da_schedule 校验,不匹配 DaAlignError)
@@ -113,7 +115,7 @@ audit:
     - field: terminal.capex_da_ratio
       who_decided: 分析师
       why: "成熟期回到维持性 capex≈D&A"
-      source: "公司判断和最新观点.md / da_facts_latest.json / 商议记录"
+      source: "同权重定调材料(公司判断和最新观点.md + 重要文件/) / da_facts_latest.json / 商议记录"
       status: official              # official / estimated·待校准 / 待补旗
   gaps: []                          # 抽不到或未拍板的值逐条列,不得补零
 

@@ -7,6 +7,8 @@ import type {
   AssumptionPatch,
   AssumptionPreview,
   AssumptionsKnob,
+  BusinessFactBlock,
+  BusinessFactView,
   CompanyDetail,
   CompanySummary,
   DcfDetailRow,
@@ -356,9 +358,6 @@ function Overview({ detail }: { detail: CompanyDetail }) {
   const forecastSecondYear = forecastYears[1]?.year ?? forecastFirstYear + 1;
   const forecastLastYear = forecastYears[forecastYears.length - 1]?.year ?? ratingConfig.forecast_end_year;
   const forecastPeriodLabel = `${forecastYearLabel(forecastFirstYear)}-${forecastYearLabel(forecastLastYear)}`;
-  const currentPrice = asNumber(market.close);
-  const perShareValue = asNumber(valuation.per_share_value ?? dcf?.per_share_value ?? summary.per_share_value);
-  const impliedUpside = currentPrice && perShareValue ? perShareValue / currentPrice - 1 : null;
   const marketCap = asNumber(market.total_mv ?? overviewMetric(detail, "market_cap", forecastFirstYear));
   const firstForecastPe = overviewMetric(detail, "pe", forecastFirstYear) ?? asNumber(valuation.forward_pe);
   const secondForecastPe = overviewMetric(detail, "pe", forecastSecondYear);
@@ -390,20 +389,6 @@ function Overview({ detail }: { detail: CompanyDetail }) {
           <p>
             {summary.ticker ?? summary.code} · 行情日 {formatMarketDate(market.trade_date)}
           </p>
-        </div>
-        <div className="overview-price-panel">
-          <div>
-            <span>现价</span>
-            <strong>{formatNumber(currentPrice, 2)}</strong>
-          </div>
-          <div>
-            <span>DCF 价值</span>
-            <strong>{formatNumber(perShareValue, 2)}</strong>
-          </div>
-          <div className={impliedUpside != null && impliedUpside >= 0 ? "positive" : "negative"}>
-            <span>隐含空间</span>
-            <strong>{formatSignedPercent(impliedUpside, 1)}</strong>
-          </div>
         </div>
       </section>
 
@@ -1418,10 +1403,11 @@ type AxisRow = {
   override?: boolean;
   muted?: boolean;
   driver?: boolean;
+  highlight?: boolean;
   editablePath?: string;
   // int=整数金额(百万元) · num2=2位小数(参考项通用) · decimal=小数比率×100+%(旋钮) ·
   // percent1=无符号百分比1位 · signedDecimal=带符号同比% · volume=1位小数(万吨)
-  format?: "int" | "num2" | "decimal" | "decimal1" | "percent1" | "signedDecimal" | "volume";
+  format?: "int" | "num1" | "num2" | "decimal" | "decimal1" | "percent1" | "signedDecimal" | "volume" | "text";
 };
 
 type AssumptionInlineEdit = {
@@ -1449,6 +1435,8 @@ function formatAxisCell(v: number | null | undefined, format: AxisRow["format"])
       return formatPercent(v, 1);
     case "signedDecimal":
       return formatSignedPercent(v, 1);
+    case "num1":
+      return formatNumber(v, 1);
     case "num2":
       return formatNumber(v, 2);
     case "volume":
@@ -1508,6 +1496,28 @@ function ratioSeries(
     values[year] = typeof n === "number" && typeof d === "number" && d !== 0 ? n / d : null;
   }
   return values;
+}
+
+function hasSeriesValues(values: Record<string, number | null> | undefined): boolean {
+  return Object.values(values ?? {}).some((value) => typeof value === "number");
+}
+
+function segmentGrossMarginHistory(segment: Yaml1RevenueSegment): Record<string, number | null> {
+  const canonical = segment.history_metrics?.gross_margin?.values;
+  if (hasSeriesValues(canonical)) return { ...canonical };
+
+  const direct = segment.history_margins
+    ?? segment.history_series?.margin
+    ?? segment.history_series?.gross_margin
+    ?? segment.history_series?.gpm;
+  if (hasSeriesValues(direct)) return { ...direct };
+
+  if (!segment.history_costs || !Object.keys(segment.history_costs).length) return {};
+  const grossProfit = Object.fromEntries(Object.entries(segment.history_costs).map(([year, cost]) => {
+    const revenue = segment.history_revenues?.[year];
+    return [year, typeof revenue === "number" && typeof cost === "number" ? revenue - cost : null];
+  }));
+  return ratioSeries(grossProfit, segment.history_revenues);
 }
 
 function normalizeBusinessLabel(value: string): string {
@@ -1650,6 +1660,7 @@ function UnifiedYearTable({
   years,
   baseYear,
   groups,
+  stickySummary = false,
   editMode = false,
   editableByPath,
   editablePeriods: editablePeriodSet,
@@ -1663,6 +1674,7 @@ function UnifiedYearTable({
   years: string[];
   baseYear: number;
   groups: AxisGroup[];
+  stickySummary?: boolean;
   editMode?: boolean;
   editableByPath?: Map<string, EditableAssumption>;
   editablePeriods?: Set<string>;
@@ -1692,8 +1704,8 @@ function UnifiedYearTable({
   };
 
   return (
-    <div className="table-scroll workbook-scroll">
-      <table className="financial-table unified-table">
+    <div className={`table-scroll workbook-scroll ${stickySummary ? "summary-sticky-scroll" : ""}`}>
+      <table className={`financial-table unified-table ${stickySummary ? "summary-sticky-table" : ""}`}>
         <thead>
           <tr className="year-header-row">
             <th>项目</th>
@@ -1705,7 +1717,7 @@ function UnifiedYearTable({
         <tbody>
           {groups.map((g, gi) => (
             <Fragment key={gi}>
-              <tr className="group-header-row">
+              <tr className={`group-header-row ${stickySummary && gi === 0 ? "sticky-summary-group" : ""}`}>
                 <th colSpan={years.length + 1}>
                   <span className="group-title">{g.title}</span>
                   {g.unit ? <span className="axis-unit">{humanizeUnit(g.unit)}</span> : null}
@@ -1723,8 +1735,9 @@ function UnifiedYearTable({
               ) : null}
               {g.rows.map((r, ri) => {
                 const rowHasEditable = editMode && years.some((y) => Boolean(editableCell(r, y)));
+                const stickySummaryRow = stickySummary && gi === 0 && r.highlight && ri < 4;
                 return (
-                <tr key={ri} className={`${r.bold ? "key-row" : ""} ${r.muted ? "muted-row" : ""} ${r.driver ? "driver-assumption-row" : ""} ${rowHasEditable ? "editable-assumption-row" : ""}`}>
+                <tr key={ri} className={`${r.bold ? "key-row" : ""} ${r.muted ? "muted-row" : ""} ${r.driver ? "driver-assumption-row" : ""} ${r.highlight ? "summary-highlight-row" : ""} ${stickySummaryRow ? `sticky-summary-row sticky-summary-row-${ri}` : ""} ${rowHasEditable ? "editable-assumption-row" : ""}`}>
                   <td className="statement-label" title={r.note ?? r.label}>
                     {r.override ? <span className="override-dot" title="主动覆盖 / 查证" /> : null}
                     {r.label}
@@ -1791,6 +1804,83 @@ function UnifiedYearTable({
 
 // ── 区域分组构建器 ──
 
+function businessFactAxisFormat(format: string | undefined): AxisRow["format"] {
+  if (format === "int" || format === "num1" || format === "num2" || format === "percent1" || format === "signedDecimal" || format === "volume" || format === "text") return format;
+  return "num2";
+}
+
+function businessFactRowLabel(entityLabel: string, metricLabel: string): string {
+  if (!metricLabel) return entityLabel;
+  return `${entityLabel} · ${metricLabel}`;
+}
+
+function businessFactBlocksToAxisGroups(blocks: BusinessFactBlock[]): AxisGroup[] {
+  return blocks
+    .filter((block) => block.rows.length > 0)
+    .map((block) => ({
+      title: block.title,
+      unit: null,
+      rows: block.rows.map((row) => ({
+        label: businessFactRowLabel(row.entity_label, row.metric_label),
+        values: row.values,
+        note: [row.source_path, row.note].filter(Boolean).join("\n"),
+        muted: row.metric !== "revenue",
+        driver: row.value_source === "forecast",
+        editablePath: row.editable_path ?? undefined,
+        format: businessFactAxisFormat(row.format),
+      })),
+    }));
+}
+
+function businessFactYears(blocks: BusinessFactBlock[]): string[] {
+  return unionYears(blocks.map((block) => block.rows.flatMap((row) => Object.keys(row.values))));
+}
+
+function BusinessFactTable({
+  blocks,
+  years,
+  baseYear,
+  editMode,
+  editableByPath,
+  editablePeriods,
+  drafts,
+  inlineEdit,
+  onCancelInlineEdit,
+  onCommitInlineEdit,
+  onInlineEditChange,
+  onStartInlineEdit,
+}: {
+  blocks: BusinessFactBlock[];
+  years: string[];
+  baseYear: number;
+  editMode?: boolean;
+  editableByPath?: Map<string, EditableAssumption>;
+  editablePeriods?: Set<string>;
+  drafts?: Record<string, number | null>;
+  inlineEdit?: AssumptionInlineEdit | null;
+  onCancelInlineEdit?: () => void;
+  onCommitInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell) => void;
+  onInlineEditChange?: (raw: string) => void;
+  onStartInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell) => void;
+}) {
+  return (
+    <UnifiedYearTable
+      baseYear={baseYear}
+      drafts={drafts}
+      editableByPath={editableByPath}
+      editablePeriods={editablePeriods}
+      editMode={editMode}
+      groups={businessFactBlocksToAxisGroups(blocks)}
+      inlineEdit={inlineEdit}
+      onCancelInlineEdit={onCancelInlineEdit}
+      onCommitInlineEdit={onCommitInlineEdit}
+      onInlineEditChange={onInlineEditChange}
+      onStartInlineEdit={onStartInlineEdit}
+      years={years}
+    />
+  );
+}
+
 function displayKnobLabel(label: string, path: string): string {
   const cleaned = label.replace(/^#/, "").replace(/\(.*\)$/, "").replace(/^(减|加):/, "").trim() || path;
   if (path.startsWith("income.cost_rates.") && !cleaned.endsWith("率")) return `${cleaned}率`;
@@ -1839,10 +1929,9 @@ function profitRowsForRevenueBlock(
     netMargin[year] = typeof income === "number" && typeof revenue === "number" && revenue !== 0 ? income / revenue : null;
   }
   return [
-    { label: "归母净利润", bold: true, values: attrNetIncome, format: "int" },
-    { label: "净利润", values: netIncome, format: "int" },
+    { label: "归母净利润", bold: true, highlight: true, values: attrNetIncome, format: "int" },
+    { label: "归母净利润同比", muted: true, highlight: true, values: yoySeries(attrNetIncome), format: "signedDecimal" },
     { label: "净利率", muted: true, values: netMargin, format: "decimal" },
-    { label: "净利润同比", muted: true, values: yoySeries(netIncome), format: "signedDecimal" },
   ];
 }
 
@@ -1919,8 +2008,8 @@ function revenueDriverKey(row: EditableAssumption, segmentKey: string): string {
   return row.path.startsWith(prefix) ? row.path.slice(prefix.length) : (row.family ?? "");
 }
 
-function revenueDriverAxisRow(row: EditableAssumption, segmentKey: string, segmentName: string): AxisRow {
-  const values: Record<string, number | null> = {};
+function revenueDriverAxisRow(row: EditableAssumption, segmentKey: string, segmentName: string, historyValues?: Record<string, number | null>): AxisRow {
+  const values: Record<string, number | null> = { ...(historyValues ?? {}) };
   for (const cell of row.cells) values[cell.year] = cell.value;
   const key = revenueDriverKey(row, segmentKey);
   const label = REVENUE_DRIVER_LABELS[key] ?? row.label.replace(`${segmentName} · `, "");
@@ -2039,8 +2128,8 @@ function buildRevenueGroups(
   for (const y of view.years) totalValues[y] = statementValue(previewIs, ["revenue"], y) ?? view.revenues[y] ?? null;
   const totalYoy: Record<string, number | null> = yoySeries(totalValues);
   const totalRows: AxisRow[] = [
-    { label: "营业收入", bold: true, values: totalValues, format: "int" },
-    { label: "同比增长", muted: true, values: totalYoy, format: "signedDecimal" },
+    { label: "营业收入", bold: true, highlight: true, values: totalValues, format: "int" },
+    { label: "同比增长", muted: true, highlight: true, values: totalYoy, format: "signedDecimal" },
     ...profitRowsForRevenueBlock(fullIs, previewIs, unionYears([Object.keys(totalValues), view.years]), view.base_year, totalValues),
   ];
   groups.push({
@@ -2072,23 +2161,22 @@ function buildRevenueGroups(
       for (const cell of revenueYoyDriver.cells) yoyValues[cell.year] = cell.value;
     }
     segRows.push({ label: `${seg.name} · 同比`, muted: true, values: yoyValues, format: "signedDecimal", editablePath: revenueYoyDriver?.path });
+    const grossMarginHistory = segmentGrossMarginHistory(seg);
+    const hasGrossMarginHistory = hasSeriesValues(grossMarginHistory);
+    const marginDriver = inlineDriverRows.find((row) => revenueDriverKey(row, seg.key) === "margin");
     if (seg.history_costs && Object.keys(seg.history_costs).length > 0) {
       segRows.push({ label: `${seg.name} · 成本`, muted: true, values: seg.history_costs, format: "int" });
+    }
+    if (hasGrossMarginHistory && !marginDriver) {
       segRows.push({
         label: `${seg.name} · 毛利率`,
         muted: true,
-        values: ratioSeries(
-          Object.fromEntries(Object.entries(seg.history_costs).map(([year, cost]) => {
-            const revenue = seg.history_revenues?.[year];
-            return [year, typeof revenue === "number" && typeof cost === "number" ? revenue - cost : null];
-          })),
-          seg.history_revenues,
-        ),
+        values: grossMarginHistory,
         format: "percent1",
       });
     }
     const derivedMetrics = new Set<string>();
-    if (seg.history_costs && Object.keys(seg.history_costs).length > 0) derivedMetrics.add("毛利率");
+    if (hasGrossMarginHistory) derivedMetrics.add("毛利率");
     for (const row of segmentAttachedRowsFromStash(seg, segmentAttachedBlocks, derivedMetrics, displayBlocks)) {
       segRows.push(row);
     }
@@ -2098,7 +2186,9 @@ function buildRevenueGroups(
       segRows.push({ label: `${seg.name} · 销量(${volUnit})`, muted: true, values: volValues, format: "volume" });
     }
     for (const driver of inlineDriverRows) {
-      segRows.push(revenueDriverAxisRow(driver, seg.key, seg.name));
+      const dkey = revenueDriverKey(driver, seg.key);
+      const histMargin = dkey === "margin" ? grossMarginHistory : undefined;
+      segRows.push(revenueDriverAxisRow(driver, seg.key, seg.name, histMargin));
     }
   }
   groups.push({ title: "主拆分 · 业务线", unit: "百万元", rows: segRows });
@@ -2752,6 +2842,7 @@ function YamlWorkbook({
   companyId,
   initialPresentation,
   revenueView,
+  businessFactsView,
   statementSheets,
   fullStatementSheets,
   stashView,
@@ -2765,6 +2856,7 @@ function YamlWorkbook({
   companyId: string;
   initialPresentation?: Yaml1Presentation | null;
   revenueView?: Yaml1RevenueView | null;
+  businessFactsView?: BusinessFactView | null;
   statementSheets?: StatementSheet[];
   fullStatementSheets?: StatementSheet[];
   stashView?: StashBlock[];
@@ -2889,7 +2981,12 @@ function YamlWorkbook({
     }
   }
 
-  if (!revenueView && !assumptionsView && !editableRows.length && !stashView?.length && !annualRevenueBreakdown?.length) {
+  const businessFactBlocks = businessFactsView?.schema_version === 1 ? (businessFactsView.blocks ?? []) : [];
+  const factModelBlocks = businessFactBlocks.filter((block) => block.placement === "model_table" || block.placement === "secondary_table");
+  const factReferenceBlocks = businessFactBlocks.filter((block) => block.placement === "reference_tab" || block.placement === "technical_tab");
+  const hasBusinessFacts = factModelBlocks.length > 0 || factReferenceBlocks.length > 0;
+
+  if (!hasBusinessFacts && !revenueView && !assumptionsView && !editableRows.length && !stashView?.length && !annualRevenueBreakdown?.length) {
     return <EmptyState title="No YAML1" body="Compiler output yaml1_*.yaml was not found or could not be parsed." />;
   }
 
@@ -2929,7 +3026,11 @@ function YamlWorkbook({
         [String(revenueView.base_year)],
       ])
     : [];
-  const revenueGroups = revenueView ? buildRevenueGroups(revenueView, presentation, secondaryBlocks, segmentAttachedBlocks, displayBlocks, displayWarnings, editableRows, fullStatementSheets, preview?.statement_sheets) : [];
+  const legacyRevenueGroups = revenueView ? buildRevenueGroups(revenueView, presentation, secondaryBlocks, segmentAttachedBlocks, displayBlocks, displayWarnings, editableRows, fullStatementSheets, preview?.statement_sheets) : [];
+  const factModelGroups = businessFactBlocksToAxisGroups(factModelBlocks);
+  const modelOverviewGroups = factModelGroups.length ? legacyRevenueGroups.slice(0, 1) : [];
+  const revenueGroups = factModelGroups.length ? [...modelOverviewGroups, ...factModelGroups] : legacyRevenueGroups;
+  const factYears = businessFactYears(factModelBlocks);
 
   // ② 关键假设区
   const asmBase = assumptionsView ? Number(assumptionsView.base_period) : 0;
@@ -2942,10 +3043,11 @@ function YamlWorkbook({
       if (row.editablePath) representedEditablePaths.add(row.editablePath);
     }
   }
-  const supplementalEditableRows = revenueView ? editableRows.filter((row) => row.group !== "revenue_driver") : editableRows;
+  const supplementalEditableRows = factModelGroups.length || revenueView ? editableRows.filter((row) => !representedEditablePaths.has(row.path)) : editableRows;
   const supplementalEditableGroups = buildEditableAxisGroups(supplementalEditableRows, representedEditablePaths);
-  const modelGroups = [...revenueGroups, ...supplementalEditableGroups, ...assumptionGroups];
-  const modelYears = unionYears([revenueYears, assumptionYears, editablePeriodList]);
+  const assumptionSideGroups = [...supplementalEditableGroups, ...assumptionGroups];
+  const modelGroups = [...revenueGroups, ...assumptionSideGroups];
+  const modelYears = unionYears([factYears, revenueYears, assumptionYears, editablePeriodList]);
   const modelVisibleYears = useMemo(() => {
     if (modelRangeMode === "full") return modelYears;
     const base = revenueBase || asmBase;
@@ -2957,9 +3059,13 @@ function YamlWorkbook({
 
   // ③ 参考区
   const refBase = revenueBase || asmBase;
-  const { groups: refGroups, rest: refRest } = buildReferenceGroups(refBlocks, displayBlocks);
+  const legacyReference = buildReferenceGroups(refBlocks, displayBlocks);
+  const factReferenceGroups = businessFactBlocksToAxisGroups(factReferenceBlocks);
+  const factReferencePaths = new Set(factReferenceBlocks.map((block) => block.path));
+  const refGroups = factReferenceGroups.length ? factReferenceGroups : legacyReference.groups;
+  const refRest = factReferenceGroups.length ? refBlocks.filter((block) => !factReferencePaths.has(stashPath(block))) : legacyReference.rest;
   const refYears = unionYears(refGroups.map((g) => g.rows.flatMap((r) => Object.keys(r.values))));
-  const displayWarningItems = displayContract?.warnings ?? [];
+  const displayWarningItems = [...(displayContract?.warnings ?? []), ...(businessFactsView?.warnings ?? [])];
 
   return (
     <div className="view-stack yaml1-spec">
@@ -3060,6 +3166,7 @@ function YamlWorkbook({
             onCommitInlineEdit={commitInlineEdit}
             onInlineEditChange={(raw) => setInlineEdit((current) => current ? { ...current, raw } : current)}
             onStartInlineEdit={startInlineEdit}
+            stickySummary
           />
           {terminal && terminal.explicit_end != null ? <TerminalBlock terminal={terminal} /> : null}
         </section>
@@ -3140,7 +3247,9 @@ function YamlWorkbook({
             <div className="eyebrow">④ Reference items · stash</div>
             <h2>参考项</h2>
           </div>
-          {refGroups.length > 0 ? (
+          {factReferenceBlocks.length > 0 ? (
+            <BusinessFactTable blocks={factReferenceBlocks} years={refYears} baseYear={refBase} />
+          ) : refGroups.length > 0 ? (
             <UnifiedYearTable years={refYears} baseYear={refBase} groups={refGroups} />
           ) : null}
           {refRest.length > 0 ? (
@@ -4336,6 +4445,7 @@ function DetailView({
         initialPresentation={detail.yaml1_presentation}
         path={detail.yaml1_path}
         revenueView={detail.yaml1_revenue_view}
+        businessFactsView={detail.yaml1_business_facts_view}
         statementSheets={detail.statement_sheets}
         fullStatementSheets={detail.full_statement_sheets}
         stashView={detail.yaml1_stash_view}

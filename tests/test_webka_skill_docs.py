@@ -22,6 +22,8 @@ def test_webka_skill_doc_structure():
     # 执行动作
     assert "py -m src.webka" in text
     assert "src.ka_prepare" in text
+    assert "同权重判断材料" in text
+    assert "重要文件" in text
     # 两道门禁
     assert "§2 已有正式稿门禁" in text
     assert "§6b 骨架门禁" in text

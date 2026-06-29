@@ -13,6 +13,8 @@
 
 没有 `display` 的旧 yaml1 仍兼容；`workbench.py` 会生成 `yaml1_display_contract.mode = inferred`。新 `/comp` 产物应尽量显式写 `display`。
 
+> **Business Fact Matrix 边界（2026-06-29）**：`display` 只管摆放和展示身份，不管指标算法、别名或 fallback。所有业务拆分事实由 `src.yaml1_business_facts` 规范化为 `yaml1_business_facts_view`；指标语义由 `src/business_metric_registry.yaml` 管理。前端优先渲染 Business Fact Matrix，旧 `yaml1_revenue_view` 只作为兼容 fallback。
+
 ## 2. 顶层结构
 
 ```yaml

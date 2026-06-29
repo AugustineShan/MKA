@@ -1,13 +1,13 @@
 ﻿---
 name: comp
-description: 启动 yaml1 compiler：解析公司目录 → 先做年份门禁 → 动态加载最新版 yaml1compiler skill → 读取六份输入材料 → 编译生成 yaml1_公司名_YYYYMMDD.yaml → 自动跑 src.forecast 出 DCF。
+description: 启动 yaml1 compiler：解析公司目录 → 先做年份门禁 → 动态加载最新版 yaml1compiler skill → 读取六份输入材料 → 通过信息保全/忠实度审计后编译生成 yaml1_公司名_YYYYMMDD.yaml → 自动跑 src.forecast 出 DCF。
 argument-hint: [公司名或代码，如 新乳业 / 002946]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
 
 # /comp — yaml1 compiler 启动器
 
-把 `核心假设.md` 里分析师拍板的人话判断，编译成机器可读的 `yaml1_公司名_YYYYMMDD.yaml`，供下游 `forecast.py` 使用。`/comp` 只编译**当前有效假设**：如果 `clean_annual` 最新实际年已经覆盖了核心假设的预测起点，必须先走 `/annual-update`。
+把 `核心假设.md` 里分析师拍板的人话判断，编译成机器可读的 `yaml1_公司名_YYYYMMDD.yaml`，供下游 `forecast.py` 使用。`/comp` 不是研究员，也不是 DCF 试算器；它的第一职责是信息保全和忠实翻译。`/comp` 只编译**当前有效假设**：如果 `clean_annual` 最新实际年已经覆盖了核心假设的预测起点，必须先走 `/annual-update`。
 
 ## 执行顺序（必须遵守）
 
@@ -44,6 +44,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 - **年份门禁是选定正式稿后的第一件事**：只要 `clean_annual` 已有 2025 实际、核心假设仍从 2025 开始预测，就不能继续 `/comp`；这不是 compiler 错误，而是应该走 `/annual-update`。
 - **`/comp` 只吃正式稿**：参考稿、草稿、`/load` 沙箱稿和 `model-extracted` 稿都不能静默成为正式 forecast 的源文。
 - **compiler audit 是 official forecast 门禁**：覆盖双射、B 类完整性、`unaligned`/路径待核、语义待核、主动覆盖回读都清干净，才叫 `audit_clean`；否则 yaml1 只能作为 reference/draft 产物保存，不跑 official forecast。
+- **信息保全闸**：A 类进入可计算覆盖，B 类进入 `history` / `stash` / `display`，歧义进入 `unaligned` 或待核清单；三者都清楚，才允许进入 official forecast。DCF 能跑不是唯一成功标准，信息没有丢才是。
 - **所有 skill 均不读取 PDF。** 如果 `核心假设.md` 的来源材料里有 PDF，compiler 只信任已经被翻译进 `.md` 的内容。
 - `defaults.yaml` 是目标命名空间，不是输入假设；compiler 负责把 `核心假设.md` 里的覆盖项落到 `defaults.yaml` 已有的真实路径上。
 - `docs/数据格式参考.md` 和 `docs/yaml1算法模板契约.md` 是只读契约，compiler 不能改写。
@@ -63,15 +64,16 @@ yaml1 是 comp 的主产物，但**不是落盘即 official 成功**。落盘后
 
 汇报口吻要像 compiler 审计 memo，不像机器日志：先讲“这份核心假设被成功翻译成了什么 / 哪些覆盖项生效 / 哪些路径或语义被拦住 / DCF 是否跑通”，再给关键文件路径。不要把 stdout、yaml1 大段内容或 audit JSON 原样倾倒给用户；失败时只摘关键错误和下一步。
 
-### Compiler Audit 门禁（不干净则不跑 DCF）
+### Compiler Audit / 信息保全门禁（不干净则不跑 DCF）
 
-报告必须至少覆盖：
+报告必须使用固定结构，少项视为 audit 不完整：
 
-- 覆盖双射：`.md` 每条 A 类旋钮/结构判断都被 yaml1 认领，无漏无多。
-- B 类完整性：leaf history 与 `stash` 对齐源文，收纳区没有丢失或塞错位置。
-- `unaligned` / 路径待核：必须为空；否则 yaml1 只能标 reference/draft。
-- 语义待核：必须为空，或已经被分析师显式确认；未确认则不跑 official forecast。
-- 主动覆盖人话回读：已完成，且没有未拍板的主动覆盖项。
+1. **A 类覆盖**：`.md` 每条可计算旋钮/结构判断都被 yaml1 认领，无漏无多。
+2. **B 类保全**：leaf history、stash、display 去向与源文对齐，收纳区没有丢失或塞错位置。
+3. **路径待核**：`unaligned` / `# 路径待核` 必须为空；否则 yaml1 只能标 reference/draft。
+4. **语义待核**：`# 语义待核` 必须为空，或已经被分析师显式确认；未确认则不跑 official forecast。
+5. **主动覆盖回读**：主动覆盖项已用人话回读完成，且没有未拍板项。
+6. **Forecast 状态**：`not_run` / `skipped_missing_data` / `ran_ok` / `failed_after_audit_clean`，并说明 `Agent/forecast/` 是否被覆盖。
 
 若 compiler audit 不干净：可以保留 `yaml1_*.yaml` 作为参考产物，但必须在汇报里标明 `reference yaml1`，停止 `/comp` 的 official forecast，不得运行 `src.forecast` 去覆盖 `Agent/forecast/`。
 

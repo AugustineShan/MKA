@@ -1,13 +1,13 @@
 ---
 name: webka
-description: 一键打包网页端执行 /ka 所需的规则与材料。本地先跑 ka_prepare markdown 化最高权重材料，强制 /ka §2/§6b 门禁，再把核心纪律 A、核心假设源语言 B、knobs 块契约、核心假设编辑器 runbook 与最高权重材料/BRKD/LOAD/reference/旧稿/defaults.yaml 合并成 `必读和素材.md`，core_metrics_overview + OfficialBreakdowns 合并成 `不必要读强制碰到再速查.md`，加一份 `readme first.md` 入口，输出到 WEBCLAUDE/webka(Claude帮你统摄核心假设）/。纯打包，稿子回收手动走本地 /ka。
+description: 一键打包网页端执行 /ka 所需的规则与材料。本地先跑 ka_prepare markdown 化同权重判断材料（公司判断 + 重要文件 + 最高权重材料），强制 /ka §2/§6b 门禁，再把核心纪律 A、核心假设源语言 B、knobs 块契约、核心假设编辑器 runbook 与同权重判断材料/BRKD/LOAD/reference/旧稿/defaults.yaml 合并成 `必读和素材.md`，core_metrics_overview + OfficialBreakdowns 合并成 `不必要读强制碰到再速查.md`，加一份 `readme first.md` 入口，输出到 WEBCLAUDE/webka(Claude帮你统摄核心假设）/。纯打包，稿子回收手动走本地 /ka。
 argument-hint: [公司名或代码，如 新乳业 / 002946] [--rebuild]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
 
 # /webka - 网页端 /ka 打包器
 
-`/webka` 是网页端执行 `/ka` 的准备器。真正的裁决仍由网页端 `/ka` 完成；`/webka` 只负责本地预 staging：跑 `ka_prepare` 把最高权重材料 markdown 化（网页端读不了 raw PDF/Word），强制 /ka 门禁，然后把网页端需要的规则与材料预合并成 3 份 Markdown。网页端上传这 3 份即可。
+`/webka` 是网页端执行 `/ka` 的准备器。真正的裁决仍由网页端 `/ka` 完成；`/webka` 只负责本地预 staging：跑 `ka_prepare` 把同权重判断材料 markdown 化（网页端读不了 raw PDF/Word），强制 /ka 门禁，然后把网页端需要的规则与材料预合并成 3 份 Markdown。网页端上传这 3 份即可。
 
 ## 范围
 
@@ -24,7 +24,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 py -m src.webka "{公司}" [--rebuild]
 ```
 
-3. `src.webka` 会先跑 `src.ka_prepare`，把 `公司判断和最新观点.md` + `Skills素材包/最高权重材料-放Agent最应对齐的材料/` 顶层材料 markdown 化到该目录 `markdown存储区/`。
+3. `src.webka` 会先跑 `src.ka_prepare`，把同权重判断材料（`公司判断和最新观点.md` + 公司根目录 `重要文件/` 顶层材料 + `Skills素材包/最高权重材料-放Agent最应对齐的材料/` 顶层材料）markdown 化到该目录 `markdown存储区/`；文件夹名里的“最高权重材料”只是历史目录名，不代表压过公司判断或 `重要文件/`。
 4. 强制两道门禁（与 /ka 一致，硬停）：
    - **§2 已有正式稿门禁**：根目录有正式 `*核心假设*.md` 且未加 `--rebuild` → 停，分流到 `/adj`、`/frontend-edit`、`/annual-update`。`--rebuild` 放行，旧稿作对照并入 `必读和素材.md`。
    - **§6b 骨架门禁**：BRKD（`Agent业务讨论.md`）/ 已完成 LOAD（KA 参考稿区 `核心假设参考load_*.md`，须有 ` ```knobs` 块且非「待模型装载器补全」脚手架）/ KA 参考稿区 reference 候选（`核心假设参考*.md`，剔除 load）三者全无 → 停。
@@ -44,7 +44,7 @@ companies\{公司}\WEBCLAUDE\webka(Claude帮你统摄核心假设）\
   - `核心假设源语言_skill_v*.md`（B）
   - `docs/knobs块契约.md`
   - `核心假设编辑器_skill_v*.md`（裁决 runbook §1-§10）
-  - `公司判断和最新观点.md` + 最高权重材料 `markdown存储区/*.md`
+  - 同权重判断材料：`公司判断和最新观点.md` + `重要文件/` + 最高权重材料文件夹 `markdown存储区/*.md`
   - `Agent/defaults.yaml`（§1.1 审计对象）
   - BRKD `Agent业务讨论.md`、最新 LOAD 产物、reference 候选（有则并入）
   - 旧正式稿（仅 `--rebuild`，作对照）

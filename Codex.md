@@ -14,6 +14,7 @@ TuShare 原始数据
 -> raw_tushare 不可变镜像
 -> clean_annual / clean_quarterly 可信历史宽表
 -> defaults.yaml 机器平推底座
+-> 非标投研材料 markdown staging / candidate reference
 -> 核心假设.md 人话判断
 -> yaml1*.yaml 机器可读覆盖层
 -> forecast_params.yaml 内部编译产物
@@ -25,6 +26,7 @@ TuShare 原始数据
 
 - `clean.py` 负责历史数据可信。
 - `defaults.yaml` 是机器平推底座，不是人工判断。
+- 非标投研材料必须先 markdown 化并带状态头，再进入 `/ka` 或 `/comp` 的语义链路。
 - `核心假设.md` 是人话判断层。
 - `yaml1*.yaml` 是人工判断的机器可读覆盖层。
 - `Agent/.modelking/forecast_params.yaml` 是编译后的逐年标准参数表，只给 `calc.py` 吃。
@@ -51,6 +53,50 @@ TuShare 原始数据
 5. 按 skill 纪律执行；不要靠记忆猜。
 
 `D:\MKA\.claude\skills` 是启动器层，`D:\MKA\skills` 是可迭代执行细则层。
+
+### 1.1 Claude skill 在 Codex 里的实际用法
+
+这些 skill 原生写给 Claude Code，但 Codex 可以直接按项目协议执行。关键是不要把 `/ka`、`/comp` 当成 Codex 内置命令；它们是 **MKA 的任务路由标签**。
+
+当用户说 `/ka 新乳业`、`/comp 002946`、`/annual-update 影石创新` 时，Codex 应该：
+
+1. 把斜杠词识别为 MKA skill 名称，而不是 shell 命令。
+2. 先读 `D:\MKA\Codex.md` 和 `D:\MKA\docs\技能简要分类.md` 做分流。
+3. 再读对应启动器 `D:\MKA\.claude\skills\{skill}\SKILL.md`。
+4. 若启动器要求动态 runbook，就扫描 `D:\MKA\skills\`，读取版本号最大的匹配文件，例如 `yaml1compiler_v*.md`、`业务预理解器_skill_v*.md`、`模型装载器_skill_v*.md`。
+5. 按启动器和 runbook 执行：解析公司目录、检查门禁、调用 `py -m src.*` 或编辑规定产物。
+6. 汇报时固定说清楚：读了什么、写了什么、停过或通过了哪些门禁、跑了什么验证、产物在哪里。
+
+因此，用户可以直接下令：
+
+```text
+/init 新乳业
+/brkd 新乳业
+/ka 重建 新乳业
+/comp 002946
+/adj quick 新乳业 把毛利率上调 0.5pct
+/annual-update 新乳业
+```
+
+Codex 不需要用户解释 Claude slash command 的内部细节；Codex 的责任是每次从本地 `Codex.md`、`.claude/skills/{skill}/SKILL.md` 和最新版动态 runbook 恢复执行状态。
+
+### 1.2 Markdown staging 层
+
+MKA 的本质不是让模型直接读 raw 投研材料，而是把非标材料不断转成可信 markdown，再让 `/ka` 分级裁决。
+
+```text
+raw PDF / Word / Excel / 网页 / 年报
+-> markdown存储区、load 沙箱、WEBCLAUDE 打包或 factpack
+-> Agent业务讨论.md / 核心假设参考*.md / Alphapai 参考稿
+-> /ka 裁决后的 official 核心假设.md
+-> /comp 翻译出的 yaml1
+```
+
+`公司判断和最新观点.md`、`重要文件/` 顶层材料和 `Skills素材包/最高权重材料-放Agent最应对齐的材料/` 顶层材料共同叫**同权重判断材料**；文件夹名保留“最高权重材料”，但它不压过分析师手写 thesis 或 `重要文件/`。
+
+中间 markdown 要看抬头状态：`draft`、`reference`、`model-extracted`、`factpack/reference` 都只供 `/ka` 裁决；只有公司根目录、`状态: official` 的 `核心假设.md` 才能被 `/comp` 当作 official forecast 源文。
+
+新的候选 markdown 必须带 `## 待 /ka 裁决清单`。它是 reference 晋升 official 的会议议程：`/ka` 逐条裁成采纳、收纳、缺口或丢弃；不能靠改名、复制到根目录或补 `knobs` 直接晋升。
 
 ## 2. 项目第一原则
 
@@ -147,8 +193,9 @@ py -m src.init <公司>
 ### 4.2 建模层
 
 ```text
-研报/纪要 -> /brkd -> Agent业务讨论.md
-公司观点/模型/年报 -> /ka -> 核心假设.md
+研报/纪要 -> markdown staging -> /brkd -> Agent业务讨论.md
+Excel 模型 -> load 沙箱 markdown -> /load -> 核心假设参考load_*.md
+同权重判断材料 + 候选理解 + /init 事实 -> /ka -> 核心假设.md
 核心假设.md + defaults.yaml -> /comp -> yaml1*.yaml
 ```
 
@@ -158,14 +205,16 @@ py -m src.init <公司>
 - `/load` 是旧 Excel 模型 load-vintage 装载，不用后验材料补当前判断。
 - `docs/Alphapai/Alphapai业务拆分抓取器.md` 是网页端业务拆分 factpack 产物，只抓历史，不写预测。
 - `docs/Alphapai/Alphapai-load核心假设参考提示词.md` 是网页端数据库 reference 产物，不是 official。
-- `/ka` 是生成/修改人话核心假设，不写 yaml1。
-- `/comp` 是翻译器，不做投资判断。
+- `/ka` 是唯一裁决器：把候选 markdown 和同权重判断材料裁成 official 人话核心假设，不写 yaml1。
+- `/comp` 是翻译器和信息保全闸，不做投资判断。
+- `/comp` 回执固定看六段：A 类覆盖、B 类保全、路径待核、语义待核、主动覆盖回读、Forecast 状态。audit 不干净时只留 reference yaml1，不覆盖 official forecast。
 
 核心假设生成类技能同步纪律：
 
 - 同链路技能：`/brkd`、`/load`、`docs/Alphapai/Alphapai业务拆分抓取器.md`、`docs/Alphapai/Alphapai-load核心假设参考提示词.md`、`/ka`。
 - 骨架要相似：时间边界/材料边界、业务拆分历史、收入→毛利→费用→below-OP→terminal 的段序、会议 memo、reference/draft/official 状态、`knobs` 同源边界。
-- 分工不能串：`/brkd` 读研报/纪要和 `/init` 事实产 draft；`/load` 只还原模型当时的公式层和历史原子；Alphapai业务拆分抓取器只抓用户指定主拆分、桥表和高价值辅助拆分历史 factpack；Alphapai-load 产 reference 并承接 factpack；`/ka` 裁决候选生成 official。改一处时同步检查另外几处，但不要让它们互相污染职责。
+- 分工不能串：`/brkd` 读研报/纪要和 `/init` 事实产 draft；`/load` 只还原模型当时的公式层和历史原子；Alphapai业务拆分抓取器只抓用户指定主拆分、桥表和高价值辅助拆分历史 factpack；Alphapai-load 产 reference 并承接 factpack；`/ka` 裁决候选生成 official；`/comp` 只把 official 源文无损翻译成 yaml1。改一处时同步检查另外几处，但不要让它们互相污染职责。
+- 候选产物同步检查 `待 /ka 裁决清单`：BRKD、LOAD、Alphapai factpack/reference 都要把未决事项显式列出来，供 `/ka` 裁决时逐项销账。
 
 ### 4.3 DCF 层
 
@@ -270,8 +319,8 @@ D:\MKA\skills\核心假设编辑器_skill_v*.md
 
 用途：
 
-- 生成或修改 `核心假设.md`。
-- 把公司观点、外部模型、年报事实和业务讨论开会成一份人话底稿。
+- 生成或重建 `核心假设.md`。
+- 把同权重判断材料、候选理解、年报事实和业务讨论开会成一份 official 人话底稿。
 
 输入：
 
@@ -293,6 +342,7 @@ D:\MKA\skills\核心假设编辑器_skill_v*.md
 - 产物必须落公司根目录。
 - 先押再问，关键旋钮拍板后再落盘。
 - `/ka` 不写 yaml1，不算 DCF。
+- `/ka` 只读 markdown 化后的材料层；raw Excel 交 `/load`，raw 研报/纪要交 `/brkd`。
 
 模型建议：
 
@@ -327,14 +377,13 @@ py -m src.model_load prepare 影石创新 --overwrite
 - `Agent/Load/{load_id}/allowed_materials/`
 - `Agent/Load/{load_id}/forbidden_materials.md`
 - `Agent/Load/{load_id}/核心假设_load.md`
-- `Agent/Load/{load_id}/yaml1_load_*.yaml`
-- `Agent/Load/{load_id}/forecast/`
 
 纪律：
 
-- 用户确认 overview 前，不补完假设、不编译、不跑 DCF。
+- 用户确认 overview 前，不补完假设。
 - 只读沙箱 allowed materials；禁读清单只作边界，不打开正文。
-- load 结果不是当前正式 forecast，不覆盖 `Agent/forecast/`。
+- `/load` 止于核心假设参考 markdown，不编译 yaml1、不跑 DCF；load 结果不是当前正式 forecast，不覆盖 `Agent/forecast/`。
+- reference/draft/model-extracted/factpack 都要保留 `待 /ka 裁决清单`；缺这节的旧 reference 只能由 `/ka` 在 overview 里补成议程后裁决。
 
 ### `/webload`：网页端 load 打包
 
@@ -365,7 +414,7 @@ py -m src.webload 影石创新 --overwrite
 - 纯打包，不生成、不修改、不编译。
 - 每次清空旧包再重建。
 - 网页端只读 `allowed_materials/`，不得打开 `forbidden_materials.md` 中列出的正文。
-- 网页端生成 `核心假设_load.md` 后放回 `Agent/Load/{load_id}/`，本地继续编译 `yaml1_load` 并跑沙箱 DCF。
+- 网页端生成 `核心假设_load.md` 后放回 `Agent/Load/{load_id}/` 与 KA 参考稿区，`/load` 到此为止；转正式另走 `/ka` → `/comp`。
 - `/webka` 仅保留旧版普通 `/ka` 网页打包兼容，不再作为强烈推荐入口。
 
 ### `/comp`：yaml1 编译 + DCF
@@ -405,6 +454,7 @@ D:\MKA\skills\yaml1compiler_v*.md
 
 - 先过年份门禁；如果核心假设已被最新实际年覆盖，停止并提示 `/annual-update`。
 - compiler 是翻译器，形变照翻、歧义举旗。
+- 信息保全闸先于 DCF：A 类进入计算覆盖，B 类进入 history/stash/display，歧义进入待核清单。
 - `defaults.yaml` 是目标命名空间，不是输入假设。
 - yaml1 落盘即主成功；DCF 失败要明示，但不回滚 yaml1。
 
@@ -610,9 +660,10 @@ npm run build
 
 可以用。对 Codex 来说，它们不是内置 slash command，而是项目内协议：
 
-1. Codex 先读本文件。
-2. 再读 `.claude/skills/{skill}/SKILL.md`。
-3. 如果需要，读 `D:\MKA\skills\*_skill_vN.md`。
-4. 然后按协议调用脚本、读写文件、汇报结果。
+1. 用户可以直接说 `/ka 新乳业`、`/comp 002946` 这类 MKA 路由。
+2. Codex 先读本文件和 `docs/技能简要分类.md`。
+3. 再读 `.claude/skills/{skill}/SKILL.md`。
+4. 如果需要，读 `D:\MKA\skills\*_skill_vN.md` 里版本号最大的动态 runbook。
+5. 然后按协议调用脚本、读写文件、汇报结果。
 
-所以不是靠当前对话死记，而是每次从项目文档和 skill 文件恢复执行状态。
+所以不是靠当前对话死记，也不是让用户手动解释 Claude Code 的 slash command，而是每次从项目文档和 skill 文件恢复执行状态。

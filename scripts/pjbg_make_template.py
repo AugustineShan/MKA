@@ -16,7 +16,11 @@ import argparse
 from pathlib import Path
 
 from docx import Document
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Pt
+
+DEFAULT_FONT = "微软雅黑"
 
 # 节标题（全行合并格的文本）：命中则该行保留，下一行视为内容行清空
 SECTION_HEADERS = {"研究结论", "盈利预测(年度)", "投资要点", "正文部分"}
@@ -57,8 +61,26 @@ def _clear_cell_text(cell):
             r.text = ""
 
 
+def _set_run_font(run, name: str, size, bold) -> None:
+    """显式设 run 字体（ascii/hAnsi/eastAsia/cs 四属性），保留字号/加粗。"""
+    if size is not None:
+        run.font.size = Pt(size)
+    run.bold = bold
+    rPr = run._element.get_or_add_rPr()
+    rFonts = rPr.find(qn("w:rFonts"))
+    if rFonts is None:
+        rFonts = OxmlElement("w:rFonts")
+        rPr.insert(0, rFonts)
+    for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
+        rFonts.set(qn(attr), name)
+
+
 def _set_cell_text_keep_style(cell, text: str) -> None:
-    """清到单段后写入 text，保留段落/rPr 样式基底（多空段落单元格也收敛为单段）。"""
+    """清到单段后写入 text，保留段落/rPr 样式基底（多空段落单元格也收敛为单段）。
+
+    新 run 显式设字体（采样值或默认微软雅黑），避免 font-less run 回退 doc 默认字体
+    （「见附件」占位符曾因此渲染成 Calibri/宋体）。
+    """
     # 采样首个 run 的字体样式（若有）作基底
     name = size = None
     bold = None
@@ -78,7 +100,8 @@ def _set_cell_text_keep_style(cell, text: str) -> None:
     p0 = paras[0]
     for r in list(p0.runs):
         r._element.getparent().remove(r._element)
-    p0.add_run(text)
+    run = p0.add_run(text)
+    _set_run_font(run, name or DEFAULT_FONT, size, bold)
 
 
 def _remove_nested_tables(cell):

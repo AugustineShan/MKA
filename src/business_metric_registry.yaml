@@ -1,0 +1,79 @@
+revenue:
+  label: 收入
+  aliases: [revenue, sales, 营收, 收入]
+  unit: amount
+  format: int
+  canonical_priority: direct
+
+gross_margin:
+  label: 毛利率
+  aliases: [margin, gross_margin, gpm, 毛利率]
+  unit: ratio
+  format: percent1
+  canonical_priority: direct
+  fallback: gross_profit / revenue
+
+cost:
+  label: 成本
+  aliases: [cost, cogs, operating_cost, 成本]
+  unit: amount
+  format: int
+  canonical_priority: direct
+
+unit_cost:
+  label: 单位成本
+  aliases: [unit_cost, ton_cost, cny_per_ton, 吨成本, 单位成本]
+  unit: price
+  format: num2
+  canonical_priority: direct
+
+gross_profit:
+  label: 毛利额
+  aliases: [gross_profit, 毛利额, 毛利]
+  unit: amount
+  format: int
+  canonical_priority: derived
+  fallback: revenue - cost
+
+revenue_yoy:
+  label: 同比
+  aliases: [yoy, revenue_yoy, growth, 同比, 同比增长]
+  unit: ratio
+  format: signedDecimal
+  canonical_priority: derived
+  fallback: revenue / revenue[-1] - 1
+
+volume:
+  label: 销量
+  aliases: [volume, sales_qty, quantity, 销量]
+  unit: physical
+  format: volume
+  canonical_priority: direct
+
+price:
+  label: 单价
+  aliases: [price, asp, unit_price, 单价, 吨价]
+  unit: price
+  format: num2
+  canonical_priority: direct
+
+mix:
+  label: 占比
+  aliases: [mix, share, pct, 占比]
+  unit: ratio
+  format: percent1
+  canonical_priority: direct
+
+rate:
+  label: 率
+  aliases: [rate, ratio, 率]
+  unit: ratio
+  format: percent1
+  canonical_priority: direct
+
+amount:
+  label: 金额
+  aliases: [amount, value, 金额]
+  unit: amount
+  format: int
+  canonical_priority: direct

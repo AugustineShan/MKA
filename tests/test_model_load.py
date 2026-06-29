@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -11,16 +9,12 @@ import yaml
 from openpyxl import Workbook
 
 from conftest import copy_fixture_company
-from src import yaml1_cleaner
-from src.assumption_staleness import StaleAssumptionError
-from src.company_paths import annual_reports_dir, forecast_dir, ka_reference_dir, load_model_dir
-from src.forecast import run_company_forecast
+from src.company_paths import annual_reports_dir, ka_reference_dir, load_model_dir
 from src.model_load import (
     ModelLoadError,
     inspect_workbook_boundary,
     latest_active_model,
     prepare_load,
-    run_load_dcf,
 )
 
 
@@ -163,34 +157,3 @@ def test_latest_active_model_requires_single_load_material(tmp_path: Path):
 
     with pytest.raises(ModelLoadError, match="exactly one Excel"):
         latest_active_model(company_dir)
-
-
-def test_load_dcf_uses_sandbox_without_overwriting_official_forecast(tmp_path: Path, monkeypatch):
-    company_dir = copy_fixture_company(tmp_path)
-    monkeypatch.setattr(yaml1_cleaner, "COMPANIES_DIR", tmp_path / "companies")
-
-    model = _write_workbook(load_model_dir(company_dir) / "model20250527.xlsx", [2022, 2023, 2024, "2025E", "2026E"])
-    source_db = company_dir / "Agent" / "data.db"
-    _copy_period_row(source_db, "clean_annual", "2024", "2025")
-
-    out_dir = forecast_dir(company_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    sentinel = out_dir / "stale.txt"
-    sentinel.write_text("official forecast must survive load dcf", encoding="utf-8")
-
-    with pytest.raises(StaleAssumptionError):
-        run_company_forecast(ticker="002946.SZ")
-
-    result = prepare_load(company_dir, model_path=model, load_id="dcf", overwrite=True)
-    load_dir = Path(result["load_dir"])
-    source_yaml1 = next((company_dir / "Agent").glob("yaml1*.yaml"))
-    yaml1_load = load_dir / f"yaml1_load_{source_yaml1.name}"
-    shutil.copy2(source_yaml1, yaml1_load)
-
-    run = run_load_dcf(load_dir, yaml1_load)
-
-    assert run.output_dir == load_dir / "forecast"
-    assert (load_dir / "forecast" / "dcf_summary.json").exists()
-    manifest = json.loads((load_dir / "forecast" / "run_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["mode"] == "load_vintage"
-    assert sentinel.exists()

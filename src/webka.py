@@ -2,11 +2,11 @@
 
 输出目录: companies/{公司}/WEBCLAUDE/webka(Claude帮你统摄核心假设）/
   - readme first.md                  入口：任务/读取顺序/输出契约/不能跑脚本
-  - 必读和素材.md                     合并：4 份规则 + 最高权重材料 + BRKD/LOAD/reference/旧稿 + defaults.yaml
+  - 必读和素材.md                     合并：4 份规则 + 同权重判断材料 + BRKD/LOAD/reference/旧稿 + defaults.yaml
   - 不必要读强制碰到再速查.md          合并：core_metrics_overview + OfficialBreakdowns（按需才查）
 
 网页端 Claude 跑不了脚本、读不了本地文件系统，所以：
-1. 本地先跑 src.ka_prepare，把最高权重材料 markdown 化（网页端读不了 raw PDF/Word）。
+1. 本地先跑 src.ka_prepare，把同权重判断材料 markdown 化（网页端读不了 raw PDF/Word）。
 2. 强制 /ka §2 门禁（根目录有正式稿且未说 --rebuild → 停）与 §6b 门禁
    （BRKD/LOAD/reference 三者全无 → 停）。
 3. 把规则与材料合并成 3 份 md，网页端上传这 3 份即可。
@@ -126,7 +126,7 @@ def _check_gates(company_dir: Path, *, rebuild: bool) -> dict[str, object]:
             f"公司根目录已有正式核心假设稿（{names}）。/webka 现在不做 modify。\n"
             "小旋钮走 /frontend-edit 或 /adj quick；边际信息走 /adj incremental；"
             "年报滚动走 /annual-update。\n"
-            "若要用新最高权重材料/BRKD/LOAD 全量替换旧稿，请加 --rebuild。"
+            "若要用新同权重判断材料/BRKD/LOAD 全量替换旧稿，请加 --rebuild。"
         )
 
     brkd = company_dir / "Agent业务讨论.md"
@@ -187,18 +187,18 @@ def _build_must_read(
         _append_section(parts, label, str(path), _read_text(path, label))
         report.append((label, f"OK {path.name}"))
 
-    # 2. 最高权重材料（必读·材料层）
+    # 2. 同权重判断材料（必读·材料层）
     core_view = company_dir / "公司判断和最新观点.md"
-    _append_optional_file(parts, "最高权重材料·公司判断和最新观点", core_view, report)
+    _append_optional_file(parts, "同权重判断材料·公司判断和最新观点", core_view, report)
 
     markdown_store = top_weight_markdown_store_dir(company_dir)
     if markdown_store.exists():
         md_files = sorted(p for p in markdown_store.glob("*.md"))
         for md in md_files:
-            _append_section(parts, f"最高权重材料 markdown·{md.name}", str(md), _read_text(md, md.name))
-        report.append(("最高权重材料 markdown存储区", f"OK {len(md_files)} 份"))
+            _append_section(parts, f"同权重判断材料 markdown·{md.name}", str(md), _read_text(md, md.name))
+        report.append(("同权重判断材料 markdown存储区", f"OK {len(md_files)} 份"))
     else:
-        report.append(("最高权重材料 markdown存储区", "SKIP 未生成（ka_prepare 无输出）"))
+        report.append(("同权重判断材料 markdown存储区", "SKIP 未生成（ka_prepare 无输出）"))
 
     # 3. defaults.yaml（§1.1 必读审计对象）
     defaults = company_dir / "Agent" / "defaults.yaml"
@@ -300,7 +300,7 @@ def _build_readme(
 ## 读取顺序
 
 1. 本 readme（先看完）。
-2. `必读和素材.md` **全读**：4 份规则（核心纪律 A / 核心假设源语言 B / knobs 块契约 / 核心假设编辑器 runbook）+ 最高权重材料 + BRKD/LOAD/reference/旧稿 + `defaults.yaml`。
+2. `必读和素材.md` **全读**：4 份规则（核心纪律 A / 核心假设源语言 B / knobs 块契约 / 核心假设编辑器 runbook）+ 同权重判断材料（公司判断 + 重要文件 + 最高权重材料）+ BRKD/LOAD/reference/旧稿 + `defaults.yaml`。
 3. `不必要读强制碰到再速查.md` **碰到才查**：`core_metrics_overview` 与 `OfficialBreakdowns`，仅在裁决某行拿不准时翻。
 
 裁决流程在 `必读和素材.md` 里的「核心假设编辑器 runbook」§1-§10：锁时间轴四数 → 开场 overview → 接缝总账 → 骨架门 → 数值门 → 年报查证 → 防静默 → 收口。每段「先押判断 → 等用户拍板 → 拍板才落盘」，按语义区块停，不连写。
@@ -340,7 +340,7 @@ py -m src.forecast --ticker {ticker_full}          # 再跑 /comp + DCF
 def package_webka(company: str | Path, *, rebuild: bool = False) -> dict[str, object]:
     company_dir = resolve_company(company)
 
-    # 1. 跑 ka_prepare，markdown 化最高权重材料
+    # 1. 跑 ka_prepare，markdown 化同权重判断材料
     try:
         prepare_top_weight_materials(company_dir, force=False)
     except KaPrepareError as exc:

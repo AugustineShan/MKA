@@ -3189,6 +3189,15 @@ p {
   background: #161616;
 }
 
+.summary-sticky-table .year-header-row th {
+  z-index: 30;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.24);
+}
+
+.summary-sticky-table .year-header-row th:first-child {
+  z-index: 36;
+}
+
 .unified-table .year-header-row th.forecast-start,
 .unified-table td.forecast-start {
   border-left: 3px solid #111827;
@@ -3213,6 +3222,18 @@ p {
   color: var(--secondary);
   text-transform: none;
   letter-spacing: 0;
+}
+
+.summary-sticky-table .sticky-summary-group th {
+  position: sticky;
+  top: 52px;
+  z-index: 28;
+  height: 50px;
+  padding: 0 16px;
+  background: #dceaf8;
+  border-top: 0;
+  border-bottom: 1px solid #a9c6e7;
+  box-shadow: 0 1px 0 rgba(15, 47, 87, 0.2);
 }
 
 .unified-table .group-note-row td {
@@ -3305,6 +3326,61 @@ p {
 
 .unified-table tr.muted-row td.forecast-year {
   background: #ffffff;
+}
+
+.unified-table tr.summary-highlight-row td {
+  background: #eef6ff;
+  border-bottom-color: #c8def6;
+  color: #0f2f57;
+  font-style: normal;
+}
+
+.unified-table tr.summary-highlight-row td.statement-label {
+  border-left: 4px solid var(--blue);
+  color: var(--blue);
+  font-weight: 850;
+}
+
+.unified-table tr.summary-highlight-row td.numeric {
+  color: #123f73;
+  font-weight: 850;
+}
+
+.unified-table tr.summary-highlight-row td.forecast-year,
+.unified-table tr.summary-highlight-row td.history-year {
+  background: #eef6ff;
+}
+
+.unified-table tr.summary-highlight-row td.negative {
+  color: var(--red);
+}
+
+.summary-sticky-table tr.sticky-summary-row td {
+  position: sticky;
+  z-index: 24;
+  height: 50px;
+  box-shadow: 0 1px 0 rgba(15, 47, 87, 0.12);
+}
+
+.summary-sticky-table tr.sticky-summary-row td:first-child {
+  z-index: 32;
+}
+
+.summary-sticky-table tr.sticky-summary-row-0 td {
+  top: 102px;
+}
+
+.summary-sticky-table tr.sticky-summary-row-1 td {
+  top: 152px;
+}
+
+.summary-sticky-table tr.sticky-summary-row-2 td {
+  top: 202px;
+}
+
+.summary-sticky-table tr.sticky-summary-row-3 td {
+  top: 252px;
+  box-shadow: 0 8px 14px rgba(15, 47, 87, 0.14);
 }
 
 /* 参考区非年份块（分线 attr / 口径 / 溯源 / 定性）折叠列表 */

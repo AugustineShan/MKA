@@ -42,13 +42,14 @@ D:\MKA\skills\核心假设源语言_skill_v*.md
 
 两种模式都先定位：
 
+- 同权重判断材料：先运行 `py -m src.ka_prepare "{公司}"`，读取同权重 `markdown存储区/` 与 manifest；其中 `公司判断和最新观点.md` + `重要文件\` 顶层材料同等权重，凡读公司判断必须一起读。
 - 公司根目录最新正式 `*核心假设*.md`。
 - `Agent/` 下最新 `yaml1_*.yaml`。
 - `Agent/defaults.yaml`。
 - `Agent/data.db`。
 - 当前 `Agent/forecast/dcf_summary.json`，若存在。
 
-缺正式核心假设或 yaml1 时停止。`/adj` 调整的是已有正式稿，不负责从零生成。
+缺 `公司判断和最新观点.md`、`ka_prepare` 失败、缺正式核心假设或 yaml1 时停止。`/adj` 调整的是已有正式稿，不负责从零生成。manifest 中 `unsupported/error` 必须进入缺口区；quick 模式若同权重判断材料与用户小改方向冲突，先提示再让用户确认是否仍执行。
 
 ## 3. quick 模式
 
@@ -130,7 +131,7 @@ companies\{公司}\Skills素材包\ADJ增量信息（用来改模型的边际信
 
 执行顺序：
 
-1. 读取当前正式核心假设、最新 yaml1、当前 DCF。
+1. 读取同权重判断材料、当前正式核心假设、最新 yaml1、当前 DCF。
 2. 跑 `src.adj_prepare`，读 ADJ markdown 存储区。
 3. 加载最新 `D:\MKA\skills\核心假设调整器_skill_v*.md`。
 4. 识别增量信息影响哪些假设：收入、毛利/成本、费用、below-OP 与税、中期/terminal。
@@ -154,7 +155,7 @@ companies\{公司}\Skills素材包\ADJ增量信息（用来改模型的边际信
 
 incremental 本地纪律：
 
-- 只读现有正式稿和 ADJ markdown，不通读其它材料。
+- 只读同权重判断材料、现有正式稿和 ADJ markdown，不通读其它材料。
 - 改动清单必须写：哪行、哪年、从 X 到 Y、为什么、哪来的。
 - 级联不静默：改原子时 headline/加总/knobs 同步过。
 - 参数化翻转等于局部 re-init：开骨架门，列连带清单。

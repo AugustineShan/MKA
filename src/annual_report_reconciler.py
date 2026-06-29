@@ -1570,6 +1570,210 @@ def llm_prompt_batch(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def _extract_section_item_raw(
+    consolidated_text: str,
+    aliases: list[str],
+) -> tuple[int, int, str, float] | None:
+    """在合并报表段（"行号: 内容" 格式）抽某科目的年报原值。
+
+    与 find_alias_amount_matches 的差异（为何不直接复用）：① 后者扫值时遇非数字非空行
+    即 break，PDF 折行后缀"列）"会断扫——这里改成跳过无数字行继续扫；② 后者在
+    expected_million=None 时跳过 <TOLERANCE 的小值，但 IS 1.2 联合补缺需要全部真实值
+    （绿联 asset_disp_income -0.0273 百万是真实科目，被跳过则闭合留 0.0273 残差）。
+    本函数只跳过严格 0，任何非零值都返回——trial-apply 是闭合唯一裁判，多抽/错抽必不
+    闭合，不会脏配平。
+
+    返回 (label_line_no, value_line_no, matched_alias, raw_value) 或 None。
+    """
+    lines = numbered_lines(consolidated_text)
+    for idx, (line_no, content) in enumerate(lines):
+        matched = next(
+            (a for a in aliases if compact_text(a) in compact_text(content)), None
+        )
+        if not matched:
+            continue
+        # 扫值：无数字行区分对待——短(≤4)的是折行后缀/空行→跳过；长的是下一科目
+        # 标签→停止（防跨科目抓值，如空科目"净敞口套期收益"抓到下一科目"公允价值变动
+        # 收益"的值）。遇数字行取首个非零 token 即停。
+        for value_line_no, value_text in lines[idx + 1 : idx + 8]:
+            stripped_v = value_text.strip()
+            if not re.search(r"\d", stripped_v):
+                if len(stripped_v) <= 4:
+                    continue
+                break
+            for token in re.findall(r"\(?-?\d[\d,]*(?:\.\d+)?\)?", value_text):
+                raw = parse_report_number(token)
+                if raw is None or raw == 0:
+                    continue
+                return (line_no, value_line_no, matched, float(raw))
+            break
+        return None
+    return None
+
+
+def _detect_income_statement_unit(
+    consolidated_text: str,
+    anchor_million: float,
+    anchor_aliases: list[str],
+) -> str | None:
+    """从合并利润表某已知锚点科目（营业收入/营业总收入）推断年报单位。
+
+    年报利润表整张表单位一致（元 或 千元）。联合补缺没有逐字段期望值来选单位，
+    故先用一个已知锚点（TuShare revenue 对应年报营业收入行）确定单位，再统一按该
+    单位抽取所有 NULL 字段。
+    """
+    if not anchor_million or abs(anchor_million) < clean.TOLERANCE:
+        return None
+    for alias in anchor_aliases:
+        found = _extract_section_item_raw(consolidated_text, [alias])
+        if not found:
+            continue
+        raw = found[3]
+        yuan = raw / 1_000_000.0
+        qianyuan = raw / 1000.0
+        if abs(yuan - anchor_million) < 1.0:
+            return "元人民币"
+        if abs(qianyuan - anchor_million) < 1.0:
+            return "千元人民币"
+    return None
+
+
+def _is12_deterministic_joint_fill(
+    analysis: dict[str, Any],
+    wide: "pd.DataFrame | None",
+    present_by_period: "dict[str, set[str]] | None",
+) -> list[dict[str, Any]]:
+    """IS 1.2 确定性联合补缺（LLM-free）。
+
+    IS 1.2 营业利润残差常是若干 TuShare-NULL optional 调整项（oth_income /
+    credit_impa_loss / asset_disp_income 等）的**净值**——单字段远大于或异号于残差，
+    LLM 单轮提议易漏字段并犯带符号求和算术错（绿联 2025：oth_income+19.29 −
+    credit_impa_loss16.64 − asset_disp0.03 = 2.6225，GLM 只提后两项却声称其和=2.62），
+    trial-apply 挡下后无重试 → exit 3 → subagent 兜底。
+
+    本函数把 subagent 的"读全表、填全字段"下沉成 reconciler 的确定性路径：读合并
+    利润表整段，对每个 TuShare 留空(≈0)的 operating_adjustment 字段抽取年报非零值，
+    整组 trial-apply（clean.py check 作 oracle，覆盖加法型与符号翻转型闭合）。闭合
+    即采用，无需 LLM；不闭合返回 []。试应用是唯一裁判——提取错值/抓错列必不闭合，
+    不会脏配平。
+
+    返回 proposal 列表（field/value_million_cny/annual_report_*），调用方据此建
+    override 记录。
+    """
+    failure = analysis.get("failure", {}) or {}
+    if str(failure.get("code")) != "IS 1.2" or wide is None or present_by_period is None:
+        return []
+    period = str(failure.get("period"))
+
+    md_path_str = (analysis.get("annual_report_context") or {}).get("markdown_path")
+    md_path = Path(md_path_str) if md_path_str else None
+    if not (md_path and md_path.exists()):
+        return []
+    section = _locate_consolidated_statement_section(md_path, "income")
+    if not section:
+        return []
+    raw_lines = section["text"].splitlines()
+    cut_idx = next(
+        (i for i, ln in enumerate(raw_lines) if "母公司利润表" in ln), None
+    )
+    if cut_idx is not None:
+        raw_lines = raw_lines[:cut_idx]
+    # find_alias_amount_matches 经 numbered_lines 解析 "行号: 内容" 格式；_locate_* 返回
+    # 纯文本，须重新挂上 MD 行号（section["start"] 是首行 1-based MD 行号），否则提取空。
+    base = int(section["start"])
+    numbered = [(base + i, ln) for i, ln in enumerate(raw_lines)]
+    # PDF 抽取常把长科目名折行：『信用减值损失（损失以"-"号填』/『列）』/值。find_alias_amount_matches
+    # 扫值时遇非数字非空行（折行后缀"列）"）即 break，漏抽折行科目。这里先合并折行后缀：
+    # 短(≤4)、无数字、且前一行也无数字非空 → 并入前一行（保留首行行号作证据锚点）。
+    merged: list[tuple[int, str]] = []
+    for line_no, content in numbered:
+        stripped = content.strip()
+        if (
+            merged
+            and not re.search(r"\d", stripped)
+            and len(stripped) <= 4
+            and not re.search(r"\d", merged[-1][1])
+        ):
+            prev_no, prev_content = merged[-1]
+            merged[-1] = (prev_no, prev_content + stripped)
+        else:
+            merged.append((line_no, content))
+    consolidated_texts = ["\n".join(f"{no}: {ct}" for no, ct in merged)]
+    if not any(t.strip() for t in consolidated_texts):
+        return []
+
+    candidate_fields = [
+        c for c in (analysis.get("candidate_tushare_fields") or [])
+        if isinstance(c, dict) and c.get("field")
+    ]
+    # 联合补缺候选：TuShare 留空(≈0)的 operating_adjustment 字段。已有非 0 值的字段
+    # （assets_impair_loss/fv_value_chg_gain/invest_income）不补——old_value 非 0
+    # 的 add_override 是改写被校验目标本身=脏配平。至少 2 个 NULL 才值得联合闭合。
+    null_fields = [
+        c for c in candidate_fields
+        if abs(float(c.get("value_million_cny") or 0.0)) < clean.TOLERANCE
+    ]
+    if len(null_fields) < 2:
+        return []
+
+    # 用 revenue 锚点定单位；检测失败则两种单位都试，trial-apply 兜底。
+    # wide 在测试里可能是 mock（object()，无 .index/.loc）——访问失败即放弃联合补缺，
+    # 退回 LLM 提议路径（由调用方 trial-apply oracle 兜底）。
+    section_text = consolidated_texts[0]
+    try:
+        if period not in wide.index:
+            return []
+        revenue_million = float(wide.loc[period, "revenue"] or 0.0)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return []
+    detected = _detect_income_statement_unit(
+        section_text, revenue_million, ["营业收入", "营业总收入"]
+    )
+    units_to_try: list[str] = []
+    if detected:
+        units_to_try.append(detected)
+    for u in ("元人民币", "千元人民币"):
+        if u not in units_to_try:
+            units_to_try.append(u)
+
+    for unit in units_to_try:
+        divisor = 1_000_000.0 if unit == "元人民币" else 1000.0
+        unit_short = "元" if unit == "元人民币" else "千元"
+        proposals: list[dict[str, Any]] = []
+        for c in null_fields:
+            field = str(c["field"])
+            aliases = annual_report_aliases_for_field(c, [])
+            if not aliases:
+                continue
+            found = _extract_section_item_raw(section_text, aliases)
+            if not found:
+                continue
+            label_no, value_no, matched, raw = found
+            val = raw / divisor
+            # 年报该科目也为 0/空 → _extract_section_item_raw 已不返回（只跳严格 0）。
+            # 此处再过滤一次纯 0（防除法精度），非零即纳入；trial-apply 兜底。
+            if abs(val) < 1e-9:
+                continue
+            proposals.append({
+                "field": field,
+                "candidate_tushare_field": field,
+                "annual_report_item": matched,
+                "annual_report_value_raw": raw,
+                "annual_report_unit": unit,
+                "value_million_cny": val,
+                "evidence_lines": f"{label_no}-{value_no}: {matched} {raw:,.2f} {unit_short}",
+            })
+        if not proposals:
+            continue
+        overrides = [(p["field"], float(p["value_million_cny"])) for p in proposals]
+        closed, _ = trial_apply_closes(
+            wide, present_by_period, period, "IS 1.2", overrides
+        )
+        if closed:
+            return proposals
+    return []
+
+
 def _llm_propose_fallback(
     ticker: str,
     company_dir: Path,
@@ -1688,12 +1892,54 @@ def _llm_propose_fallback(
                 analysis["llm"] = {"error": "no result for this failure in batched response"}
             analysis["llm_propose_source"] = "fallback"
 
+    # 确定性 IS 1.2 联合补缺（LLM-free，先于 LLM 批处理）。IS 1.2 残差常是多个
+    # TuShare-NULL optional 字段的净值，LLM 单轮提议易漏字段+算术错（绿联 2025 实测
+    # 漏 oth_income、声称 |−16.64+−0.03|=2.62），trial-apply 挡下后无重试→exit 3→subagent。
+    # 本路径把"读全表填全字段"下沉为确定性：闭合的 failure 直接产 override，不消耗 LLM
+    # 调用；未闭合的照旧进 LLM 批处理。试应用是唯一裁判，不会脏配平。
+    joint_by_analysis: dict[int, list[dict[str, Any]]] = {}
+    llm_residue: list[dict[str, Any]] = []
+    for analysis in residue_analyses:
+        joint = _is12_deterministic_joint_fill(analysis, wide, present_by_period)
+        if joint:
+            joint_by_analysis[id(analysis)] = joint
+            failure_j = analysis.get("failure", {}) or {}
+            analysis["llm_propose_source"] = "is12_joint_fill"
+            analysis["llm"] = {
+                "period": str(failure_j.get("period")),
+                "code": str(failure_j.get("code")),
+                "suspected_tushare_issue": True,
+                "confidence": "high",
+                "recommended_action": "add_override",
+                "missing_or_suspicious_items": [
+                    {
+                        "annual_report_item": p.get("annual_report_item"),
+                        "annual_report_value_raw": p.get("annual_report_value_raw"),
+                        "annual_report_unit": p.get("annual_report_unit"),
+                        "value_million_cny": p.get("value_million_cny"),
+                        "candidate_tushare_field": p["field"],
+                        "tushare_value_million_cny": 0.0,
+                        "explains_residual": True,
+                        "evidence_lines": p.get("evidence_lines"),
+                    }
+                    for p in joint
+                ],
+                "notes": (
+                    "IS 1.2 确定性联合补缺：合并利润表中所有 TuShare-NULL optional 字段"
+                    "的年报非零值联合试应用，trial-apply(check oracle) 验闭合。"
+                ),
+                "_provider": "deterministic",
+            }
+        else:
+            llm_residue.append(analysis)
+
     # Opt 3: 批处理残差失败——每 up-to-K 个一次 LLM 调用，替代逐失败调用。
     # 残差常是 IS 1.2 跨多年（各自年报），打包到一个 prompt 让 GLM 一次性提议；
     # 调用数从 N 降到 ceil(N/K)，429 风险同步下降。chunk 间低并发(2)避开 GLM 按分钟限流
     # （原逐失败 max_workers=3 实测会 429 静默降级；批处理 + 2 并发调用数更少更稳）。
+    # 仅未确定性闭合的 residue 才进 LLM（joint-fill 闭合的已跳过，省 LLM 调用）。
     CHUNK_SIZE = 3
-    chunks = [residue_analyses[i:i + CHUNK_SIZE] for i in range(0, len(residue_analyses), CHUNK_SIZE)]
+    chunks = [llm_residue[i:i + CHUNK_SIZE] for i in range(0, len(llm_residue), CHUNK_SIZE)]
     parallel_map(_propose_chunk, chunks, max_workers=2)  # mutates each analysis in place
 
     provider = llm_provider()
@@ -1709,6 +1955,52 @@ def _llm_propose_fallback(
                 field_value_by[str(item["field"])] = float(item.get("value_million_cny") or 0.0)
                 if item.get("clean_category"):
                     clean_cat_by[str(item["field"])] = str(item["clean_category"])
+
+        # 确定性联合补缺已闭合的 failure：直接建 override，跳过 LLM 提议路径。
+        joint = joint_by_analysis.get(id(analysis))
+        if joint:
+            for p in joint:
+                field = str(p["field"])
+                new_value = float(p["value_million_cny"])
+                old_value = field_value_by.get(field, 0.0)
+                # joint-fill 只补 ~0 字段；双保险：old_value 非 0 不写（脏配平守卫）。
+                if abs(old_value) >= clean.TOLERANCE:
+                    analysis.setdefault("override_rejections", []).append({
+                        "stage": "is12_joint_fill_old_value",
+                        "field": field,
+                        "old_value": old_value,
+                        "new_value": new_value,
+                        "reason": "联合补缺只补漏录/为0字段,old_value 非0=改写被校验目标(脏配平),跳过",
+                    })
+                    continue
+                status = "approved" if approve_high_confidence else "candidate"
+                adjustments.append(
+                    _build_adjustment_record(
+                        ticker=ticker,
+                        period=period,
+                        field=field,
+                        new_value=new_value,
+                        old_value=old_value,
+                        failure=failure,
+                        status=status,
+                        approved_by=f"{provider}:is12_joint_fill" if status == "approved" else None,
+                        source=provider,
+                        confidence="high",
+                        annual_report_item=p.get("annual_report_item"),
+                        annual_report_value_raw=p.get("annual_report_value_raw"),
+                        annual_report_unit=p.get("annual_report_unit"),
+                        evidence_lines=p.get("evidence_lines"),
+                        reason=(
+                            "IS 1.2 确定性联合补缺：合并利润表中 TuShare-NULL optional 字段"
+                            "的年报非零值联合试应用，trial-apply(check oracle) 验闭合"
+                        ),
+                        source_markdown_path=md_path,
+                        source_reconciliation_path=str(reconciliation_path),
+                        clean_category=clean_cat_by.get(field),
+                    )
+                )
+            continue
+
         for sug in llm_override_suggestions(analysis, wide=wide, present_by_period=present_by_period):
             field = str(sug.get("candidate_tushare_field"))
             value = sug.get("value_million_cny")

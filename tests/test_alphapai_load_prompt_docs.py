@@ -17,17 +17,21 @@ def test_alphapai_load_prompt_keeps_reference_boundary_and_time_axis_discipline(
     assert "状态：`reference`" in text
     assert "不可直接编译" in text
     assert "先会议 memo，后完整参考稿" in text
-    assert "不要第一轮直接输出完整 `核心假设参考.md`" in text
+    assert "不要第一轮直接输出完整 `核心假设参考alphapai_yymmdd.md`" in text
     assert "像分析师开会一样" in text
-    assert "这个理解方向可以吗？确认后我再输出完整 `核心假设参考.md`" in text
+    assert "这个理解方向可以吗？" in text
+    assert "再生成最终的 **`核心假设参考alphapai_yymmdd.md`**" in text
     assert "时间轴四数是参考候选，不是拍板结果" in text
+    assert "### 4.10 待 /ka 裁决清单" in text
+    assert "reference 晋升到 official 前的会议议程" in text
     assert "显式期不能机械默认 5 年" in text
     assert "总览只是导读，不能替代后面 4.4-4.9 的结构化候选" in text
     assert "建议衰减期至: {YYYY / 待裁决}" in text
     assert "永续增长候选: {x% / 待裁决}" in text
     assert "可用于 /ka 建模的业务拆分历史" in text
     assert "第一轮只输出会议 memo 并等待确认" in text
-    assert "用户确认后，第二轮直接输出完整 `核心假设参考.md`" in text
+    assert "和用户充分交互后（至少一轮）你觉得没问题再生成最终的 **`核心假设参考alphapai_yymmdd.md`**" in text
+    assert "必须包含 `## 待 /ka 裁决清单`" in text
 
 
 def test_alphapai_load_prompt_keeps_bs_cf_and_knobs_boundaries():

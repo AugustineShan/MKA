@@ -73,6 +73,11 @@ from src.quarterly_tracker import (
     set_override,
 )
 from src.yaml1_cleaner import Yaml1CleanError, clean_yaml1_data
+from src.yaml1_business_facts import (
+    build_business_fact_view,
+    canonical_gross_margin_history as _business_canonical_gross_margin_history,
+    numeric_history_series_map as _business_numeric_history_series_map,
+)
 from src.yaml2_schema import DEFAULT_TERMINAL_CAPEX_DA_RATIO, get_path
 
 
@@ -869,6 +874,28 @@ def _numeric_year_series(values: Any) -> dict[str, float]:
     return series
 
 
+def _numeric_history_series_map(*sources: Any) -> dict[str, dict[str, float]]:
+    return _business_numeric_history_series_map(*sources)
+
+
+def _derived_margin_series(revenue: dict[str, float], cost: dict[str, float]) -> dict[str, float]:
+    margins: dict[str, float] = {}
+    for year, revenue_value in revenue.items():
+        cost_value = cost.get(year)
+        if cost_value is None or abs(revenue_value) < 1e-9:
+            continue
+        margins[year] = (revenue_value - cost_value) / revenue_value
+    return margins
+
+
+def _canonical_gross_margin_history(
+    history_series: dict[str, dict[str, float]],
+    revenue: dict[str, float],
+    cost: dict[str, float],
+) -> tuple[dict[str, float], dict[str, Any] | None]:
+    return _business_canonical_gross_margin_history(history_series, revenue, cost)
+
+
 def _display_source(payload: dict[str, Any], fallback: str) -> str:
     source = _cell(payload.get("src"))
     return source.lstrip("#") if source else fallback
@@ -1008,6 +1035,7 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
         history_series = history.get("series", {}) if isinstance(history.get("series"), dict) else {}
         base_series = base.get("series", {}) if isinstance(base.get("series"), dict) else {}
         payload_series = payload.get("series", {}) if isinstance(payload.get("series"), dict) else {}
+        segment_history_series = _numeric_history_series_map(history_series, base_series, payload_series)
         family = _cell(payload.get("revenue_family"))
         unit_factor = _as_float(base.get("unit_factor_to_million_cny"), 1.0) or 1.0
         segment_base_year = int(_as_float(base.get("base_year"), 0))
@@ -1017,6 +1045,18 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
 
         for year, current_revenue in revenues.items():
             total_revenues[year] += current_revenue
+
+        history_revenues = segment_history_series.get("revenue", {})
+        history_costs = segment_history_series.get("cost", {})
+        history_volumes = segment_history_series.get("volume", {})
+        history_margins, gross_margin_metric = _canonical_gross_margin_history(
+            segment_history_series,
+            history_revenues,
+            history_costs,
+        )
+        history_metrics: dict[str, Any] = {}
+        if gross_margin_metric:
+            history_metrics["gross_margin"] = gross_margin_metric
 
         segment_name = _display_source(payload, str(segment_key))
         segment_rows.append(
@@ -1033,21 +1073,12 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
                 "revenues": revenues,
                 "yoys": yoys,
                 "volumes": volumes,
-                "history_revenues": (
-                    _numeric_year_series(history_series.get("revenue"))
-                    or _numeric_year_series(base_series.get("revenue"))
-                    or _numeric_year_series(payload_series.get("revenue"))
-                ),
-                "history_costs": (
-                    _numeric_year_series(history_series.get("cost"))
-                    or _numeric_year_series(base_series.get("cost"))
-                    or _numeric_year_series(payload_series.get("cost"))
-                ),
-                "history_volumes": (
-                    _numeric_year_series(history_series.get("volume"))
-                    or _numeric_year_series(base_series.get("volume"))
-                    or _numeric_year_series(payload_series.get("volume"))
-                ),
+                "history_series": segment_history_series,
+                "history_metrics": history_metrics,
+                "history_revenues": history_revenues,
+                "history_costs": history_costs,
+                "history_volumes": history_volumes,
+                "history_margins": history_margins,
                 "note": _cell(payload.get("note")),
             }
         )
@@ -2726,6 +2757,15 @@ def read_company(company_id: str) -> dict[str, Any]:
     yaml1_years = _years_from_yaml1(yaml1_data) if yaml1_data else []
     yaml1_revenue_view = _yaml1_revenue_view(yaml1_path)
     yaml1_stash_view = _yaml1_stash_view(yaml1_data) if yaml1_data else []
+    yaml1_display_contract = _yaml1_display_contract(yaml1_data, yaml1_revenue_view, yaml1_stash_view) if yaml1_data else None
+    editable_assumptions = _editable_assumptions(yaml1_data) if yaml1_data else []
+    yaml1_business_facts_view = build_business_fact_view(
+        yaml1_data,
+        revenue_view=yaml1_revenue_view,
+        stash_view=yaml1_stash_view,
+        display_contract=yaml1_display_contract,
+        editable_assumptions=editable_assumptions,
+    ) if yaml1_data else None
     tables = []
     for name in FORECAST_TABLES:
         path = forecast_dir / name
@@ -2737,11 +2777,12 @@ def read_company(company_id: str) -> dict[str, Any]:
         "yaml1_path": _relative(yaml1_path) if yaml1_path else None,
         "yaml1_text": _read_text(yaml1_path) if yaml1_path else None,
         "yaml1_revenue_view": yaml1_revenue_view,
+        "yaml1_business_facts_view": yaml1_business_facts_view,
         "yaml1_sheets": _yaml1_sheets(yaml1_path),
         "yaml1_stash_view": yaml1_stash_view,
-        "yaml1_display_contract": _yaml1_display_contract(yaml1_data, yaml1_revenue_view, yaml1_stash_view) if yaml1_data else None,
+        "yaml1_display_contract": yaml1_display_contract,
         "yaml1_assumptions_view": _yaml1_assumptions_view(yaml1_data, yaml1_years) if yaml1_data else None,
-        "editable_assumptions": _editable_assumptions(yaml1_data) if yaml1_data else [],
+        "editable_assumptions": editable_assumptions,
         "yaml1_presentation": _yaml1_presentation_cache(company_dir),
         "dcf_summary": _forecast_summary(company_dir) or None,
         "derived_metrics": _derived_metrics(company_dir),

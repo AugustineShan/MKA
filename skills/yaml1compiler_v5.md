@@ -83,6 +83,16 @@
 
 本 skill 里说 `defaults.yaml` / `yaml1` / `forecast` / `recon` 时,多半是逻辑名字;磁盘位置默认都在 `companies/{公司}_{代码}/Agent/`: `Agent/defaults.yaml`、`Agent/yaml1*.yaml`、`Agent/forecast/`、`Agent/recon/`。不要把它们理解成公司工作台根目录材料。
 
+### 0.5a 信息保全闸
+
+`/comp` 的成功标准不是"yaml1 能让 DCF 跑起来"这么窄。official 成功必须同时满足:
+
+1. **A 类可计算**:分析师拍板的旋钮、拆分、terminal、人工覆盖都被翻到可执行路径或明确举旗。
+2. **B 类不丢失**:分线历史、副拆分、收纳区、口径说明进入 leaf `history`、顶层 `stash` 或 `display`，不能因为 `calc.py` 不吃就消失。
+3. **歧义可审计**:路径待核、语义待核、模板装不下、主动覆盖未确认，都进入 `unaligned`/报告，不得靠猜测补齐。
+
+只有信息保全闸干净，`yaml1` 才能继续作为 official forecast 输入；否则最多保存为 reference/draft yaml1，供人修正后再编译。
+
 ### 0.6 你不算账(这是翻译,不是计算)
 
 最后一条认知,也是最容易破的:**翻译器不算账。** 你唯一允许的机械动作是把已写明的旋钮值**摊成满数组**(`+6% 全程` → `[0.06]×7`)——那是搬运,是"形变"。凡是"从旋钮推出一个新数列"的(收入、毛利率、占比、净利、fade 逐年展开),都不归你,归下游 Python。
@@ -521,29 +531,33 @@ income.financial_expense.other_fin_exp_abs:
 
 ---
 
-## 9. 翻译后:校对 + 报告
+## 9. 翻译后:校对 + 固定报告
 
 对着 §3.1 的盘点清单逐项勾,出一份简短报告。这是翻译这层唯一的质量闸。
 
-1. **覆盖双射(递归):** .md 每条旋钮 ↔ yaml1 一个条目,没漏没多。遍历 decomposition 树到每个 leaf,逐年值都有对应。漏→静默落平推;多→幻觉。
-2. **B 类完整性:** 逐块对照——(a) 每条 leaf 的 `history` 落全 .md 该线历史表的全部年份与全部行(量价族:收入/销量/吨价/吨成本;增速族:收入/成本),含占位/异常/断点年;(b) .md 收纳区每一块进 `stash` 落全(多年序列、口径、出处)。任一 leaf 缺 history、历史塞进脱锚平行块、B 类塞进 A 类 note、或多年退化成单年 = 校对失败,不放行。
-3. **`unaligned` / 路径待核清单:** 没落地到任何 defaults.yaml 路径、又非可 mint 非标拆分的判断,以及所有"路径待核"项,列出来交人。绝不为凑齐硬塞路径。
-4. **主动覆盖线人话回读:** 把**主动覆盖线**(参数化翻转、逆券商、异常值常态化、查证类拐点这类——历史回测够不着、又故意不照搬券商,下游没有客观闸接得住)单独渲染成一张紧凑人话表,摆给老板扫一眼。这是那条窄缝唯一的真值裁判。
-5. **结构异常 / 歧义未决一律举旗:** 深度超 2、节点 rollup-leaf 不分、某级加总声明对不上、formula 不可执行、.md 写了 hold/fade 分组但 terminal 没承载、to_year 等语义歧义未标——举旗回人/回 skill,绝不静默放行。
+报告结构固定为六段，顺序不能改；没有事项也写 `无`：
 
-**official 门禁:** 只有同时满足以下条件,才允许 `/comp` 或 `/load` 把本次 yaml1 当作 official forecast 输入继续跑 DCF:
+1. **A 类覆盖:** .md 每条可计算旋钮/结构判断 ↔ yaml1 一个条目,没漏没多。遍历 decomposition 树到每个 leaf,逐年值都有对应。漏→静默落平推;多→幻觉。
+2. **B 类保全:** 逐块对照——(a) 每条 leaf 的 `history` 落全 .md 该线历史表的全部年份与全部行(量价族:收入/销量/吨价/吨成本;增速族:收入/成本),含占位/异常/断点年;(b) .md 收纳区每一块进 `stash` 落全(多年序列、口径、出处);(c) 顶层 `display` 给出主表、副拆分、Reference 的展示去向。任一 leaf 缺 history、历史塞进脱锚平行块、B 类塞进 A 类 note、或多年退化成单年 = 校对失败,不放行。
+3. **路径待核:** 没落地到任何 defaults.yaml 路径、又非可 mint 非标拆分的判断,以及所有 `# 路径待核` / `unaligned` 项,列出来交人。绝不为凑齐硬塞路径。
+4. **语义待核:** 深度超 2、节点 rollup-leaf 不分、某级加总声明对不上、formula 不可执行、.md 写了 hold/fade 分组但 terminal 没承载、to_year 等语义歧义,列出歧义本身、你取的自洽解和需谁确认。绝不静默放行。
+5. **主动覆盖回读:** 把**主动覆盖线**(参数化翻转、逆券商、异常值常态化、查证类拐点这类——历史回测够不着、又故意不照搬券商,下游没有客观闸接得住)单独渲染成一张紧凑人话表,摆给老板扫一眼。这是那条窄缝唯一的真值裁判。
+6. **Forecast 状态:** compiler 阶段先写 `pending_comp_step`；`/comp` launcher 跑完 forecast 后在用户回执里更新为 `not_run`、`skipped_missing_data`、`ran_ok` 或 `failed_after_audit_clean`，并说明 `Agent/forecast/` 是否被覆盖。
+
+**official 门禁:** 只有同时满足以下条件,才允许 `/comp` 把本次 yaml1 当作 official forecast 输入继续跑 DCF:
 
 - `audit_clean = true`:覆盖双射 ok + B 类完整性 ok + `unaligned`/路径待核为空 + 语义待核为空或已被分析师显式确认 + 主动覆盖回读完成。
 - 若存在 `unaligned`、路径待核、未确认语义待核、B 类缺失、结构异常、主动覆盖未回读,本次 yaml1 最多保存为 reference/draft 产物,**不得**继续跑 official forecast。
-- `/load` 的 `yaml1_load_*.yaml` 同样执行本门禁；若 audit 不干净,只能保留在 `Agent/Load/{load_id}/` 作为 load-vintage 参考,不得运行 `model_load dcf`。
+- `/load` 不再编译 yaml1、不跑 DCF（止于核心假设参考 markdown）；yaml1 编译与 DCF 一律走 `/comp`。
 
 > 报告骨架示例:
 > ```
-> ✅ 覆盖双射:N 条旋钮全部认领,无漏无多
-> ✅ B 类完整性:M 条 leaf history 齐全(各 a/b/c 年);stash 落 K 块(与 .md 收纳区 K 块对齐)
-> ⚠️ unaligned / 路径待核:<逐条列 + 原因>
-> ⚠️ 语义待核(如 to_year):<说明歧义本身 + 你取的自洽解,交人裁定>
-> 📋 主动覆盖回读:<紧凑人话表:逐条 谁定 / 数值 / 为什么>
+> A 类覆盖: ✅ N 条旋钮/结构判断全部认领,无漏无多
+> B 类保全: ✅ M 条 leaf history 齐全;stash 落 K 块;display 去向已声明
+> 路径待核: 无 / <逐条列 + 原因>
+> 语义待核: 无 / <说明歧义本身 + 你取的自洽解,交人裁定>
+> 主动覆盖回读: ✅ <紧凑人话表:逐条 谁定 / 数值 / 为什么>
+> Forecast 状态: pending_comp_step
 > verdict: audit_clean / reference_only
 > ```
 

@@ -17,7 +17,9 @@ def test_brkd_launcher_is_thin_and_hands_off_to_runbook():
     # 启动机械
     assert "BRKD业务理解器（研报和纪要放在这里）" in text
     assert "py -m src.brkd_prepare" in text
+    assert "py -m src.ka_prepare" in text
     assert "markdown存储区" in text
+    assert "重要文件" in text
     assert "AI 不直接读取这些源文件" in text
     assert "核心纪律_skill_v*.md" in text
     assert "核心假设源语言_skill_v*.md" in text
@@ -67,13 +69,17 @@ def test_business_preunderstanding_v3_outputs_comp_style_draft():
     assert "利润表 + 业务层盈利模型理解器" in text
     assert "`financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in text
     assert "不在 BRKD 中裁决" in text
-    assert "是否升格为 `/ka` 的人工 BS/CF 覆盖，只能由最高权重材料或分析师明示触发" in text
+    assert "同权重判断材料" in text
+    assert "凡读公司判断" in text
     assert "factor_product" in text
     assert "growth" in text
     assert "abs below-OP" in text
     assert "BS/现金/债务派生的 `financial expense` 不写" in text
     assert "other_fin_exp_abs" in text
     assert "待 /ka 拍板" in text
+    assert "## 待 /ka 裁决清单" in text
+    assert "BRKD 交给 `/ka` 的晋升议程" in text
+    assert "| 事项 | 候选值/方向 | 证据 | 分歧/缺口 | 建议处理 |" in text
     assert "```knobs" in text
     # 从 launcher 移交过来的纪律钉点（launcher 瘦身后由 runbook 单详源持有）
     assert "不编造量价原子" in text

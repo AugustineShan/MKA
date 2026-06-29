@@ -48,9 +48,18 @@ export type Yaml1RevenueSegment = {
   volume_unit?: string | null;
   base_revenue: number;
   unit_factor: number;
+  history_series?: Record<string, Record<string, number>>;
+  history_metrics?: Record<string, {
+    values: Record<string, number>;
+    source?: string | null;
+    canonical?: boolean;
+    fallback?: boolean;
+    warnings?: string[];
+  }>;
   history_revenues?: Record<string, number>;
   history_costs?: Record<string, number>;
   history_volumes?: Record<string, number>;
+  history_margins?: Record<string, number>;
   revenues: Record<string, number>;
   yoys: Record<string, number>;
   volumes?: Record<string, number>;
@@ -73,6 +82,43 @@ export type Yaml1RevenueView = {
   drivers: Yaml1RevenueDriver[];
   source?: string | null;
   note?: string | null;
+};
+
+export type BusinessFactWarning = {
+  code: string;
+  message: string;
+  path?: string | null;
+  severity?: "info" | "warning" | "error" | string;
+};
+
+export type BusinessFactRow = {
+  entity_key: string;
+  entity_label: string;
+  metric: string;
+  metric_label: string;
+  values: Record<string, number | null>;
+  unit?: string | null;
+  format: "int" | "num1" | "num2" | "percent1" | "signedDecimal" | "volume" | "text" | string;
+  source_path: string;
+  value_source: "direct" | "derived" | "fallback" | "forecast" | "custom" | string;
+  editable_path?: string | null;
+  note?: string | null;
+};
+
+export type BusinessFactBlock = {
+  id: string;
+  path: string;
+  title: string;
+  role: "primary_model" | "primary_attachment" | "secondary_split" | "reference" | "deprecated" | "technical" | string;
+  placement: "model_table" | "secondary_table" | "reference_tab" | "technical_tab" | string;
+  dimension: "business_line" | "product" | "region" | "channel" | "customer" | "metric" | "other" | string;
+  rows: BusinessFactRow[];
+};
+
+export type BusinessFactView = {
+  schema_version: 1;
+  blocks: BusinessFactBlock[];
+  warnings: BusinessFactWarning[];
 };
 
 export type Yaml1Presentation = {
@@ -413,6 +459,7 @@ export type CompanyDetail = {
   yaml1_path?: string | null;
   yaml1_text?: string | null;
   yaml1_revenue_view?: Yaml1RevenueView | null;
+  yaml1_business_facts_view?: BusinessFactView | null;
   yaml1_presentation?: Yaml1Presentation | null;
   yaml1_display_contract?: Yaml1DisplayContract | null;
   yaml1_sheets?: WorkbookSheet[];

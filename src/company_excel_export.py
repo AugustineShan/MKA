@@ -2024,19 +2024,34 @@ def _quarter_sum(
     return total if found else None
 
 
-def _quarter_metric_value(metrics: dict[str, Any], quarterly_records: dict[str, dict[str, Any]], period: str, field: str) -> Any:
+def _quarter_base_lookup(
+    metrics: dict[str, Any],
+    quarterly_records: dict[str, dict[str, Any]],
+    period: str,
+    field: str,
+) -> Any:
+    """Non-recursive raw lookup for base IS fields (revenue/oper_cost/...).
+
+    Stops at the three direct sources. Required because ``_quarter_metric_value``
+    derives ratios from revenue/oper_cost — fetching those inputs via self-recursion
+    infinite-loops when a quarter has no revenue in any source.
+    """
     value = _quarter_value(metrics, period, field)
     if value is not None:
         return value
     value = _quarter_raw_value(metrics, period, field)
     if value is not None:
         return value
-    value = _quarter_db_value(quarterly_records, period, field)
+    return _quarter_db_value(quarterly_records, period, field)
+
+
+def _quarter_metric_value(metrics: dict[str, Any], quarterly_records: dict[str, dict[str, Any]], period: str, field: str) -> Any:
+    value = _quarter_base_lookup(metrics, quarterly_records, period, field)
     if value is not None:
         return value
 
-    revenue = _num(_quarter_metric_value(metrics, quarterly_records, period, "revenue"))
-    oper_cost = _num(_quarter_metric_value(metrics, quarterly_records, period, "oper_cost"))
+    revenue = _num(_quarter_base_lookup(metrics, quarterly_records, period, "revenue"))
+    oper_cost = _num(_quarter_base_lookup(metrics, quarterly_records, period, "oper_cost"))
     if field == "gross_profit":
         return None if revenue is None or oper_cost is None else revenue - oper_cost
     if field == "gross_margin":
