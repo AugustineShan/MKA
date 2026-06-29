@@ -88,6 +88,20 @@ def _remove_nested_tables(cell):
         tc.remove(tbl)
 
 
+# 盈利预测(年度) 节：保留模板自带的嵌套表（行列名/边框/格式不动），只清值格
+FORECAST_SECTION = "盈利预测(年度)"
+
+
+def _clear_forecast_value_cells(table) -> None:
+    """清空盈利预测嵌套表的值格（保留表头行 r0 与标签列 c0），仅清文本保样式。"""
+    for ri, row in enumerate(table.rows):
+        if ri == 0:
+            continue  # 表头行（财务指标 / 年份）保留
+        cells = _unique_cells(row)
+        for c in cells[1:]:  # 跳过标签列 c0
+            _clear_cell_text(c)
+
+
 def blankify(src: Path, out: Path) -> None:
     doc = Document(str(src))
     if not doc.tables:
@@ -104,12 +118,19 @@ def blankify(src: Path, out: Path) -> None:
             continue
 
         if prev_section is not None:
-            # 内容行（研究结论正文 / 盈利预测区 / 投资要点 / 正文）
-            for c in cells:
-                _remove_nested_tables(c)
-                if prev_section in SEE_APPENDIX_SECTIONS:
+            if prev_section == FORECAST_SECTION:
+                # 盈利预测区：保留模板自带嵌套表，只清值格（行列名/格式不动）
+                for c in cells:
+                    for nt in c.tables:
+                        _clear_forecast_value_cells(nt)
+            elif prev_section in SEE_APPENDIX_SECTIONS:
+                for c in cells:
+                    _remove_nested_tables(c)
                     _set_cell_text_keep_style(c, SEE_APPENDIX_TEXT)
-                else:
+            else:
+                # 研究结论正文：清空文本保样式 + 移除嵌套子表
+                for c in cells:
+                    _remove_nested_tables(c)
                     _clear_cell_text(c)
             prev_section = None
             continue

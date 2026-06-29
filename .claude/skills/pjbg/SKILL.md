@@ -159,7 +159,7 @@ py -m src.pjbg_docx --ticker {代码}
   - **R01 报告标题** ← 标题
   - **R04 研究员** ← `get_researcher_name()`（前端「配置和教程」页 `MKA_RESEARCHER_NAME`）；空则留空不报错
   - **R06 研究结论** ← 短期/中长期/投资建议，加粗随 .md（`__line__`→bold 段、行内 `**x**`→bold 子串、其余 reg），字体/字号从模板现有 run 采样
-  - **R08 盈利预测全表** ← 10 指标×年份窗 子表，对齐评级报告模板 R08 体例（数据来自 forecast CSV，年份窗 `app_config.rating_report_year_config()`；行序 ROE 在 EPS 前；营业收入/归母净利润标 (百万)；revenue/归母 千分位无小数、yoy/毛利率/ROE 1dp% 不带 +、EPS 2dp、PE/PB/EV/EBITDA 1dp 不带 x；营收/归母行加粗）
+  - **R08 盈利预测全表** ← 填**模板自带的嵌套表**（只往值格写数字，行列名/表头/边框/字体/对齐全不动）；按表头列文本解析年份、按行标签匹配指标。数据来自 forecast CSV，年份窗 `app_config.rating_report_year_config()`；行序 ROE 在 EPS 前；营业收入/归母净利润标 (百万)；revenue/归母 千分位无小数、yoy/毛利率/ROE 1dp% 不带 +、EPS 2dp、PE/PB/EV/EBITDA 1dp 不带 x。模板若无自带表才回退新建（旧空白模板兼容）。**严禁删原表重建——公司系统验骨架，只填数字不改结构。**
 - 输出 `内部报告\评级报告\{公司名}-{YYYYMMDD}-评级报告.docx`（与 .md 同名前缀，日期一致）。
 - 其余表头字段（公司名/代码/股价/评级/目标价/预期收益率/是否重大推荐等）**留空**，由分析师/其他步骤填；投资要点、正文部分模板自带「见附件」不内嵌；声明不动。
 - 前置：研究结论.md 已生成（§7）、forecast 已跑（`Agent\forecast\` 有 CSV）。缺则报错停止，不出半成品。

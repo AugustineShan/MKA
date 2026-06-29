@@ -289,30 +289,78 @@ def _year_window() -> list[tuple[int, bool, str]]:
     return years
 
 
-def inject_forecast(content_cell, company_dir: Path) -> None:
-    csv_path = company_dir / "Agent" / "forecast" / "derived_metrics_annual.csv"
-    if not csv_path.exists():
-        raise SystemExit(f"forecast CSV 不存在，先跑 py -m src.forecast: {csv_path}")
-    data = _load_forecast(csv_path)
-    years = _year_window()
+def _parse_header_year(header: str) -> int | None:
+    """列头 → 年份：'2023'→2023，'2026E'→2026，解析失败 None。"""
+    h = header.strip().upper().rstrip("E")
+    try:
+        return int(h)
+    except ValueError:
+        return None
 
-    # caption
+
+def _fill_cell_value(cell, text: str, font: str, size: float, bold) -> None:
+    """往值格填一个数字 run，保留单元格段落对齐/边框（只填值，不改格式）。
+
+    清掉多余段落与旧 run，按采样字体写新 run；段落对齐属段落属性，不动。
+    """
+    paras = cell.paragraphs
+    for p in paras[1:]:
+        p._element.getparent().remove(p._element)
+    p0 = paras[0]
+    for r in list(p0.runs):
+        r._element.getparent().remove(r._element)
+    run = p0.add_run(text)
+    _set_run_font(run, font, size, bold)
+
+
+# 行标签 → (csv 列, 格式)：与 RATING_METRICS 同源，用于匹配模板自带表
+LABEL_TO_METRIC = {mlabel: (metric, fmt) for metric, mlabel, fmt, _ in RATING_METRICS}
+
+
+def _fill_existing_forecast_table(table, data: dict) -> None:
+    """填充模板自带的盈利预测嵌套表：只往值格写数字，行列名/表头/边框/字体不动。
+
+    按表头列文本解析年份、按行标签匹配指标；匹配不上的行列原样保留。
+    """
+    rows = table.rows
+    hdr = _unique_cells(rows[0])
+    # 列索引 → 年份
+    col_years: dict[int, int] = {}
+    for ci in range(1, len(hdr)):
+        year = _parse_header_year(hdr[ci].text)
+        if year is not None:
+            col_years[ci] = year
+    # 数据行：按行标签匹配指标，采样该行标签列字体填值
+    for row in rows[1:]:
+        cells = _unique_cells(row)
+        label = cells[0].text.strip()
+        if label not in LABEL_TO_METRIC:
+            continue
+        metric, fmt = LABEL_TO_METRIC[label]
+        font, size, bold = _sample_font(cells[0])
+        for ci, year in col_years.items():
+            if ci >= len(cells):
+                continue
+            val = data.get(str(year), {}).get(metric)
+            _fill_cell_value(cells[ci], _format_value(val, fmt), font, size, bold)
+
+
+def _build_forecast_table(content_cell, data: dict) -> None:
+    """回退路径：模板无自带盈利预测表时新建（旧空白模板兼容）。"""
+    years = _year_window()
     p0 = _clear_cell_paragraphs(content_cell)
     run = p0.add_run(CAPTION)
     _set_run_font(run, TABLE_FONT, TABLE_SIZE, False)
 
-    # 嵌套子表
     nyears = len(years)
     table = content_cell.add_table(rows=1, cols=1 + nyears)
     _set_table_borders(table)
 
-    # 表头
     hdr = table.rows[0].cells
     _set_cell(hdr[0], "财务指标", True, TABLE_FONT, TABLE_SIZE, WD_ALIGN_PARAGRAPH.LEFT)
     for i, (_, _, label) in enumerate(years):
         _set_cell(hdr[1 + i], label, True, TABLE_FONT, TABLE_SIZE, WD_ALIGN_PARAGRAPH.CENTER)
 
-    # 指标行
     for metric, mlabel, fmt, major in RATING_METRICS:
         cells = table.add_row().cells
         _set_cell(cells[0], mlabel, major, TABLE_FONT, TABLE_SIZE, WD_ALIGN_PARAGRAPH.LEFT)
@@ -320,8 +368,22 @@ def inject_forecast(content_cell, company_dir: Path) -> None:
             val = data.get(str(year), {}).get(metric)
             _set_cell(cells[1 + i], _format_value(val, fmt), major, TABLE_FONT, TABLE_SIZE, WD_ALIGN_PARAGRAPH.RIGHT)
 
-    # 表后留一空段，避免单元格以表格结尾
     content_cell.add_paragraph()
+
+
+def inject_forecast(content_cell, company_dir: Path) -> None:
+    csv_path = company_dir / "Agent" / "forecast" / "derived_metrics_annual.csv"
+    if not csv_path.exists():
+        raise SystemExit(f"forecast CSV 不存在，先跑 py -m src.forecast: {csv_path}")
+    data = _load_forecast(csv_path)
+
+    # 优先填充模板自带的盈利预测嵌套表（只填数字，不改行列名/格式/边框）
+    existing = content_cell.tables
+    if existing:
+        _fill_existing_forecast_table(existing[0], data)
+        return
+    # 回退：模板无嵌套表 → 新建（旧空白模板兼容）
+    _build_forecast_table(content_cell, data)
 
 
 def _find_latest_md(company_dir: Path) -> Path:
