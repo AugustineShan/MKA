@@ -27,6 +27,9 @@ def test_webka_skill_doc_structure():
     # 两道门禁
     assert "§2 已有正式稿门禁" in text
     assert "§6b 骨架门禁" in text
+    assert "KA 目录顶层任一 markdown" in text
+    assert "KA 目录普通 markdown" in text
+    assert "信息指引" in text
     assert "--rebuild" in text
     # 三份 md
     assert "readme first.md" in text
@@ -107,10 +110,53 @@ def test_reference_candidates_from_ka_dir_exclude_load(tmp_path: Path):
     (ka_dir / "核心假设参考load_20260101.md").write_text("```knobs\n```", encoding="utf-8")
     (ka_dir / "核心假设参考brkd_20260101.md").write_text("状态: draft", encoding="utf-8")
     (ka_dir / "核心假设参考alphapai_20260101.md").write_text("模式: alphapai-load", encoding="utf-8")
+    (ka_dir / "业务提示.md").write_text("这是一份信息指引", encoding="utf-8")
 
     refs = webka._reference_candidates(tmp_path)
     names = sorted(p.name for p in refs)
     assert names == ["核心假设参考alphapai_20260101.md", "核心假设参考brkd_20260101.md"]
+
+
+def test_ka_info_guides_include_non_reference_markdown(tmp_path: Path):
+    from src.company_paths import ka_reference_dir
+    from src import webka
+
+    ka_dir = ka_reference_dir(tmp_path)
+    ka_dir.mkdir(parents=True)
+    (ka_dir / "业务提示.md").write_text("这是一份信息指引", encoding="utf-8")
+    (ka_dir / "核心假设参考alphapai_20260101.md").write_text("模式: alphapai-load", encoding="utf-8")
+
+    guides = webka._ka_info_guides(tmp_path)
+    assert [p.name for p in guides] == ["业务提示.md"]
+
+
+def test_gate_accepts_plain_ka_markdown_as_human_selected_input(tmp_path: Path):
+    from src.company_paths import ka_reference_dir
+    from src import webka
+
+    ka_dir = ka_reference_dir(tmp_path)
+    ka_dir.mkdir(parents=True)
+    (ka_dir / "业务提示.md").write_text("这是一份信息指引", encoding="utf-8")
+
+    gates = webka._check_gates(tmp_path, rebuild=False)
+    assert [p.name for p in gates["ka_markdowns"]] == ["业务提示.md"]
+    assert [p.name for p in gates["info_guides"]] == ["业务提示.md"]
+
+
+def test_build_must_read_packages_plain_ka_markdown_as_info_guide(tmp_path: Path):
+    from src.company_paths import ka_reference_dir
+    from src import webka
+
+    ka_dir = ka_reference_dir(tmp_path)
+    ka_dir.mkdir(parents=True)
+    (ka_dir / "业务提示.md").write_text("这是一份信息指引", encoding="utf-8")
+    gates = webka._check_gates(tmp_path, rebuild=False)
+    report: list[tuple[str, str]] = []
+
+    must_read = webka._build_must_read(tmp_path, gates, report)
+
+    assert "KA 目录信息指引·业务提示.md" in must_read
+    assert "这是一份信息指引" in must_read
 
 
 def test_gate_blocks_when_no_skeleton(tmp_path: Path):

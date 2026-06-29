@@ -18,10 +18,10 @@
 | 1 | 解析公司目录 | 从 `$ARGUMENTS` 定位 `companies\{公司}`（精确/代码/公司名匹配，多命中询问） | SKILL.md §1 |
 | 2 | 已有正式稿门禁 | Glob `companies\{公司}\核心假设*.md`；有旧稿且用户没明说「重建」→ 停止，分流到 `/adj`、`/frontend-edit`、`/annual-update` | SKILL.md §2 |
 | 3 | 加载编辑器 runbook | 读 `核心假设编辑器_skill_v*.md`，裁决流程在它的 §2-§10 | SKILL.md §3 |
-| 4 | markdown 化同权重判断材料 | `py -m src.ka_prepare "{公司}"`，幂等转 `公司判断和最新观点.md` + `重要文件/` 顶层材料 + 最高权重材料文件夹顶层 → `markdown存储区\`；后续只读存储区 + manifest | SKILL.md §4 |
+| 4 | 人工筛选门 + markdown 化同权重判断材料 | `py -m src.ka_prepare "{公司}"`，只处理人工筛选入口里的 `公司判断和最新观点.md` + `重要文件/` 顶层材料 + 最高权重材料文件夹顶层；`markdown存储区\` 是 cache，不代表其他 cache 可读 | SKILL.md §3b/§4 |
 | 5 | 读 BRKD 产物 | 读 `Agent业务讨论.md`（KA 参考稿区另有 `核心假设参考brkd_*.md` 须声明 draft/reference，仅作候选） | SKILL.md §5 |
 | 6 | 读 LOAD 产物 + 门禁 | 扫 KA 参考稿区 `核心假设参考load_*.md`；空脚手架/「待模型装载器补全」/无 knobs 自报/非 load-vintage/WEBCLAUDE 副本都不算门禁通过；多个取最新 | SKILL.md §6 |
-| 7 | 读 reference 候选 + 门禁 | 扫 KA 参考稿区 `核心假设参考*.md`（剔除 load）；**BRKD/已完成 LOAD/KA 参考稿区 reference 三者至少一，否则停止**；优先读取 `待 /ka 裁决清单`，缺清单则在 overview 标缺口并补议程 | SKILL.md §6b |
+| 7 | 读 KA 目录 markdown + 门禁 | 扫 KA 目录顶层全部 `*.md`；**BRKD/已完成 LOAD/KA 目录任一 markdown 三者至少一，否则停止**；`核心假设参考*.md` 按候选稿裁决，其他 markdown 按信息指引读 | SKILL.md §6b |
 | 8 | 进入编辑器裁决流程 | 见下方「裁决流程」子表 | 编辑器 §1-§10 |
 | 9 | 落盘 | 重建且已有旧稿→先 `py scripts/ka_archive.py "<旧稿路径>"`；再写 `companies\{公司}\{公司名}-{今日YYYYMMDD}-核心假设.md`（悬项写 `…核心假设参考.md`） | SKILL.md §7 / 编辑器 §10 |
 
@@ -52,10 +52,13 @@
 |---|---|
 | `skills/核心纪律_skill_v*.md` | A0-A7 横切纪律 |
 | `skills/核心假设源语言_skill_v1.md` | B0-B10 块语法 + §B4 family 三硬规则 |
+| `docs/核心假设源语言语法规范.md` | 标准块头、候选稿清单、reference 裁决回执、受控词表 |
 | `docs/knobs块契约.md` | 末尾 ` ```knobs` 机器自报清单真源 |
 | `skills/核心假设编辑器_skill_v1.md` | 裁决流程 runbook（§1-§10） |
 
 ### 必读·材料层（裁决输入，每次都读）
+
+人工筛选门：以下入口之外的 markdown cache、`WEBCLAUDE` 包、`Agent/Load` 沙箱副本、临时转换件默认不读，除非用户明确说“这份材料进入本轮判断”。KA 目录 `companies\{公司}\Skills素材包\KA（ALPHAPAI拆出来的东西放在这里）\` 是例外中的明确入口：顶层所有 `*.md` 都读，非 `核心假设参考*.md` 按信息指引处理。
 
 | 文件 | 角色 |
 |---|---|
@@ -70,7 +73,7 @@
 |---|---|---|
 | `companies\{公司}\Agent业务讨论.md` | BRKD 产物，当前业务结构与利润表讨论第一起点 | #2 |
 | KA 参考稿区 `核心假设参考load_*.md` | LOAD 产物，旧模型量价原子/分线历史/公式族，标 `load-vintage`；多个取最新 | #3 |
-| KA 参考稿区 `核心假设参考*.md`（剔除 load） | reference 候选（brkd/alphapai，含 Alphapai-load），只作候选理解，预测值必须重裁；`待 /ka 裁决清单` 是晋升议程 | #4 |
+| KA 目录顶层 `*.md`（含 `核心假设参考*.md` 与其他 markdown） | reference 候选或信息指引。`核心假设参考*.md`/reference 状态按候选稿裁决；其他 markdown 不要求 `待 /ka 裁决清单`，按信息指引读入 overview 和接缝总账 | #4 |
 
 > 门禁底线（SKILL.md §6b）：同权重判断材料、旧正式稿、`公司判断和最新观点.md` **不计入此门禁**——它们是裁决材料或旧稿对照，不是业务骨架来源。
 
@@ -105,5 +108,5 @@
 ## 四、停止条件速览
 
 - **§2 门禁**：根目录已有正式稿且未明说「重建」→ 停，分流到 `/adj`、`/frontend-edit`、`/annual-update`。
-- **§6b 门禁**：BRKD 产物 / 已完成 LOAD 产物 / KA 参考稿区 reference 候选**三者都没有**→ 停，提示先跑 `/brkd`、补 `/load` 或放 Alphapai reference。
-- **编辑器 §0**：只有同权重判断材料或旧正式稿、没有 BRKD、完成 LOAD 或 reference 候选 → 停，不凭空生成业务骨架。
+- **§6b 门禁**：BRKD 产物 / 已完成 LOAD 产物 / KA 目录顶层 markdown **三者都没有**→ 停，提示先跑 `/brkd`、补 `/load` 或把要给 `/ka` 看的 markdown 放入 KA 目录。
+- **编辑器 §0**：只有同权重判断材料或旧正式稿、没有 BRKD、完成 LOAD 或 KA 目录 markdown → 停，不凭空生成业务骨架；若只有信息指引但缺业务骨架，先在 overview 标缺口并停。

@@ -16,6 +16,7 @@ def test_alphapai_load_prompt_keeps_reference_boundary_and_time_axis_discipline(
     assert "模式：`alphapai-load`" in text
     assert "状态：`reference`" in text
     assert "不可直接编译" in text
+    assert "docs/核心假设源语言语法规范.md" in text
     assert "先会议 memo，后完整参考稿" in text
     assert "不要第一轮直接输出完整 `核心假设参考alphapai_yymmdd.md`" in text
     assert "像分析师开会一样" in text
@@ -32,6 +33,8 @@ def test_alphapai_load_prompt_keeps_reference_boundary_and_time_axis_discipline(
     assert "第一轮只输出会议 memo 并等待确认" in text
     assert "和用户充分交互后（至少一轮）你觉得没问题再生成最终的 **`核心假设参考alphapai_yymmdd.md`**" in text
     assert "必须包含 `## 待 /ka 裁决清单`" in text
+    assert "定向检索 Alphapai 数据库" in text
+    assert "不追求材料覆盖面最大化" in text
 
 
 def test_alphapai_load_prompt_keeps_bs_cf_and_knobs_boundaries():
@@ -61,8 +64,9 @@ def test_alphapai_load_prompt_prioritizes_business_split_history_for_ka():
     assert "用户指定主拆分" in text
     assert "不得降级成官方更容易披露的口径" in text
     assert "## 2.1 本稿最稀缺资产：业务拆分历史" in text
-    assert "非标准业务拆分的历史数值" in text
+    assert "非标准业务拆分的关键历史数值" in text
     assert "最近 5 年是完整性重点" in text
+    assert "只在资料支持时逐年写完整" in text
     assert "早于最近 5 年的数据不要求齐全" in text
     assert "产品、品牌、价格带、地区、渠道、客户、门店、用户、订单、产能、销量、吨价/客单价/ARPU" in text
     assert "主建模拆分历史总表" in text

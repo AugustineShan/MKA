@@ -15,6 +15,16 @@ def test_core_discipline_defines_cross_cutting_rules():
 
     assert "横切纪律单一真源" in text
     assert "library/include" in text
+    assert "docs/MKA规则导航图.md" in text
+    assert "索引，不是新纪律" in text
+    assert "人工筛选门优先于材料吞吐" in text
+    assert "看见 markdown 不等于必须吸收" in text
+    assert "KA 目录顶层 markdown" in text
+    assert "该目录顶层所有 `*.md` 都是 `/ka` 人工筛选入口" in text
+    assert "其他 markdown 按信息指引读取" in text
+    assert "入口窄，收纳宽" in text
+    assert "人工筛选门只限制读取范围，不削弱 A1/A2" in text
+    assert "有复盘价值但暂不入模的信息宁可进收纳区/stash" in text
     assert "A0. 操作分流" in text
     assert "A1. 历史基年神圣 + 历史保全" in text
     assert "A2. 接缝铁律" in text
@@ -45,6 +55,9 @@ def test_core_source_language_defines_shared_comp_grammar():
 
     assert "共享语法单一真源" in text
     assert "library/include" in text
+    assert "docs/核心假设源语言语法规范.md" in text
+    assert "docs/MKA规则导航图.md" in text
+    assert "reference 裁决回执" in text
     assert "范围边界：默认利润表 + 业务层盈利模型" in text
     assert "BRKD、LOAD、KA 默认收窄" in text
     assert "`financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in text

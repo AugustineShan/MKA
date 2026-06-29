@@ -1,6 +1,6 @@
 ---
 name: ka
-description: 启动精简版 KA 核心假设全量生成/重建流程。KA 专职把同权重判断材料、BRKD、LOAD/reference 候选和 /init 裁决成正式核心假设.md；不做旧稿 modify。先加载共享核心纪律与核心假设源语言，再加载核心假设编辑器 skill。
+description: 启动精简版 KA 核心假设全量生成/重建流程。KA 专职把同权重判断材料、BRKD、LOAD、KA 目录顶层 markdown 和 /init 裁决成正式核心假设.md；不做旧稿 modify。先加载共享核心纪律与核心假设源语言，再加载核心假设编辑器 skill。
 argument-hint: [公司名或代码，如 新乳业 / 002946]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
@@ -22,13 +22,14 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 读任何材料前，先加载：
 
 ```text
+D:\MKA\docs\MKA规则导航图.md               # 迷路时的契约索引；不替代下列真源
 D:\MKA\skills\核心纪律_skill_v*.md          # A1-A7 横切纪律
 D:\MKA\skills\核心假设源语言_skill_v*.md     # B 系列块语法 + §B4 family 词表与硬规则
 D:\MKA\docs\knobs块契约.md                   # 末尾 official knobs 块语法真源
 D:\MKA\skills\核心假设编辑器_skill_v*.md     # KA 裁决流程 runbook（§2-§10）
 ```
 
-`/ka` 完整继承核心纪律 A1-A7；最终文件符合核心假设源语言 B，末尾 official `knobs` 块语法以 `docs/knobs块契约.md` 为准。每条业务线块头 `compiler: <family>` 必须落在源语言 §B4 可执行集合内，family 硬规则以 §B4 为准。交互风格继承核心纪律 A4，本启动器不复述。cleaner 折叠机制、unit_factor 换算等 yaml1 侧细节见 `docs/yaml1算法模板契约.md`（`/comp` 读，`/ka` 不需加载）。
+`docs/MKA规则导航图.md` 只用于分流和找真源，不作为裁决证据。`/ka` 完整继承核心纪律 A1-A7；最终文件符合核心假设源语言 B，末尾 official `knobs` 块语法以 `docs/knobs块契约.md` 为准。标准块头、候选稿清单和 recommended `reference 裁决回执` 见 `docs/核心假设源语言语法规范.md`。每条业务线块头 `compiler: <family>` 必须落在源语言 §B4 可执行集合内，family 硬规则以 §B4 为准。交互风格继承核心纪律 A4，本启动器不复述。cleaner 折叠机制、unit_factor 换算等 yaml1 侧细节见 `docs/yaml1算法模板契约.md`（`/comp` 读，`/ka` 不需加载）。
 
 ## 1. 解析公司目录
 
@@ -51,7 +52,7 @@ Glob 检查 `companies\{公司}\核心假设*.md`，只认公司根目录。
 小旋钮改动请走 /frontend-edit 或 /adj quick。
 新增边际信息请走 /adj incremental。
 年报或真实数据滚动请走 /annual-update。
-若要用新的同权重判断材料、BRKD 或 LOAD/reference 候选全量替换旧稿，请明确说 /ka 重建。
+若要用新的同权重判断材料、BRKD、LOAD 或 KA 目录 markdown 全量替换旧稿，请明确说 /ka 重建。
 ```
 
 若用户明确重建，可读取旧稿，但旧稿只用于收口对照和防静默丢信息；不是逐行 base，不走 affected-line modify。
@@ -67,6 +68,16 @@ D:\MKA\skills\核心假设编辑器_skill_v*.md
 共享 A/B 是上位真源；编辑器 skill 补 KA 本地裁决流程（§2-§10）。**本启动器 §4-§6b 把材料拉起来后，进入编辑器 runbook 走裁决流程。**
 
 不要再把旧 v19（已归档至 `deprecatedlogs/04_核心假设生成修改器_skill_v19.md`）当 `/ka` 主工作流。旧 v19 的 Excel 阅读职责已迁给 `/load`，研报/纪要职责已迁给 `/brkd`，modify 职责已从 `/ka` 删除。
+
+## 3b. 人工筛选门
+
+`/ka` 不主动扩大材料面。markdown 存储区、`WEBCLAUDE` 打包目录、`Agent\Load\` 沙箱副本、临时转换件和历史 cache 默认不是证据入口；看见 markdown 不等于必须吸收。
+
+本轮只读以下明确入口：同权重判断材料、`Agent业务讨论.md`、KA 目录顶层全部 markdown、已完成 LOAD 主产物、Alphapai reference/factpack、`/init` 事实索引和旧 official 对照。其他材料只有在用户明确说“这份材料进入本轮判断”时才可读取，并要在 overview 里说明它为何进入。
+
+KA 目录固定指 `companies\{公司}\Skills素材包\KA（ALPHAPAI拆出来的东西放在这里）\`。用户丢进这个目录的顶层 `*.md` 就是明确给 `/ka` 看的人工筛选材料：文件名以 `核心假设参考` 开头或抬头声明 reference/draft/model-extracted/factpack 的，按候选稿裁决；其他 markdown 按信息指引读取，不强制要求 `待 /ka 裁决清单`，但其中有价值的信息仍要进入 overview、接缝总账、收纳区或裁决理由。只读顶层文件，不递归读取子目录。
+
+人工筛选门只管入口，不削弱收纳区。对已入场材料仍按核心纪律 A2 和编辑器接缝总账执行：未入模但有复盘价值的信息进入收纳区/stash，不得乱扔；只有重复、无关、越界或低可信且无复盘价值的信息才写丢弃理由。
 
 ## 4. 读取最高权重材料（同权重判断材料层）
 
@@ -88,15 +99,15 @@ py -m src.ka_prepare "{公司}"
 companies\{公司}\Skills素材包\最高权重材料-放Agent最应对齐的材料\markdown存储区\
 ```
 
-`公司判断和最新观点.md`、`重要文件\` 与最高权重材料文件夹顶层材料同权重；文件夹名只是历史目录名，不代表它压过分析师手写 thesis。凡读公司判断，必须把 `重要文件\` 下材料按同等权重一起读。后续 AI 只读 markdown 存储区和 manifest，不直接读 raw PDF/Word/Excel。manifest 中的 `unsupported/error` 必须进入缺口区。
+`公司判断和最新观点.md`、`重要文件\` 与最高权重材料文件夹顶层材料同权重；文件夹名只是历史目录名，不代表它压过分析师手写 thesis。凡读公司判断，必须把 `重要文件\` 下材料按同等权重一起读。后续 AI 只读 `ka_prepare` 为这些同权重判断材料生成的 markdown 存储区和 manifest，不直接读 raw PDF/Word/Excel，也不把其他 markdown cache 顺手并入。manifest 中的 `unsupported/error` 必须进入缺口区。
 
 ## 5. 读取 BRKD 产物
 
-读取 `companies\{公司}\Agent业务讨论.md`。这是 `/brkd` 的业务层草稿，可提供当前业务结构、利润表讨论、待 `/ka` 拍板问题清单，其中所有预测建议仍需 KA 重新裁决。若 KA 参考稿区另有 BRKD 核心假设式参考稿，只读取 `核心假设参考brkd_*.md`，须声明 `状态: draft`/`reference`，只作候选。
+读取 `companies\{公司}\Agent业务讨论.md`。这是 `/brkd` 的业务层草稿，可提供当前业务结构、利润表讨论、待 `/ka` 拍板问题清单，其中所有预测建议仍需 KA 重新裁决。若 KA 目录另有 BRKD 核心假设式参考稿，`§6b` 会随全部顶层 markdown 一起读取；命名为 `核心假设参考brkd_*.md` 的按候选稿处理。
 
 ## 6. 读取 LOAD 产物并执行门禁
 
-扫描 KA 参考稿区 `companies\{公司}\Skills素材包\KA（ALPHAPAI拆出来的东西放在这里）\核心假设参考load_*.md`。只把已完成的 LOAD 核心假设算作门禁来源。以下不算：
+扫描 KA 目录 `companies\{公司}\Skills素材包\KA（ALPHAPAI拆出来的东西放在这里）\核心假设参考load_*.md`。只把已完成的 LOAD 核心假设算作门禁来源。以下不算：
 
 - `/load prepare` 刚生成的空脚手架。
 - 仍包含"待模型装载器补全"的文件。
@@ -106,22 +117,29 @@ companies\{公司}\Skills素材包\最高权重材料-放Agent最应对齐的材
 
 若有多个 LOAD 参考稿，默认读取修改时间最新的一份，并把其他可用 LOAD 产物列为"可选参考，不自动并入"。
 
-## 6b. 读取 reference 候选并执行门禁
+## 6b. 读取 KA 目录 markdown 并执行门禁
 
-除 BRKD 和 LOAD 外，`/ka` 可读取 KA 参考稿区的 reference 候选（含 Alphapai 网页端输出）。brkd/load/alphapai 参考稿统一放 KA 参考稿区，命名 `核心假设参考{来源}_YYYYMMDD.md`：
+除 BRKD 和 LOAD 外，`/ka` 必须读取 KA 目录顶层所有 markdown。brkd/load/alphapai reference 仍建议命名 `核心假设参考{来源}_YYYYMMDD.md`，但这只是候选稿命名规范，不是 `/ka` 的读取过滤器：
 
 ```text
-companies\{公司}\Skills素材包\KA（ALPHAPAI拆出来的东西放在这里）\核心假设参考*.md
+companies\{公司}\Skills素材包\KA（ALPHAPAI拆出来的东西放在这里）\*.md
 ```
 
-识别条件：抬头声明 `状态: reference` 或 `模式: alphapai-load`，或文件名以 `核心假设参考` 开头；不在 `Agent\`、`WEBCLAUDE\`、`Agent\Load\` 等子目录里，只读 KA 参考稿区非递归文件；只作候选理解和待裁决清单来源，预测值/knobs/时间轴必须重新裁决。LOAD 参考稿（`核心假设参考load_*`）在 §6 单独计为 LOAD 门禁，这里不再重复计数。Alphapai reference 中的 BS/CF/DCF 线索只进收纳区或 `/da` 分流判断，不自动打开 `/ka` 人工覆盖闸。
+读取方式：不在 `Agent\`、`WEBCLAUDE\`、`Agent\Load\` 等子目录里，只读 KA 目录非递归 `*.md`。LOAD 参考稿（`核心假设参考load_*`）在 §6 单独计为 LOAD 门禁，这里仍要读入材料包，但不重复计数。
+
+身份区分：
+
+- reference 候选：文件名以 `核心假设参考` 开头，或抬头声明 `状态: reference/draft/model-extracted/factpack`，或 `模式: alphapai-load`。只作候选理解和待裁决清单来源，预测值/knobs/时间轴必须重新裁决。
+- 信息指引：KA 目录中其他顶层 markdown。它们是人工放入本轮的判断线索，不要求 `待 /ka 裁决清单`，不自动晋升 official，也不能直接 `/comp`；其中可采纳的信息进入正式判断，有价值但不入模的信息进入收纳区/stash，冲突或缺口进入接缝总账。
+
+Alphapai reference 或信息指引中的 BS/CF/DCF 线索只进收纳区或 `/da` 分流判断，不自动打开 `/ka` 人工覆盖闸。
 
 新的 reference/draft/model-extracted/factpack 候选应包含 `## 待 /ka 裁决清单`。读取 reference 时先把这节当作晋升议程：每条事项必须在 `/ka` 裁决中落到“采纳入 official / 收纳 / 缺口待补 / 丢弃并说明理由”之一，不能只因候选稿里已有 knobs 就静默晋升。旧 reference 若缺这节，不硬停，但必须在 overview 中标记“缺待 /ka 裁决清单”，并从正文、收纳区、缺口和 knobs 自报里补一版议程后再裁决。
 
-`/ka` 不能凭空生成。继续前必须至少具备 BRKD 产物、已完成 LOAD 产物或 KA 参考稿区 reference 候选之一。若三者都没有，停止：
+`/ka` 不能凭空生成。继续前必须至少具备 BRKD 产物、已完成 LOAD 产物或 KA 目录任一顶层 markdown 之一。若三者都没有，停止：
 
 ```text
-当前没有已完成 LOAD 产物、没有 BRKD 产物 Agent业务讨论.md，也没有可读 KA 参考稿区 reference 候选（如 Alphapai 核心假设参考.md）。/ka 不能凭空生成。建议先跑 /brkd、补完 /load，或放入 Alphapai-load reference 后再回来跑 /ka。
+当前没有已完成 LOAD 产物、没有 BRKD 产物 Agent业务讨论.md，也没有可读 KA 目录 markdown。/ka 不能凭空生成。建议先跑 /brkd、补完 /load，或把要给 /ka 看的 markdown 放入 KA 目录后再回来。
 ```
 
 同权重判断材料（含最高权重材料文件夹）、旧正式稿、`公司判断和最新观点.md`、`重要文件\` 不计入本门禁；它们是裁决材料或旧稿对照，不是业务骨架来源。

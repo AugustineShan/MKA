@@ -19,6 +19,9 @@ def test_brkd_launcher_is_thin_and_hands_off_to_runbook():
     assert "py -m src.brkd_prepare" in text
     assert "py -m src.ka_prepare" in text
     assert "markdown存储区" in text
+    assert "人工放入本轮的源文件" in text
+    assert "只读本次 BRKD markdown 存储区" in text
+    assert "不主动扩读其他 markdown cache" in text
     assert "重要文件" in text
     assert "AI 不直接读取这些源文件" in text
     assert "核心纪律_skill_v*.md" in text
@@ -44,6 +47,7 @@ def test_business_preunderstanding_v3_outputs_comp_style_draft():
 
     assert "核心纪律_skill_v*.md" in text
     assert "核心假设源语言_skill_v*.md" in text
+    assert "docs/核心假设源语言语法规范.md" in text
     assert "markdown存储区" in text
     assert "`核心假设.md` 的半成品" in text
     assert "核心假设参考brkd_{运行YYYYMMDD}.md" in text
@@ -60,11 +64,13 @@ def test_business_preunderstanding_v3_outputs_comp_style_draft():
     assert "产品、品牌、价格带、地区、渠道、客户、门店、用户、订单、产能、销量、吨价/客单价/ARPU" in text
     assert "主建模拆分必须有历史表" in text
     assert "官方披露 -> 建模拆分" in text
-    assert "2-3 种副拆分历史表" in text
+    assert "只保留已筛选材料中确有信息量的副拆分历史表" in text
+    assert "不为了凑数量主动外扩材料" in text
     assert "主建模拆分历史总表" in text
     assert "官方披露到建模线的桥" in text
     assert "标准财务率历史来自 /init，本节只做 headline 校验" in text
-    assert "忠实记录业务，不是做预测" in text
+    assert "忠实记录人工放入本轮 BRKD 素材包的业务材料，不是做预测" in text
+    assert "不主动扩读其他 markdown cache" in text
     assert "不允许静默忽略" in text
     assert "利润表 + 业务层盈利模型理解器" in text
     assert "`financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in text

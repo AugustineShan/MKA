@@ -2,13 +2,13 @@
 
 输出目录: companies/{公司}/WEBCLAUDE/webka(Claude帮你统摄核心假设）/
   - readme first.md                  入口：任务/读取顺序/输出契约/不能跑脚本
-  - 必读和素材.md                     合并：4 份规则 + 同权重判断材料 + BRKD/LOAD/reference/旧稿 + defaults.yaml
+  - 必读和素材.md                     合并：4 份规则 + 同权重判断材料 + BRKD/LOAD/KA目录markdown/旧稿 + defaults.yaml
   - 不必要读强制碰到再速查.md          合并：core_metrics_overview + OfficialBreakdowns（按需才查）
 
 网页端 Claude 跑不了脚本、读不了本地文件系统，所以：
 1. 本地先跑 src.ka_prepare，把同权重判断材料 markdown 化（网页端读不了 raw PDF/Word）。
 2. 强制 /ka §2 门禁（根目录有正式稿且未说 --rebuild → 停）与 §6b 门禁
-   （BRKD/LOAD/reference 三者全无 → 停）。
+   （BRKD/LOAD/KA目录markdown 三者全无 → 停）。
 3. 把规则与材料合并成 3 份 md，网页端上传这 3 份即可。
 4. 不写 manifest：纯打包，无下游机器消费；打包结果 print 到终端。
 
@@ -69,6 +69,19 @@ def newest_versioned_file(pattern: str, directory: Path = SKILLS_DIR) -> Path | 
     return max(files, key=_version)
 
 
+def newest_file(directory: Path, patterns: list[str]) -> Path | None:
+    files: list[Path] = []
+    for pattern in patterns:
+        files.extend(
+            p
+            for p in directory.glob(pattern)
+            if p.is_file() and not p.name.startswith("~$")
+        )
+    if not files:
+        return None
+    return max(files, key=lambda p: p.stat().st_mtime)
+
+
 def _read_text(path: Path, label: str) -> str:
     if not path.exists():
         raise FileNotFoundError(f"缺少 {label}: {path}")
@@ -104,14 +117,50 @@ def _valid_load_drafts(company_dir: Path) -> list[Path]:
     return out
 
 
-def _reference_candidates(company_dir: Path) -> list[Path]:
-    """§6b：KA 参考稿区的 核心假设参考*.md，剔除 LOAD（§6 单独计数）。"""
+def _ka_markdown_files(company_dir: Path) -> list[Path]:
+    """KA 目录顶层全部 markdown。用户放进这里的 *.md 都给 /ka 读。"""
     ka_dir = ka_reference_dir(company_dir)
     if not ka_dir.exists():
         return []
+    return sorted(p for p in ka_dir.glob("*.md") if p.is_file())
+
+
+def _is_reference_like(path: Path) -> bool:
+    if path.name.startswith("核心假设参考"):
+        return True
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    markers = (
+        "状态: reference",
+        "状态: draft",
+        "状态: model-extracted",
+        "状态: factpack/reference",
+        "模式: alphapai-load",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _reference_candidates(company_dir: Path) -> list[Path]:
+    """§6b：KA 目录 reference-like 候选，剔除 LOAD（§6 单独计数）。"""
     out: list[Path] = []
-    for path in sorted(ka_dir.glob("核心假设参考*.md")):
+    for path in _ka_markdown_files(company_dir):
         if path.name.startswith("核心假设参考load_"):
+            continue
+        if not _is_reference_like(path):
+            continue
+        out.append(path)
+    return out
+
+
+def _ka_info_guides(company_dir: Path) -> list[Path]:
+    """KA 目录中不是已完成 LOAD、也不像 reference 的普通 markdown，按信息指引打包。"""
+    refs = set(_reference_candidates(company_dir))
+    loads = set(_valid_load_drafts(company_dir))
+    out: list[Path] = []
+    for path in _ka_markdown_files(company_dir):
+        if path in refs or path in loads:
             continue
         out.append(path)
     return out
@@ -133,17 +182,21 @@ def _check_gates(company_dir: Path, *, rebuild: bool) -> dict[str, object]:
     brkd_ok = brkd.exists()
     loads = _valid_load_drafts(company_dir)
     refs = _reference_candidates(company_dir)
-    if not (brkd_ok or loads or refs):
+    info_guides = _ka_info_guides(company_dir)
+    ka_markdowns = _ka_markdown_files(company_dir)
+    if not (brkd_ok or loads or ka_markdowns):
         raise WebkaGateError(
-            "没有 BRKD 产物 Agent业务讨论.md、没有已完成 LOAD 产物、也没有 root reference 候选"
-            "（如 Alphapai 核心假设参考.md）。/ka 不能凭空生成。\n"
-            "建议先跑 /brkd、补完 /load，或放入 Alphapai-load reference 后再回来。"
+            "没有 BRKD 产物 Agent业务讨论.md、没有已完成 LOAD 产物、也没有 KA 目录 markdown。"
+            "/ka 不能凭空生成。\n"
+            "建议先跑 /brkd、补完 /load，或把要给 /ka 看的 markdown 放入 KA 目录后再回来。"
         )
     return {
         "officials": officials,
         "brkd": brkd if brkd_ok else None,
         "loads": loads,
         "refs": refs,
+        "info_guides": info_guides,
+        "ka_markdowns": ka_markdowns,
     }
 
 
@@ -225,6 +278,11 @@ def _build_must_read(
         _append_section(parts, f"reference 候选·{ref.name}", str(ref), _read_text(ref, "reference"))
     report.append(("reference 候选", f"OK {len(refs)} 份" if refs else "SKIP 无"))
 
+    info_guides = gates.get("info_guides") or []
+    for guide in info_guides:
+        _append_section(parts, f"KA 目录信息指引·{guide.name}", str(guide), _read_text(guide, "KA 信息指引"))
+    report.append(("KA 目录信息指引", f"OK {len(info_guides)} 份" if info_guides else "SKIP 无"))
+
     # 5. 旧正式稿（重建对照，仅 --rebuild 时）
     officials = gates.get("officials") or []
     if officials:
@@ -284,6 +342,8 @@ def _build_readme(
         skeleton.append("LOAD✅")
     if gates.get("refs"):
         skeleton.append("reference✅")
+    if gates.get("info_guides"):
+        skeleton.append("KA信息指引✅")
     skeleton_str = " / ".join(skeleton) or "无（不应到达此处）"
     rebuild = bool(gates.get("officials"))
 
@@ -300,7 +360,7 @@ def _build_readme(
 ## 读取顺序
 
 1. 本 readme（先看完）。
-2. `必读和素材.md` **全读**：4 份规则（核心纪律 A / 核心假设源语言 B / knobs 块契约 / 核心假设编辑器 runbook）+ 同权重判断材料（公司判断 + 重要文件 + 最高权重材料）+ BRKD/LOAD/reference/旧稿 + `defaults.yaml`。
+2. `必读和素材.md` **全读**：4 份规则（核心纪律 A / 核心假设源语言 B / knobs 块契约 / 核心假设编辑器 runbook）+ 同权重判断材料（公司判断 + 重要文件 + 最高权重材料）+ BRKD/LOAD/KA目录markdown/旧稿 + `defaults.yaml`。
 3. `不必要读强制碰到再速查.md` **碰到才查**：`core_metrics_overview` 与 `OfficialBreakdowns`，仅在裁决某行拿不准时翻。
 
 裁决流程在 `必读和素材.md` 里的「核心假设编辑器 runbook」§1-§10：锁时间轴四数 → 开场 overview → 接缝总账 → 骨架门 → 数值门 → 年报查证 → 防静默 → 收口。每段「先押判断 → 等用户拍板 → 拍板才落盘」，按语义区块停，不连写。

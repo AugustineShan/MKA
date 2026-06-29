@@ -574,7 +574,7 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
                 <span>给 Codex 的使用指南</span>
                 <h2>现在可以直接用 MKA 路由下任务。</h2>
                 <p>
-                  新线程先贴一次工作协议；之后直接说 /init、/ka、/comp 这类任务。Codex 会自己读取本地启动器、动态 runbook 和门禁。
+                  新线程先贴一次工作协议；之后直接说 /init、/ka、/comp 这类任务。Codex 会先尊重人工筛选入口；已入场材料有价值但未入模时，进收纳区/stash。
                 </p>
               </div>
               {starterPrompt ? (
@@ -652,7 +652,7 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
                 <div>
                   <strong>斜杠词是 MKA 的任务路由，Codex 负责从本地协议恢复执行状态。</strong>
                   <p>
-                    所以你可以直接下令；它每次执行前都要读取 <code>D:\MKA\Codex.md</code>、对应 <code>.claude/skills</code> 和最新版动态 runbook。
+                    所以你可以直接下令；它每次执行前都要读取 <code>D:\MKA\Codex.md</code>、对应 <code>.claude/skills</code> 和最新版动态 runbook。规则边界不清楚时，先看 <code>D:\MKA\docs\MKA规则导航图.md</code>。
                   </p>
                 </div>
                 <code>D:\MKA\Codex.md</code>

@@ -4,7 +4,9 @@
 
 本文件是 library/include，不是可独立调用的 operation skill。不要把它当成 `/核心假设源语言` 命令执行。
 
-纪律见 `skills/核心纪律_skill_v1.md`。本文件只管“写成什么形状”。
+标准块头、候选稿清单、official `reference 裁决回执`、受控词表与 B 类去向的精简语法见 `docs/核心假设源语言语法规范.md`；本文件保留 B 系列 runbook 和边界纪律，不重复展开。
+
+纪律见 `skills/核心纪律_skill_v1.md`。本文件只管“写成什么形状”。若分不清规则归属，先看 `docs/MKA规则导航图.md`。
 
 ## B0. 源语言定位
 

@@ -35,12 +35,15 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
    - **副拆分毛利率/同比自动提取**：跑 `py scripts/dump_secondary_metrics.py "companies\{公司}_{代码}"`，它从 /init 产物 `Agent\OfficialBreakdowns\business_revenue_breakdown.csv` 直接提取各 dimension（地区/渠道/产品/行业）的收入+毛利率+同比成 yaml 片段（毛利率/同比直接拿，不算）。编译 stash 副拆分块时，把脚本输出里与 .md 收纳区副拆分块同 dimension 的 毛利率/同比 series 注入对应块（保留 .md 的 note/caveat，只补 毛利率/同比 子块）；与主拆分 leaf 重叠的 dimension（如"按产品"=主拆分）不进 stash。无 breakdown CSV 的公司该项缺，前端自动不渲染，不报错。详见 `yaml1compiler_v5.md` §6.2。
    - 读取后先做时间轴预判：`meta.horizon` 永远取核心假设/knobs 块里的**显式预测期年轴**，不是完整 DCF 年轴；完整 forecast 年轴由 `terminal.explicit_end == meta.horizon[-1]` 与 `terminal.fade.to_year` 交给 cleaner 展开。不要为确认这个惯例去读取旧 yaml1 产物。
    - 若源文写了衰减期里某个非收入增速路径要到具体目标值（如 `income.gpm` 从 31.1% 到 32.0%、某个绝对值项到 -40M），使用 `terminal.fade.path_targets`；只有明确维持不变的路径才进 `hold_paths`。
-6. **按加载到的 compiler skill 执行编译与审计**，生成 yaml1，输出到 `companies\{公司}\Agent\yaml1_公司名_YYYYMMDD.yaml`（日期 = 本次编译日 `YYYYMMDD`），并执行 `yaml1compiler` §9 的 compiler audit。
+   - 同时遵守 `D:\MKA\docs\核心假设翻译IR契约.md`。它是 Semantic IR 翻译账本契约，不算公司输入材料，不改变“六份输入材料”的口径。
+   - 若分不清 B 类去向、BS/CF 例外、命令边界或该读哪份契约，查 `D:\MKA\docs\MKA规则导航图.md`。它是索引，不算公司输入材料，不改变“六份输入材料”的口径。
+6. **按加载到的 compiler skill 执行编译与审计**：先按 Semantic IR 盘点 `源文块识别 -> IR 分类 -> yaml1 落点 -> audit 六段`，再生成 yaml1，输出到 `companies\{公司}\Agent\yaml1_公司名_YYYYMMDD.yaml`（日期 = 本次编译日 `YYYYMMDD`），并执行 `yaml1compiler` §9 的 compiler audit。
 7. **自动跑 DCF**：只有 compiler audit 判定 `audit_clean` 后，才允许调 `src.forecast` 跑正式 DCF。详见下方「第七步：自动 DCF」。
 
 ## 重要纪律
 
 - **与 A/B 的关系**:compiler 翻译 `核心假设.md`(用 `核心假设源语言_skill`(B) 的形状写成)到 yaml1;不写 `核心假设.md`,故不加载 A(写作纪律),但需理解 B(形状)才能忠实翻译。
+- **Semantic IR 不是新产物**：IR 是翻译账本和审计模型，不落成强制 JSON，不成为第三份可编辑事实源。`核心假设.md` 仍是 canonical，yaml1 仍是派生缓存。
 - **年份门禁是选定正式稿后的第一件事**：只要 `clean_annual` 已有 2025 实际、核心假设仍从 2025 开始预测，就不能继续 `/comp`；这不是 compiler 错误，而是应该走 `/annual-update`。
 - **`/comp` 只吃正式稿**：参考稿、草稿、`/load` 沙箱稿和 `model-extracted` 稿都不能静默成为正式 forecast 的源文。
 - **compiler audit 是 official forecast 门禁**：覆盖双射、B 类完整性、`unaligned`/路径待核、语义待核、主动覆盖回读都清干净，才叫 `audit_clean`；否则 yaml1 只能作为 reference/draft 产物保存，不跑 official forecast。

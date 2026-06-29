@@ -15,6 +15,7 @@ def test_alphapai_business_split_prompt_is_factpack_not_forecast():
 
     assert "模式：`alphapai-business-split`" in text
     assert "状态：`factpack/reference`" in text
+    assert "docs/核心假设源语言语法规范.md" in text
     assert "只抓历史事实、口径桥和缺口" in text
     assert "## 待 /ka 裁决清单" in text
     assert "只列口径、缺口、可信度和下一步取证/裁决事项" in text
@@ -32,7 +33,8 @@ def test_alphapai_business_split_prompt_locks_user_main_split():
     assert "不得把主拆分改成官方披露口径" in text
     assert "官方口径作为副拆分或 sanity check" in text
     assert "行轴必须使用用户指定主拆分" in text
-    assert "最近 5 年 × 3 条线就应尝试 15 行" in text
+    assert "最近 5 年 × 3 条线就优先尝试 15 行" in text
+    assert "不为了补表扩大到无关材料" in text
 
 
 def test_alphapai_business_split_prompt_supports_targeted_leaf_fetch_mode():

@@ -218,10 +218,10 @@ export const workspaceDropzones: WorkspaceDropzone[] = [
   {
     path: "Skills素材包/KA（ALPHAPAI拆出来的东西放在这里）/",
     skill: "/ka",
-    title: "brkd/load/alphapai 参考稿区",
-    body: "/brkd、/load、Alphapai 产出的核心假设参考稿统一落这里，命名 核心假设参考{来源}_{YYYYMMDD}.md。/ka 到这里找参考稿，根目录只剩 official 核心假设.md。Alphapai 参考稿由你手动放入。",
-    output: "核心假设参考{brkd|load|alphapai}_{YYYYMMDD}.md",
-    badge: "参考稿区",
+    title: "/ka 人工入口",
+    body: "丢进这里的顶层 markdown 都会给 /ka 读。核心假设参考{来源}_{YYYYMMDD}.md 按候选稿裁决；其他 markdown 按信息指引读，不要求伪装成参考稿。",
+    output: "*.md（参考稿或信息指引）",
+    badge: "KA入口",
   },
   {
     path: "Skills素材包/BRKD业务理解器（研报和纪要放在这里）/",
@@ -437,11 +437,11 @@ export const quickstartRoutes: QuickstartRoute[] = [
 export const codexGuideFlow: { title: string; body: string }[] = [
   {
     title: "1. 可以直接下令",
-    body: "现在可以直接说 /init 新乳业、/ka 重建 新乳业、/comp 002946。Codex 会把斜杠词当成 MKA 的任务路由，而不是 shell 命令。",
+    body: "现在可以直接说 /init 新乳业、/ka 百润股份、/comp 002946。Codex 必须先判斜杠路由，再选择任何外部技能；即使公司名或股票代码像证券问题，也要把斜杠词当成 MKA 的任务路由，而不是 shell、行情查询或股票分析。",
   },
   {
     title: "2. 它自己加载协议",
-    body: "执行具体任务时，Codex 会先读 Codex.md 和技能简要分类，再读 .claude/skills 启动器；复杂任务继续读 D:\\MKA\\skills 里的最新版 runbook。",
+    body: "执行具体任务时，Codex 会先读 Codex.md 和技能简要分类，再读 .claude/skills 启动器；先尊重人工筛选入口，不主动扩大材料面，但已入场材料有价值未入模要进收纳区。规则边界不清楚时先读 MKA规则导航图。",
   },
   {
     title: "3. 你只检查交付",
@@ -454,7 +454,7 @@ export const codexGuidePrompts: { label: string; command: string; when: string; 
     label: "新线程设定",
     command: "工作协议",
     when: "新开 Codex 线程时先贴一次；后面可以直接下任务。",
-    prompt: "请按 MKA skill 协议工作：先读取 D:\\MKA\\Codex.md 和 D:\\MKA\\docs\\技能简要分类.md。以后我说 /init、/brkd、/load、/ka、/comp、/adj、/annual-update、/da、/frontend-edit 时，把它们当成 MKA 任务路由标签，不是 shell 命令。执行具体任务时必须再读对应 D:\\MKA\\.claude\\skills\\{skill}\\SKILL.md；如果启动器要求动态 runbook，就读取 D:\\MKA\\skills\\ 中版本号最大的匹配文件。每次结束请汇报读了什么、写了什么、门禁结果、验证命令和产物路径。",
+    prompt: "请按 MKA skill 协议工作：STOP，先判斜杠路由，再选择任何外部技能。/ka 百润股份、/ka 002568、/comp 002946、/init 新乳业 一律是 MKA 任务路由；即使公司名或股票代码像证券问题，也不是行情查询、不是交易建议、不是通用 A 股分析、不是 shell；只有我明确说查行情/股价/涨停/分时/盘面/资金时，才调用股票行情分析能力。先读取 D:\\MKA\\Codex.md 和 D:\\MKA\\docs\\技能简要分类.md。人工筛选是第一门禁：markdown 存储区和 cache 默认不是证据入口；只有人工放入同权重判断材料、BRKD/LOAD/Alphapai 完成产物、KA 目录顶层 markdown 或 /init 事实索引的内容，才进入本轮裁决。入口窄，收纳宽：已进入本轮的材料里，有复盘价值但暂不入模的信息宁可进收纳区/stash，不得因为减负乱扔。若分不清候选晋升、B 类去向、BS/CF 例外或 /ka、/adj、/annual-update 边界，先读 D:\\MKA\\docs\\MKA规则导航图.md；它只是契约索引，不替代具体 skill。以后我说 /init、/brkd、/load、/ka、/comp、/adj、/annual-update、/da、/frontend-edit 时，把它们当成 MKA 任务路由标签。执行具体任务时必须再读对应 D:\\MKA\\.claude\\skills\\{skill}\\SKILL.md；如果启动器要求动态 runbook，就读取 D:\\MKA\\skills\\ 中版本号最大的匹配文件。每次结束请汇报读了什么、写了什么、门禁结果、验证命令和产物路径。",
   },
   {
     label: "新公司或刷新数据",
@@ -478,19 +478,19 @@ export const codexGuidePrompts: { label: string; command: string; when: string; 
     label: "只有研报纪要",
     command: "/brkd",
     when: "研报、纪要或年报材料已放进 BRKD 素材包。",
-    prompt: "公司【公司名】要跑 /brkd。请按 MKA skill 协议执行：先读 D:\\MKA\\Codex.md 和 D:\\MKA\\docs\\技能简要分类.md，再读 D:\\MKA\\.claude\\skills\\brkd\\SKILL.md，并加载 D:\\MKA\\skills\\业务预理解器_skill_v*.md 最新版。先执行 brkd_prepare，把 Skills素材包\\BRKD业务理解器（研报和纪要放在这里）里的文件幂等转成 markdown 存储区。然后只读 markdown 和 manifest，结合 /init 历史事实生成 Agent业务讨论.md。不要写正式 核心假设.md，不写 yaml1，不跑 DCF。完成后告诉我 markdown 存储区、Agent业务讨论.md 路径和待 /ka 拍板清单。",
+    prompt: "公司【公司名】要跑 /brkd。请按 MKA skill 协议执行：先读 D:\\MKA\\Codex.md 和 D:\\MKA\\docs\\技能简要分类.md，再读 D:\\MKA\\.claude\\skills\\brkd\\SKILL.md，并加载 D:\\MKA\\skills\\业务预理解器_skill_v*.md 最新版。先执行 brkd_prepare，把 Skills素材包\\BRKD业务理解器（研报和纪要放在这里）里人工放入本轮的文件幂等转成 markdown 存储区。然后只读本次 BRKD 素材包 markdown 和 manifest，不主动扩读其他 cache；结合 /init 历史事实生成 Agent业务讨论.md。不要写正式 核心假设.md，不写 yaml1，不跑 DCF。完成后告诉我 markdown 存储区、Agent业务讨论.md 路径和待 /ka 拍板清单。",
   },
   {
     label: "确认正式假设",
     command: "/ka",
     when: "已有 LOAD 产物或 Agent业务讨论.md，要生成正式核心假设。",
-    prompt: "公司【公司名】要跑 /ka。请按 MKA skill 协议执行：先读 D:\\MKA\\Codex.md 和 D:\\MKA\\docs\\技能简要分类.md，再读 D:\\MKA\\.claude\\skills\\ka\\SKILL.md，并加载最新版 核心纪律、核心假设源语言、knobs 块契约、核心假设编辑器 runbook。先检查根目录是否已有 official 核心假设；若已有且我没有明确说重建，就停止并建议 /adj 或 /annual-update。再检查三类启动门槛：已完成 LOAD、Agent业务讨论.md、KA 参考稿区 reference，三者全无就停。通过后读取同权重判断材料、BRKD、LOAD/reference、/init 事实，先对齐时间边界和骨架门，再裁收入、毛利、费用、below-OP、税、中期和 terminal。落盘前按铁律归档旧稿，写今日正式 核心假设.md；不写 yaml1，不跑 DCF。",
+    prompt: "公司【公司名】要跑 /ka。请按 MKA skill 协议执行：先读 D:\\MKA\\Codex.md 和 D:\\MKA\\docs\\技能简要分类.md，若分不清候选晋升或 BS/CF 例外先读 D:\\MKA\\docs\\MKA规则导航图.md；再读 D:\\MKA\\.claude\\skills\\ka\\SKILL.md，并加载最新版 核心纪律、核心假设源语言、knobs 块契约、核心假设编辑器 runbook。先检查根目录是否已有 official 核心假设；若已有且我没有明确说重建，就停止并建议 /adj 或 /annual-update。再检查三类启动门槛：已完成 LOAD、Agent业务讨论.md、KA 目录顶层 markdown，三者全无就停。通过后只读取人工筛选入口：同权重判断材料、BRKD 完成产物、KA 目录顶层全部 markdown、/init 事实和旧 official 对照；KA 目录里 核心假设参考*.md 按候选稿裁决，其他 markdown 按信息指引读。不要主动扩读 WEBCLAUDE、Agent/Load 沙箱副本或临时 markdown cache。入口窄但收纳要宽：已入场材料里有复盘价值但不入模的信息进收纳区/stash，不得乱扔。先对齐时间边界和骨架门，再裁收入、毛利、费用、below-OP、税、中期和 terminal。落盘前按铁律归档旧稿，写今日正式 核心假设.md；不写 yaml1，不跑 DCF。",
   },
   {
     label: "生成三表 DCF",
     command: "/comp",
     when: "已经有正式 核心假设.md。",
-    prompt: "公司【公司名】要跑 /comp。请按 MKA skill 协议执行：先读 D:\\MKA\\Codex.md 和 D:\\MKA\\docs\\技能简要分类.md，再读 D:\\MKA\\.claude\\skills\\comp\\SKILL.md。先选择公司根目录 latest official 核心假设，排除参考稿和子目录稿；再跑 assumption_staleness 年份门禁，若 clean 实际年覆盖预测起点就停止并提示 /annual-update。门禁通过后加载 D:\\MKA\\skills\\yaml1compiler_v*.md 最新版，读取 defaults.yaml、数据格式参考、yaml1算法模板契约、knobs块契约、yaml1前端展示契约，忠实编译 Agent\\yaml1_*.yaml。compiler audit clean 后运行 py -m src.forecast --yaml1 <刚写出的 yaml1>。完成后告诉我 yaml1 路径、forecast 路径、每股价值、warnings 数量和 audit/DCF 结果。",
+    prompt: "公司【公司名】要跑 /comp。请按 MKA skill 协议执行：先读 D:\\MKA\\Codex.md 和 D:\\MKA\\docs\\技能简要分类.md，若分不清 B 类保全、BS/CF 例外或该读哪份契约先读 D:\\MKA\\docs\\MKA规则导航图.md；再读 D:\\MKA\\.claude\\skills\\comp\\SKILL.md。先选择公司根目录 latest official 核心假设，排除参考稿和子目录稿；再跑 assumption_staleness 年份门禁，若 clean 实际年覆盖预测起点就停止并提示 /annual-update。门禁通过后加载 D:\\MKA\\skills\\yaml1compiler_v*.md 最新版，读取 defaults.yaml、数据格式参考、yaml1算法模板契约、knobs块契约、yaml1前端展示契约，忠实编译 Agent\\yaml1_*.yaml。compiler audit clean 后运行 py -m src.forecast --yaml1 <刚写出的 yaml1>。完成后告诉我 yaml1 路径、forecast 路径、每股价值、warnings 数量和 audit/DCF 结果。",
   },
   {
     label: "前端试算回写",
@@ -538,6 +538,14 @@ export const codexGuideRules: { title: string; body: string }[] = [
   {
     title: "公司和模式要明确",
     body: "公司名、代码、quick/incremental、是否重建这些信息要写清楚。路径不确定时，让 Codex 先列 companies 候选再选。",
+  },
+  {
+    title: "规则迷路看导航图",
+    body: "候选晋升、B 类去向、BS/CF 例外、/ka 和 /adj 边界不清楚时，让 Codex 先读 D:\\MKA\\docs\\MKA规则导航图.md，再回到具体 skill。",
+  },
+  {
+    title: "先尊重人工筛选",
+    body: "markdown 存储区和 cache 默认不是证据入口；让 Codex 只读本轮人工筛选入口，不主动扩大材料面。已入场材料有价值但不入模时，进收纳区/stash。",
   },
   {
     title: "门禁不过就停",
@@ -723,15 +731,15 @@ export const skillPrinciples: SkillPrinciple[] = [
       "解析公司目录；若根目录已有正式核心假设且用户未明确重建，停止并提示改走 /adj 或 /annual-update。",
       "先加载共享核心纪律、核心假设源语言和最新版 核心假设编辑器 skill。",
       "运行 src.ka_prepare，把 公司判断和最新观点.md、重要文件/ 与 Skills素材包/最高权重材料-放Agent最应对齐的材料 幂等 markdown 化。",
-      "读取 Agent业务讨论.md，并扫描 KA 参考稿区 核心假设参考load_*.md 中已经完成的 LOAD 产物（brkd/alphapai 参考稿同处 核心假设参考*.md）。",
-      "执行启动门槛：已完成 LOAD 产物、Agent业务讨论.md 或 KA 参考稿区 reference 候选至少有一个；三者都没有则停止并建议先 /load 或 /brkd。",
+      "读取 Agent业务讨论.md，并扫描 KA 目录顶层全部 *.md：核心假设参考*.md 按候选稿，其他 markdown 按信息指引。",
+      "执行启动门槛：已完成 LOAD 产物、Agent业务讨论.md 或 KA 目录任一 markdown 至少有一个；三者都没有则停止并建议先 /load、/brkd 或把信息指引放入 KA 目录。",
       "读取 /init 核心指标速览或 clean_annual，再读取最新年报 Markdown。",
       "独立锁定历史末年、显式期、衰减期、永续增长点，解释官方 history_end 与 LOAD vintage 边界的差异。",
       "先做接缝总账和骨架门，再按收入、毛利、费用、below-OP 与税、中期/terminal 进入数值门。",
       "写盘前做收口核对；聊透写正式 核心假设.md，有悬项只写参考稿并标明不可直接 /comp。",
     ],
     stops: [
-      "无已完成 LOAD、无 Agent业务讨论.md 且无 KA 参考稿区 reference 时不启动。",
+      "无已完成 LOAD、无 Agent业务讨论.md 且无 KA 目录 markdown 时不启动。",
       "不产 yaml1，不算 DCF，不直接改 clean 数据。",
       "不做局部 modify；小改走 /adj quick，增量材料走 /adj incremental，年报滚动走 /annual-update。",
       "派生预测不手算；旋钮必须精确、逐年、可机读，并同步 knobs 块。",
@@ -785,13 +793,13 @@ export const skillPrinciples: SkillPrinciple[] = [
     name: "/webka",
     role: "把 /ka 裁决所需的规则与材料打包成 3 份合并 Markdown 给网页版模型。",
     principle: "它是 /ka 的网页搬运箱。本地先跑 ka_prepare markdown 化同权重判断材料，强制 /ka §2/§6b 门禁，再把规则与材料预合并成 readme first.md / 必读和素材.md / 不必要读强制碰到再速查.md 三份，落到 WEBCLAUDE/webka(Claude帮你统摄核心假设）/。",
-    why: "/ka 裁决要同时持有 4 份规则 + 同权重判断材料 + BRKD/LOAD/reference/旧稿 + defaults.yaml + /init 速查事实，网页端长上下文更适合承载这段会话；散文件无法上传，故合并成 3 份 md。",
+    why: "/ka 裁决要同时持有 4 份规则 + 同权重判断材料 + BRKD/LOAD + KA 目录 markdown/旧稿 + defaults.yaml + /init 速查事实，网页端长上下文更适合承载这段会话；散文件无法上传，故合并成 3 份 md。",
     orchestration: [
       "运行 py -m src.webka 公司 [--rebuild]。",
       "内部先调用 src.ka_prepare 把同权重判断材料 markdown 化。",
-      "强制 §2 门禁（根目录有正式稿且未 --rebuild 则停）与 §6b 门禁（BRKD/LOAD/reference 三者全无则停）。",
+      "强制 §2 门禁（根目录有正式稿且未 --rebuild 则停）与 §6b 门禁（BRKD/LOAD/KA 目录 markdown 三者全无则停）。",
       "清空重建 WEBCLAUDE/webka(Claude帮你统摄核心假设）/。",
-      "合并 必读和素材.md（4 份规则 + 同权重判断材料 + BRKD/LOAD/reference/旧稿 + defaults.yaml）。",
+      "合并 必读和素材.md（4 份规则 + 同权重判断材料 + BRKD/LOAD + KA 目录 markdown/旧稿 + defaults.yaml）。",
       "合并 不必要读强制碰到再速查.md（core_metrics_overview + OfficialBreakdowns）。",
       "写 readme first.md 入口（任务/读取顺序/输出契约/带回本地步骤）。",
     ],
@@ -961,7 +969,7 @@ export const skills: SkillCard[] = [
     reads: [
       "公司判断和最新观点.md、重要文件/ 与 Skills素材包/最高权重材料-放Agent最应对齐的材料/markdown存储区。",
       "Agent业务讨论.md：由 /brkd 生成的业务层草稿。",
-      "Skills素材包/KA（ALPHAPAI拆出来的东西放在这里）/核心假设参考load_*.md：由 /load 生成的旧模型假设源文；brkd/alphapai 参考稿同处 核心假设参考*.md。",
+      "Skills素材包/KA（ALPHAPAI拆出来的东西放在这里）/ 顶层全部 *.md：核心假设参考load_*.md 是 /load 旧模型假设源文；brkd/alphapai 参考稿和普通信息指引同处此目录。",
       "Agent/core_metrics_overview.* 或 clean_annual，作为标准历史事实。",
       "最新年报 Markdown，只在裁决期按需查证，不通读升格。",
     ],
@@ -969,7 +977,7 @@ export const skills: SkillCard[] = [
       "公司根目录/{公司}-YYYYMMDD-核心假设.md，或没聊透时写核心假设参考.md。",
     ],
     next: "进入 /comp，把人话判断翻译成 yaml1 并跑 DCF。",
-    guardrails: ["无已完成 LOAD、无 Agent业务讨论.md 且无 KA 参考稿区 reference 时停止，提示先 /load 或 /brkd。", "不做旧稿 modify；小改走 /adj，年报滚动走 /annual-update。", "先押再问，关键旋钮拍板后再落盘。"],
+    guardrails: ["无已完成 LOAD、无 Agent业务讨论.md 且无 KA 目录 markdown 时停止，提示先 /load、/brkd 或放入信息指引。", "不做旧稿 modify；小改走 /adj，年报滚动走 /annual-update。", "先押再问，关键旋钮拍板后再落盘。"],
     mentalModel: "主导方向是拿 brkd/load/alphapai 产物和分析师裁决预测，同时忠实收集与预测有关的历史防丢数。这是分析师会议纪要，不是 YAML；按业务线组织，保全历史、识别旋钮、写清判断。",
     notFor: "不直接算 DCF，不生成 yaml1，不修 clean 数据，不做局部小改。",
   },
@@ -1022,7 +1030,7 @@ export const skills: SkillCard[] = [
     reads: [
       "4 份规则：核心纪律、核心假设源语言、knobs 块契约、核心假设编辑器 runbook。",
       "同权重判断材料（ka_prepare markdown 化）+ defaults.yaml。",
-      "KA 参考稿区 核心假设参考*.md（brkd/load/alphapai）+ Agent业务讨论.md + 旧正式稿（--rebuild 时）。",
+      "KA 目录顶层全部 *.md（核心假设参考*.md + 普通信息指引）+ Agent业务讨论.md + 旧正式稿（--rebuild 时）。",
       "core_metrics_overview.md + OfficialBreakdowns csv（合并进速查 md）。",
     ],
     writes: ["WEBCLAUDE/webka(Claude帮你统摄核心假设）/ 下 3 份 md：readme first.md / 必读和素材.md / 不必要读强制碰到再速查.md。"],

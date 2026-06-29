@@ -1,6 +1,6 @@
 ---
 name: brkd
-description: 启动 BRKD 业务理解器。第一步用 Python 幂等地把公司 Skills素材包/BRKD业务理解器（研报和纪要放在这里）里的源文件转换到 markdown存储区；第二步让 AI 只读 markdown 存储区，并结合 /init 标准财务事实与年报按需查证，生成贴近 /ka 和 /comp 源语言的 Agent业务讨论.md。纪律和格式对齐核心纪律 A 与核心假设源语言 B，功能不替 KA 拍板。
+description: 启动 BRKD 业务理解器。第一步用 Python 幂等地把公司 Skills素材包/BRKD业务理解器（研报和纪要放在这里）里人工放入本轮的源文件转换到 markdown存储区；第二步让 AI 只读本次 BRKD markdown 存储区，并结合 /init 标准财务事实与年报按需查证，生成贴近 /ka 和 /comp 源语言的 Agent业务讨论.md。纪律和格式对齐核心纪律 A 与核心假设源语言 B，功能不替 KA 拍板。
 argument-hint: [公司名或代码，如 新乳业 / 002946]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
@@ -11,7 +11,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 
 ```text
 Step 1 deterministic: 原始文件 -> markdown存储区
-Step 2 AI: markdown存储区 + /init + 年报按需查证 -> Agent业务讨论.md
+Step 2 AI: 本次 BRKD markdown存储区 + /init + 年报按需查证 -> Agent业务讨论.md
 ```
 
 本启动器只负责**启动机械**：解析目录 → 素材入口 → deterministic prepare → 加载 runbook → 拉起材料。**理解流程（范围边界、输入优先级、工作模式、输出语法、分段流程、本地纪律、memo 风格）在业务预理解器 runbook**（`业务预理解器_skill_v*.md`），不在本文件重复——读到那里照做。
@@ -96,7 +96,7 @@ D:\MKA\skills\业务预理解器_skill_v*.md
 
 ## 5. 判断 brkd 模式
 
-读取 `markdown存储区\` 里的 `.md` 文件和 manifest：
+只读取本次 BRKD 素材包生成的 `markdown存储区\` 里的 `.md` 文件和 manifest，不主动扩读其他 markdown cache：
 
 - 有成功转换或已有 markdown 材料 → 外部材料增强模式。
 - 源素材为空、markdown 存储区也无有效材料 → 年报 + 历史财务模式（不报错，产出更保守的稿）。

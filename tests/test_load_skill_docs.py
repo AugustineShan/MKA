@@ -43,6 +43,7 @@ def test_model_loader_v3_refs_shared_sources_and_extracts_excel_formula_layer():
 
     assert "核心纪律_skill_v*.md" in text
     assert "核心假设源语言_skill_v*.md" in text
+    assert "docs/核心假设源语言语法规范.md" in text
     assert "外部 Excel 模型 -> 核心假设源语言(load-vintage)" in text
     assert "-> /comp -> yaml1_load" not in text
     assert "不生成完整 `model_assumption_schema.json`" in text
@@ -59,7 +60,8 @@ def test_model_loader_v3_refs_shared_sources_and_extracts_excel_formula_layer():
     assert "只对利润表和业务层盈利模型的重要线识别五件事" in text
     assert "若模型内已经有业务拆分历史或副拆分，必须按 load-vintage 保真搬运" in text
     assert "收入、销量/件数、ASP/价格、单位、口径、source range" in text
-    assert "`/load` 不像 BRKD/Alphapai 那样外部补齐 2-3 种副拆分" in text
+    assert "`/load` 不像 BRKD/Alphapai 那样外部补齐副拆分" in text
+    assert "模型外材料不补、后验材料不补" in text
     assert "模型内业务拆分历史" in text
     assert "不要打开 DCF 表抽 WACC、股本、FCFF 终值、DA、CAPEX、CWC" in text
     assert "显式 thesis 才由 /ka 人工覆盖或 /da 处理" in text

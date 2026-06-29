@@ -17,6 +17,23 @@ def test_ka_launcher_loads_shared_sources_and_editor_before_materials():
     assert text.index("## 3. 加载核心假设编辑器 skill") < text.index("## 4. 读取最高权重材料")
     assert "核心纪律_skill_v*.md" in text
     assert "核心假设源语言_skill_v*.md" in text
+    assert "docs\\MKA规则导航图.md" in text
+    assert "不作为裁决证据" in text
+    assert "## 3b. 人工筛选门" in text
+    assert "看见 markdown 不等于必须吸收" in text
+    assert "其他材料只有在用户明确说“这份材料进入本轮判断”时才可读取" in text
+    assert "KA 目录顶层全部 markdown" in text
+    assert "顶层 `*.md` 就是明确给 `/ka` 看的人工筛选材料" in text
+    assert "其他 markdown 按信息指引读取" in text
+    assert "## 6b. 读取 KA 目录 markdown 并执行门禁" in text
+    assert r"KA（ALPHAPAI拆出来的东西放在这里）\*.md" in text
+    assert "reference 候选：文件名以 `核心假设参考` 开头" in text
+    assert "信息指引：KA 目录中其他顶层 markdown" in text
+    assert "至少具备 BRKD 产物、已完成 LOAD 产物或 KA 目录任一顶层 markdown 之一" in text
+    assert "人工筛选门只管入口，不削弱收纳区" in text
+    assert "未入模但有复盘价值的信息进入收纳区/stash" in text
+    assert "docs/核心假设源语言语法规范.md" in text
+    assert "reference 裁决回执" in text
     assert "主导方向" in text
     assert "py -m src.ka_prepare" in text
     assert "最高权重材料-放Agent最应对齐的材料" in text
@@ -24,10 +41,9 @@ def test_ka_launcher_loads_shared_sources_and_editor_before_materials():
     assert "公司判断和最新观点.md" in text
     assert "重要文件" in text
     assert "凡读公司判断" in text
-    assert "至少具备 BRKD 产物、已完成 LOAD 产物或 KA 参考稿区 reference 候选之一" in text
+    assert "当前没有已完成 LOAD 产物、没有 BRKD 产物 Agent业务讨论.md，也没有可读 KA 目录 markdown" in text
     assert "Agent业务讨论.md" in text
     assert "核心假设参考load_*.md" in text
-    assert r"KA（ALPHAPAI拆出来的东西放在这里）\核心假设参考*.md" in text
     assert "核心假设参考brkd_*.md" in text
     assert "模式: alphapai-load" in text
     assert "Agent\\Load\\` 沙箱副本" in text
@@ -98,6 +114,8 @@ def test_core_assumption_editor_is_slim_comp_source_editor():
 
     assert "核心纪律_skill_v*.md" in text
     assert "核心假设源语言_skill_v*.md" in text
+    assert "docs/MKA规则导航图.md" in text
+    assert "只用于分流和找真源" in text
     assert "原始 Excel 模型阅读，交给 `/load`" in text
     assert "原始研报/纪要/PDF/Word 阅读，交给 `/brkd`" in text
     assert "`model_assumption_schema.json`" in text
@@ -114,10 +132,19 @@ def test_core_assumption_editor_is_slim_comp_source_editor():
     assert "聊天为人读，落盘稿为机器读" in text
     assert "最高权重材料 + BRKD/LOAD" in text
     assert "`重要文件/` 与公司判断同等权重" in text
-    assert "和分析师裁决预测，同时忠实收集与这些预测有关的历史" in text
-    assert "KA 参考稿区 `核心假设参考load_*.md`" in text
+    assert "和分析师裁决预测，同时保全已被人工筛选进入本轮的关键历史" in text
+    assert "未进入人工筛选入口的材料不主动扩读" in text
+    assert "KA 目录顶层全部 `*.md`" in text
+    assert "KA 目录任一顶层 markdown" in text
+    assert "其他顶层 `*.md`：信息指引" in text
+    assert "信息指引 markdown 的文件数和主要线索" in text
+    assert "入口窄不等于收纳窄" in text
+    assert "未入模但有复盘价值的信息进入收纳区/stash" in text
+    assert "markdown 存储区、`WEBCLAUDE` 包、`Agent/Load` 沙箱副本" in text
+    assert "KA 目录 `核心假设参考load_*.md`" in text
     assert "`## 待 /ka 裁决清单` 是晋升前议程" in text
     assert "reference 晋升事项逐条处理完毕" in text
+    assert "reference 裁决回执" in text
     assert "采纳：转成 official 正文判断" in text
     assert "load-vintage" in text
     assert "```knobs" in text
@@ -147,6 +174,7 @@ def test_core_assumption_editor_carries_local_ka_decision_guards():
     assert "可用的 `/init` 快速查询索引" in text
     assert "## 4. 接缝总账" in text
     assert "旧稿有价值的历史、stash、风险提示不能静默丢掉" in text
+    assert "出现时优先写入收纳区，确无复盘价值才写丢弃原因" in text
     assert "## 5. 骨架门" in text
     assert "毛利是分线派生还是整体手拍" in text
     assert "## 6. 数值门" in text
