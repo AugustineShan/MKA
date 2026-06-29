@@ -21,11 +21,16 @@ from docx.oxml.ns import qn
 # 节标题（全行合并格的文本）：命中则该行保留，下一行视为内容行清空
 SECTION_HEADERS = {"研究结论", "盈利预测(年度)", "投资要点", "正文部分"}
 
+# 内容行写「见附件」的节标题（投资要点/正文部分另附文档，不内嵌报告）
+SEE_APPENDIX_SECTIONS = {"投资要点", "正文部分"}
+SEE_APPENDIX_TEXT = "见附件"
+
 # 表头字段行里要保留的标签格文本（其余非空格视为「值」清空）
 LABELS = {
     "报告标题", "股票代码", "股票评级", "上次评级", "预期收益率(%)",
     "当前股价", "当前市值(亿元)", "目标价", "年初以来涨跌幅(%)",
     "研究员", "报告类型", "报告日期", "年初以来相对行业涨跌幅(%)",
+    "是否重大推荐",
 }
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -52,6 +57,30 @@ def _clear_cell_text(cell):
             r.text = ""
 
 
+def _set_cell_text_keep_style(cell, text: str) -> None:
+    """清到单段后写入 text，保留段落/rPr 样式基底（多空段落单元格也收敛为单段）。"""
+    # 采样首个 run 的字体样式（若有）作基底
+    name = size = None
+    bold = None
+    for p in cell.paragraphs:
+        for r in p.runs:
+            name = r.font.name
+            size = r.font.size.pt if r.font.size else None
+            bold = r.bold
+            if name:
+                break
+        if name:
+            break
+    # 移除多余段落，仅保留首段
+    paras = cell.paragraphs
+    for p in paras[1:]:
+        p._element.getparent().remove(p._element)
+    p0 = paras[0]
+    for r in list(p0.runs):
+        r._element.getparent().remove(r._element)
+    p0.add_run(text)
+
+
 def _remove_nested_tables(cell):
     """移除单元格内嵌套的子表（如盈利预测区里的预填表），仅清内容行。"""
     tc = cell._tc
@@ -65,21 +94,24 @@ def blankify(src: Path, out: Path) -> None:
         raise SystemExit(f"模板里没找到表格：{src}")
     table = doc.tables[0]
 
-    prev_was_section = False
+    prev_section = None  # 上一行命中的节标题文本，None 表示上一行非节标题
     for row in table.rows:
         cells = _unique_cells(row)
         first_text = cells[0].text.strip() if cells else ""
 
         if first_text in SECTION_HEADERS:
-            prev_was_section = True
+            prev_section = first_text
             continue
 
-        if prev_was_section:
-            # 内容行（研究结论正文 / 盈利预测区 / 投资要点 / 正文）：清空文本保样式 + 移除嵌套子表
+        if prev_section is not None:
+            # 内容行（研究结论正文 / 盈利预测区 / 投资要点 / 正文）
             for c in cells:
                 _remove_nested_tables(c)
-                _clear_cell_text(c)
-            prev_was_section = False
+                if prev_section in SEE_APPENDIX_SECTIONS:
+                    _set_cell_text_keep_style(c, SEE_APPENDIX_TEXT)
+                else:
+                    _clear_cell_text(c)
+            prev_section = None
             continue
 
         # 表头字段行：清空「非标签、非空」的值格
@@ -87,7 +119,7 @@ def blankify(src: Path, out: Path) -> None:
             t = c.text.strip()
             if t and t not in LABELS:
                 _clear_cell_text(c)
-        prev_was_section = False
+        prev_section = None
 
     out.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(out))

@@ -31,7 +31,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
-from src.app_config import get_companies_dir, rating_report_year_config
+from src.app_config import get_companies_dir, get_researcher_name, rating_report_year_config
 from src.company_paths import rating_reports_dir
 
 DEFAULT_TEMPLATE = (
@@ -46,6 +46,7 @@ DEFAULT_TEMPLATE = (
 SECTION_HEADER_RESEARCH = "研究结论"
 SECTION_HEADER_FORECAST = "盈利预测(年度)"
 LABEL_REPORT_TITLE = "报告标题"
+LABEL_RESEARCHER = "研究员"
 CAPTION = "单位：百万元；倍数除外"
 TABLE_FONT = "微软雅黑"
 TABLE_SIZE = 9.0
@@ -203,9 +204,14 @@ def _unique_cells(row):
 
 def _find_title_value_cell(table):
     """找「报告标题」标签行，返回其值格（该行第二个唯一单元格）。"""
+    return _find_label_value_cell(table, LABEL_REPORT_TITLE)
+
+
+def _find_label_value_cell(table, label: str):
+    """找首个单元格为 label 的标签行，返回其值格（该行第二个唯一单元格）。"""
     for row in table.rows:
         cells = _unique_cells(row)
-        if cells and cells[0].text.strip() == LABEL_REPORT_TITLE:
+        if cells and cells[0].text.strip() == label:
             if len(cells) >= 2:
                 return cells[1]
     return None
@@ -353,6 +359,12 @@ def build_rating_report_docx(
     if title_cell is None:
         raise SystemExit("模板未找到「报告标题」标签行——模板不兼容")
     inject_title(title_cell, title)
+
+    researcher = get_researcher_name()
+    if researcher:
+        researcher_cell = _find_label_value_cell(table, LABEL_RESEARCHER)
+        if researcher_cell is not None:
+            inject_title(researcher_cell, researcher)
 
     research_cell = _find_section_content_cell(table, SECTION_HEADER_RESEARCH)
     if research_cell is None:
