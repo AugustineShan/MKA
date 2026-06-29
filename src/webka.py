@@ -3,7 +3,7 @@
 输出目录: companies/{公司}/WEBCLAUDE/webka(Claude帮你统摄核心假设）/
   - readme first.md                  入口：任务/读取顺序/输出契约/不能跑脚本
   - 必读和素材.md                     合并：4 份规则 + 同权重判断材料 + BRKD/LOAD/KA目录markdown/旧稿 + defaults.yaml
-  - 不必要读强制碰到再速查.md          合并：core_metrics_overview + OfficialBreakdowns（按需才查）
+  - 速查参考.md          合并：core_metrics_overview + OfficialBreakdowns（按需才查）
 
 网页端 Claude 跑不了脚本、读不了本地文件系统，所以：
 1. 本地先跑 src.ka_prepare，把同权重判断材料 markdown 化（网页端读不了 raw PDF/Word）。
@@ -47,7 +47,7 @@ DOCS_DIR = BASE_DIR / "docs"
 WEBKA_SUBDIR = "webka(Claude帮你统摄核心假设）"
 README_NAME = "readme first.md"
 MUST_READ_NAME = "必读和素材.md"
-LOOKUP_NAME = "不必要读强制碰到再速查.md"
+LOOKUP_NAME = "速查参考.md"
 
 # 根目录 *核心假设*.md 里，这些后缀属于 load/brkd/alphapai/参考 候选，不算正式稿
 NON_OFFICIAL_TAGS = ("_核心假设_load", "_核心假设_brkd", "_核心假设_alphapai", "核心假设参考")
@@ -112,6 +112,9 @@ def _valid_load_drafts(company_dir: Path) -> list[Path]:
         if "待模型装载器补全" in text:
             continue
         if "```knobs" not in text:
+            continue
+        # 抬头须声明 load 身份（与 /ka §6 一致；webka 门禁是 ka §6 子集，此处补抬头校验）
+        if not any(m in text for m in ("模式: load", "状态: model-extracted", "load-vintage")):
             continue
         out.append(path)
     return out
@@ -297,7 +300,7 @@ def _build_must_read(
 
 def _build_lookup(company_dir: Path, report: list[tuple[str, str]]) -> str:
     parts = [
-        "# 不必要读强制碰到再速查（/ka 网页端合并包）\n\n"
+        "# 速查参考（/ka 网页端合并包）\n\n"
         "本文件是 derived 事实快查，**只在裁决某行拿不准时才翻**，不要通读。\n"
         "未含：financial_expense.yaml（/ka 默认不裁决财费，如需附注构成本地补跑后手动贴）、"
         "年报正文（如需附注 excerpt 手动贴）、data.db（web 无法查 SQLite）。"
@@ -354,14 +357,14 @@ def _build_readme(
 ## 你能做什么、不能做什么
 
 - **不能跑脚本、不能读写本地文件系统**。裁决所需的规则与材料已经预合并到本包两份 md 里。
-- 本包共 3 份 md：本 readme、`必读和素材.md`、`不必要读强制碰到再速查.md`。
+- 本包共 3 份 md：本 readme、`必读和素材.md`、`速查参考.md`。
 - `data.db` 没打包（web 无法查 SQLite）；`financial_expense.yaml` 没打包（/ka 默认不裁决财费）；年报正文没打包（太大，如需附注 excerpt 请用户手动贴）。
 
 ## 读取顺序
 
 1. 本 readme（先看完）。
 2. `必读和素材.md` **全读**：4 份规则（核心纪律 A / 核心假设源语言 B / knobs 块契约 / 核心假设编辑器 runbook）+ 同权重判断材料（公司判断 + 重要文件 + 最高权重材料）+ BRKD/LOAD/KA目录markdown/旧稿 + `defaults.yaml`。
-3. `不必要读强制碰到再速查.md` **碰到才查**：`core_metrics_overview` 与 `OfficialBreakdowns`，仅在裁决某行拿不准时翻。
+3. `速查参考.md` **碰到才查**：`core_metrics_overview` 与 `OfficialBreakdowns`，仅在裁决某行拿不准时翻。
 
 裁决流程在 `必读和素材.md` 里的「核心假设编辑器 runbook」§1-§10：锁时间轴四数 → 开场 overview → 接缝总账 → 骨架门 → 数值门 → 年报查证 → 防静默 → 收口。每段「先押判断 → 等用户拍板 → 拍板才落盘」，按语义区块停，不连写。
 
@@ -393,7 +396,7 @@ py -m src.forecast --ticker {ticker_full}          # 再跑 /comp + DCF
 ## 本包大小
 
 - `必读和素材.md`：{sizes.get('必读和素材.md', 0):,} 字节
-- `不必要读强制碰到再速查.md`：{sizes.get('不必要读强制碰到再速查.md', 0):,} 字节
+- `速查参考.md`：{sizes.get('速查参考.md', 0):,} 字节
 """
 
 

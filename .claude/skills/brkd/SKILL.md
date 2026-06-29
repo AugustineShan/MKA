@@ -86,7 +86,7 @@ markdown存储区\brkd_prepare_manifest.json
 
 ## 4. 先加载业务预理解器 skill
 
-prepare 成功后，扫描并读取最新版本：
+prepare 成功后，扫描并读取最新版本（按 `vN` 的 N 做整数比较取最大，不是字符串排序）：
 
 ```text
 D:\MKA\skills\业务预理解器_skill_v*.md

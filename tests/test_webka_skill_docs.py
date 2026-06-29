@@ -34,7 +34,7 @@ def test_webka_skill_doc_structure():
     # 三份 md
     assert "readme first.md" in text
     assert "必读和素材.md" in text
-    assert "不必要读强制碰到再速查.md" in text
+    assert "速查参考.md" in text
     # 输出目录
     assert "webka(Claude帮你统摄核心假设）" in text
     # 打包 4 份规则
@@ -58,7 +58,7 @@ def test_webka_module_constants_and_imports():
     assert webka.WEBKA_SUBDIR == "webka(Claude帮你统摄核心假设）"
     assert webka.README_NAME == "readme first.md"
     assert webka.MUST_READ_NAME == "必读和素材.md"
-    assert webka.LOOKUP_NAME == "不必要读强制碰到再速查.md"
+    assert webka.LOOKUP_NAME == "速查参考.md"
     # 非正式稿后缀剔除集
     assert "_核心假设_load" in webka.NON_OFFICIAL_TAGS
     assert "核心假设参考" in webka.NON_OFFICIAL_TAGS

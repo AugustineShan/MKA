@@ -42,11 +42,11 @@ companies\{公司}\WEBCLAUDE\模型装载部分\
 
 ## 打包清单
 
-网页端包必须保持极简，只包含：
+网页端包只包含（单文件合并 + allowed_materials 目录）：
 
 - `00_LOAD网页端合并执行包.md`
 - `allowed_materials/`
-- `webload_manifest.json`
+- `webload_manifest.json`（供本地 `--load-id` 复用与审计，网页端不读 json）
 
 `00_LOAD网页端合并执行包.md` 必须内嵌：
 
@@ -64,7 +64,6 @@ companies\{公司}\WEBCLAUDE\模型装载部分\
 - `data_cutoff.db`：留在本地 load 沙箱，不再供 `/load` 编译/DCF（`/load` 已止于 markdown）。
 - `load_manifest.json`：留在本地 load 沙箱；必要信息已经写入 `webload_manifest.json` 和合并执行包。
 - `defaults.yaml`：留在本地 load 沙箱，留作后续流程备用，`/load` 本身不消费。
-- 单独的 `01_核心纪律`、`02_核心假设源语言`、`03_load启动器`、`04/05_model_boundary`、`06_forbidden_materials`、`07_核心假设脚手架`、`08_模型装载器` 阅读件。
 - `forbidden_materials.md` 中列出的材料正文。
 - 公司根目录旧正式核心假设。
 - 正式 `Agent/forecast/`。
@@ -85,7 +84,7 @@ companies\{公司}\WEBCLAUDE\模型装载部分\
 - 每段聊天里只给结论、紧凑表格和待拍板点；完整 `/comp` 源语言、历史原子、source range 和 `knobs` 块写进 `核心假设参考load_{YYYYMMDD}.md`。
 - 输出必须是 `/comp` 源语言的 `核心假设参考load_{YYYYMMDD}.md`，末尾带 `knobs` 机器自报清单代码块。
 
-网页端生成的 `核心假设参考load_{YYYYMMDD}.md` 放回 load manifest 中的 `core_assumption_path`，并同步一份完全相同的副本到 KA 参考稿区 `root_core_assumption_path`。`/webload` 与 `/load` 一样止于此 markdown，不编译 `yaml1_load`、不跑 DCF；若要变成当前正式 forecast，另走 `/ka` → `/comp`。
+网页端生成的 `核心假设参考load_{YYYYMMDD}.md` 路径与同步纪律（沙箱 `core_assumption_path` ↔ KA 参考稿区 `root_core_assumption_path`，两份一字不差）的单一真源是模型装载器 runbook §1/§5/§7，本启动器不重抄。`/webload` 与 `/load` 一样止于此 markdown，不编译 `yaml1_load`、不跑 DCF；若要变成当前正式 forecast，另走 `/ka` → `/comp`。
 
 ## CLI
 

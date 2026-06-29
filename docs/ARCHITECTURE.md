@@ -231,8 +231,8 @@ python -m src.webload 688775.SH --overwrite
 1. 解析公司目录。
 2. **正式假设选择门**：只在公司根目录非递归选 `状态: official` 的当前核心假设；排除参考稿、草稿、`Agent/Load/` 沙箱稿和任意子目录产物。
 3. **先跑年份门禁**：用选中的正式稿执行 `src.assumption_staleness`；若 clean 实际年覆盖预测起点或 defaults 基期落后，立即停并提示 `/annual-update`。
-4. **动态加载最新版 `yaml1compiler` skill**：扫描 `D:\MKA\skills\`，匹配 `yaml1compiler_v*.md`，取版本号最大。
-5. 再读取六份输入材料：
+4. **动态加载最新版 `yaml1compiler` skill**：扫描 `D:\MKA\skills\`，匹配 `yaml1compiler_v*.md`，取版本号最大（按 `vN` 整数比较）。
+5. 再读取输入材料：
    - 第二步选中的根目录 `状态: official` 核心假设（语义层：判断、历史、旋钮、时间轴、覆盖项）
    - `companies/{公司}/Agent/defaults.yaml`（目标命名空间）
    - `docs/数据格式参考.md`（中文科目 ↔ TuShare 字段字典）

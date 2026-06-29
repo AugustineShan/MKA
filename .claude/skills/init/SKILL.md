@@ -1,12 +1,12 @@
 ﻿---
 name: init
-description: 一键拉取并校验某 A 股公司的财务数据。当用户说 "init 美的集团"、"init 000333"、"init 600519.SH"、"初始化某公司数据"、"拉一下某公司财报" 时使用。自动编排 TuShare 取数 → 年报下载 → 配平校验 → 年报补全重跑 → 年度核心指标速览，并输出数据拉取报告。
+description: 一键拉取并校验某 A 股公司的财务数据。当用户说 "init 美的集团"、"init 000333"、"init 600519.SH"、"初始化某公司数据"、"拉一下某公司财报" 时使用。自动编排 TuShare 取数 → 年报下载 → 配平校验 → 年报补全重跑 → 核心指标速览，并输出数据拉取报告。
 ---
 
 # init — 一键拉取并校验 A 股财务数据
 
 把一个公司（名称 / 裸代码 / 完整 ticker）跑完 MKA 全流程：
-取数 → 年报下载 → 清洗配平校验 →（必要时）年报确认补全后重跑 → 生成年度核心指标速览。
+取数 → 年报下载 → 清洗配平校验 →（必要时）年报确认补全后重跑 → 生成核心指标速览。
 确定性编排由 `init.py` 完成；你（Agent）只负责输入解析兜底、读退出码、如实汇报。
 
 汇报风格：像数据到位情况会，不像终端日志转发。成功时先说数据更新到哪一年、哪些校验通过、哪些科目用年报补全、哪些下游文件可用；失败时先说卡在哪个检查、影响什么、下一步怎么处理。不要把长日志原样贴给用户。
@@ -45,7 +45,7 @@ python -m src.init <用户输入>
 **幂等**：脚本默认增量——当日已拉取则跳过取数，已存在的年报 PDF/MD 跳过下载，
 年报补数只在重跑时应用。所以反复 `init` 同一公司是安全且廉价的，用于日常更新数据。
 
-clean 年度表成功后，`init.py` 会覆盖生成给后续 Agent/LLM 读的年度事实速览：
+clean 年度表成功后，`init.py` 会覆盖生成给后续 Agent/LLM 读的事实速览：
 
 ```text
 companies/{公司}/Agent/core_metrics_overview.md
@@ -53,11 +53,13 @@ companies/{公司}/Agent/core_metrics_overview.json
 companies/{公司}/Agent/core_metrics_overview.csv
 ```
 
-它只读 `clean_annual`，不读 forecast/yaml/defaults，不调用 LLM，不写生成时间；同一份 `clean_annual` 重跑应保持字节稳定。`--mode quarterly` 不更新这份年度速览。
+它只读 `clean_annual` 和最近 `clean_quarterly`，不读 forecast/yaml/defaults，不调用 LLM，不写生成时间；同一份 clean 表重跑应保持字节稳定。`.md` 展示年度核心链路和最近 10 个季度核心证据，季度同比按同季度上一年计算。`--mode quarterly` 不更新这份速览。
 
 clean 通过后，`init.py` 还会生成 `Agent/defaults.yaml` 机器平推底座。报告里的 `[6/6] defaults.yaml` 会显示 `base_period` 和 `review_flags` 数量；若 `review_flags>0`，只转述前几项 flag（如 `latest_outlier: balance_sheet.dividend_payout`、`one_off_candidate: income.cost_abs.*`、`financial_expense_evidence_failed: income.financial_expense`），并说明它们是不阻塞 init 的机器审计标识，会在 `/ka` 被读取和裁决。
 
 ### 第 2 步：按退出码决定下一步
+
+> 完整退出码速查见 `docs/退出码与对齐契约.md`；本表只列 init 特有的按退出码后续动作。
 
 | 退出码 | 含义 | 你要做的 |
 |--------|------|----------|

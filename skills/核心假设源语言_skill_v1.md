@@ -167,7 +167,7 @@ family 硬规则（`/ka` 写稿时守）：
 
 - **不得自创族名**：只能用上面列出的 family；模板装不下的跨期/DAG/分段/中间变量复用，走 §B5 受限 formula，不发明新 family。
 - **margin 互斥（二选一）**：毛利要么整体手拍（`income.gpm` knob），要么分线派生（每条 revenue leaf 都挂 `leaf margin`）。两者不可同篇混用；分线派生时**所有** revenue leaf 都必须挂 margin，部分有部分无 = 写稿失败。这是 `/ka` 骨架门"毛利是分线派生还是整体手拍"的硬约束。
-- **leaf margin 的 knobs 回声**：分线毛利率在末尾 `knobs` 块的回声见 `docs/knobs块契约.md` §7（`leaf_margin` 当前是 Gate C 已知缺口，official block 暂不写独立条目，否则被判 block 多写）。
+- **leaf margin 的 knobs 回声**：分线毛利率在末尾 `knobs` 块**不写独立条目**（`leaf_margin` 是 Gate C 已知缺口，写独立条目会被判 block 多写）。这是 A6"正文与 knobs 同源回声"的**显式例外**：分线毛利率的回声通过该 leaf 的收入旋钮 + 正文毛利率行体现，不进 knobs 块不算违反 A6。详见 `docs/knobs块契约.md` §7。
 - **family 仅是 .md 块头声明**：`/ka` 在块头写 `compiler: <family>` 即可，不写 unit_factor、fold_direction、factors[] 结构——那些是 `/comp` 翻译成 yaml1 时的事。cleaner 折叠机制、unit_factor 换算、family→前端行可编辑性等 yaml1 侧细节见 `docs/yaml1算法模板契约.md`（`/comp` 读，`/ka` 不需加载）。
 
 ## B5. 受限 formula

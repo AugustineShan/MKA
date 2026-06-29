@@ -55,7 +55,7 @@ D:\MKA\docs\knobs块契约.md
    - 骨架(几条线、各什么族、毛利参数化、财务费用拆法、口径调整清单)。
 3. **读同权重定调**:先运行 `py -m src.ka_prepare "{公司}"`,再读取最高权重 `markdown存储区/` 与 manifest。`companies\{公司}\公司判断和最新观点.md` 是分析师手写的 thesis,`companies\{公司}\重要文件\` 下材料与其同等权重（常放最重要、最新的会议纪要）,共同作为第4步重定未来的判断锚点。凡读公司判断,必须等权重读 `重要文件\`。**若定调材料日期明显旧于 H**(如定调是 2024.3、H 已到 2024),在进第4步前提醒分析师"定调旧了,这轮真实数据与 thesis 偏离点在 X,thesis 要不要先调"——thesis 调整是分析师的脑力活,本 skill 不替他做、不覆写这些文件,只提示。manifest 中 `unsupported/error` 必须进入缺口区。
 4. **建总账**:把旧稿里所有有历史序列的行列成清单(收入各线、毛利、各费用、below-OP 各项、税率、少数股东、派生观测行、收纳区副拆分、knobs 块、抬头四数、terminal.fade.target_growth)。后面逐项认领、划掉;收口时未划掉项 = 错或旗。
-5. **识别按需扩展字段**:扫旧稿,凡有历史序列、但 fetcher 默认 24 条未覆盖的行(典型 BS 科目:营运资本/资本开支/存货/应收应付/有息负债;行业特有指标),记下它们的 TuShare 字段名(映射查 `src/field_registry.yaml`,见下「按需扩展」)。把这些字段名收集起来,第3步传给 fetcher。
+5. **识别按需扩展字段**:扫旧稿识别 fetcher 默认 24 条未覆盖的历史序列行,记下字段名供第3步 `--extra-fields` 使用。识别与映射的完整方法见下方「按需扩展」专节(单一真源,此处不重述)。
 
 没旧稿 → 报"无核心假设.md,这是 init 不是更新,请走 /ka",停。
 
@@ -98,9 +98,9 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> \
 
 **先读偏离诊断 md**:第3步产出的 `companies/{公司}/Agent/Logs/annual_update_deviation_{YYYYMMDD}_{A}.md`(真实 vs 旧稿 knobs 预测对比)。它是第4步的起点——分析师扫表看哪些旋钮偏离大、thesis 兑现度,据此决定重拨范围。
 
-**动态加载最新版 skill**:`skills\年度更新器_skill_v*.md` 中版本号最大的那一份(同 /comp 加载 compiler skill 的模式),Read 它,按其第2-5步执行:
+**动态加载最新版 skill**:`skills\年度更新器_skill_v*.md` 中版本号最大的那一份(按 `vN` 整数比较取最大,不是字符串排序;同 /comp 加载 compiler skill 的模式),Read 它,按其第2-5步执行:
 
-- **第2步「标准线填历史」(自动)**:用第3步的 JSON `lines` 把 (H, A] 实际值 append 进旧稿各段:
+- **第2步「标准线填历史」(skill 内自动)**:用第3步的 JSON `lines` 把 (H, A] 实际值 append 进旧稿各段:
   - 费用率/税率/比率类是 ratio(0.1556)→ 写进 .md 转百分比显示(15.56%)。
   - 绝对值原样搬,符号不翻(clean_annual 已是"对利润正负贡献"口径)。
   - fetcher 默认 24 条 + `--extra-fields` 的按需行,全覆盖。抬头时间轴四数 +N 平移;knobs 块 horizon 前移 N、values 前移(末年留空交第4步)。
@@ -147,6 +147,7 @@ fetcher 默认 24 条覆盖**所有公司都有的 IS 通用标准线**:revenue_
 
 - **旧稿只读,绝不覆写**。永远另存带日期新稿(旧稿是复盘基准 + 后悔药)。
 - **不在脏数据上滚**:init exit 3 未闭合 → 停,不进 fetcher、不滚旧稿。
+- **staleness 收敛判据**:第2步 defaults 重建后,收口跑 `/comp` 时子进程 `assumption_staleness` 应返回 0(fresh)。若仍被 stale(exit 2)拦下,说明 H→A 滚轴未覆盖预测起点——检查显式期/衰减期是否也要重定,不要反复重跑 `/comp`。
 - **绝不静默捏造**:拿不到的实际值只有两条合法出路——声明式估算(标"估算·待校准")或精确待补旗。禁止编数伪装实际、为配平倒算残差、改任何已知真实历史原子。
 - **第4步起人机交互**:估算/重定是"先押再问、拍板才落盘",不能一口气跑完。这是 annual-update 和 init(全自动)的根本区别。押判断必须是复盘会 memo:先讲真实偏离、建议重拨、风险和待校准项，再问确认；不要用机器日志或完整 JSON 代替判断。
 - **raw_tushare 永不被修改**;fetcher 只读 clean_annual,不写库。
@@ -155,6 +156,8 @@ fetcher 默认 24 条覆盖**所有公司都有的 IS 通用标准线**:revenue_
 - 汇报用事实,不用营销词;估出来的要标"待校准"。
 
 ## 退出码 / 守门
+
+> 完整退出码见 `docs/退出码与对齐契约.md`；本表只列年度更新编排特有的阶段失败处理。注意 `assumption_staleness` 的 exit 2（stale）与 `annual_update_fetcher` 的 exit 2（gap）同号不同义，不要混淆。
 
 | 阶段 | 失败 | 动作 |
 |---|---|---|

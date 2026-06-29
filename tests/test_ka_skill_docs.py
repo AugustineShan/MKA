@@ -29,7 +29,7 @@ def test_ka_launcher_loads_shared_sources_and_editor_before_materials():
     assert r"KA（ALPHAPAI拆出来的东西放在这里）\*.md" in text
     assert "reference 候选：文件名以 `核心假设参考` 开头" in text
     assert "信息指引：KA 目录中其他顶层 markdown" in text
-    assert "至少具备 BRKD 产物、已完成 LOAD 产物或 KA 目录任一顶层 markdown 之一" in text
+    assert "门禁档定义，`/webka` 须与之一致" in text
     assert "人工筛选门只管入口，不削弱收纳区" in text
     assert "未入模但有复盘价值的信息进入收纳区/stash" in text
     assert "docs/核心假设源语言语法规范.md" in text
@@ -52,8 +52,8 @@ def test_ka_launcher_loads_shared_sources_and_editor_before_materials():
     assert "## 待 /ka 裁决清单" in text
     assert "缺待 /ka 裁决清单" in text
     assert "采纳入 official / 收纳 / 缺口待补 / 丢弃并说明理由" in text
-    assert "不要再把旧 v19" in text
-    assert "当 `/ka` 主工作流" in text
+    assert "不要再把旧 v19" not in text
+    assert "当 `/ka` 主工作流" not in text
 
 
 def test_ka_launcher_removes_modify_and_routes_existing_official_draft():
@@ -116,9 +116,9 @@ def test_core_assumption_editor_is_slim_comp_source_editor():
     assert "核心假设源语言_skill_v*.md" in text
     assert "docs/MKA规则导航图.md" in text
     assert "只用于分流和找真源" in text
-    assert "原始 Excel 模型阅读，交给 `/load`" in text
-    assert "原始研报/纪要/PDF/Word 阅读，交给 `/brkd`" in text
-    assert "`model_assumption_schema.json`" in text
+    assert "原始 Excel 模型阅读 → `/load`" in text
+    assert "原始研报/纪要/PDF/Word 阅读 → `/brkd`" in text
+    assert "`model_assumption_schema.json`" not in text
     assert "`/comp`" in text
     assert "利润表 + 业务层盈利模型裁决器" in text
     assert "`financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in text
@@ -128,8 +128,8 @@ def test_core_assumption_editor_is_slim_comp_source_editor():
     assert "默认按接缝纪律标注“非本层范围”" in text
     assert "人工注入例外" in text
     assert "BS/营运资本/现金流人工覆盖" in text
-    assert "所有人机确认点都继承核心纪律 A4 的会议 memo 风格" in text
-    assert "聊天为人读，落盘稿为机器读" in text
+    assert "交互风格继承核心纪律 A4 的会议 memo 风格" in text
+    assert "不默认贴完整正式稿" in text
     assert "最高权重材料 + BRKD/LOAD" in text
     assert "`重要文件/` 与公司判断同等权重" in text
     assert "和分析师裁决预测，同时保全已被人工筛选进入本轮的关键历史" in text
@@ -167,6 +167,11 @@ def test_core_assumption_editor_carries_local_ka_decision_guards():
     assert "数值门聊天输出默认压缩成" in text
     assert "### /init 快速查询索引" in text
     assert "`Agent/core_metrics_overview.{md,json,csv}`" in text
+    assert "最近 10 个季度核心证据" in text
+    assert "历史年" in text
+    assert "年内证据" in text
+    assert "可按需查" in text
+    assert "不强制查库" in text
     assert "销售费用率、管理费用率、研发费用率" in text
     assert "`Agent/OfficialBreakdowns/business_revenue_breakdown.csv|jsonl`" in text
     assert "它只证明历史披露口径，不自动给预测" in text
@@ -181,14 +186,14 @@ def test_core_assumption_editor_carries_local_ka_decision_guards():
     assert "收入 -> 毛利/成本 -> 费用 -> below-OP、税、少数股东 -> 分红率强制检测 -> 可选 BS/营运资本/现金流人工覆盖 -> 中期/terminal" in text
     assert "不得主动新增 `financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in text
     assert "分红率必须单列去处" in text
-    assert "分红率强制检测不等于默认开启人工 BS/CF 覆盖闸" in text
+    assert "不等于默认开启人工 BS/CF 覆盖闸" in text
     assert "## 1.1 defaults 审计标识" in text
     assert "顶层 `review_flags`" in text
     assert "defaults 审计 memo" in text
-    assert "defaults 为 0、样本不足、latest_outlier、missing_as_zero" in text
+    assert "defaults 为 0 / 样本不足 / latest_outlier / missing_as_zero" in text
     assert "common_dividend_cash=max(c_pay_dist_dpcp_int_exp - fin_exp_int_exp - incl_dvd_profit_paid_sc_ms, 0)" in text
     assert "`family: bs_scalar_pct`、`sub: dividend_payout`、`unit: pct`" in text
-    assert "已确认不是 fallback 漏数" in text
+    assert "按 §6 分红率决策表执行" in text
     assert "balance_sheet.revenue_pct.*" in text
     assert "重资产排程、转固时滞或资产 cohort，优先转 `/da`" in text
     assert "年报是 X 光片，不是主材料" in text

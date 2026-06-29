@@ -53,7 +53,7 @@ def test_adj_editor_skill_keeps_quick_narrow_and_incremental_compiled():
     assert "三处同源" in text
     assert "md 赢" in text
     assert "禁止" in text
-    assert "terminal.fade.to_year" in text
+    assert "docs/旋钮白名单与结构判定.md" in text
     assert "terminal.fade.target_growth" in text
     assert "py -m src.ka_prepare" in text
     assert "py -m src.adj_prepare" in text

@@ -11,7 +11,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 
 **旋钮值小改不跑 compiler**：compiler 产物 = 旧 yaml1 + 该旋钮值变化，定点 patch yaml1 等价且保留格式/注释，无需全量重译。结构性变更（新增/删旋钮、改参数化、改 terminal 长度）不在本 skill 范围，走 /adj incremental + /comp。
 
-本 skill 是定点手术刀(不写核心假设.md 业务判断),不加载完整 A/B;仅适用 `核心纪律` A4(direct yaml1 patch 边界 + 三处同源 tie-break),纪律以此为准。direct yaml1 patch 的完整边界见 `skills/核心纪律_skill_v*.md`（版本号最大的那份，与其它启动器同约定，勿钉死 v1）A4：白名单不可加宽；`核心假设.md` 是 canonical，yaml1 是派生缓存；三处不同源时 md 赢，停止并回到 `/comp`，不得继续手 patch yaml1 去凑一致。
+本 skill 是定点手术刀(不写核心假设.md 业务判断),不加载完整 A/B;仅适用 `核心纪律` A4(direct yaml1 patch 边界 + 三处同源 tie-break),纪律以此为准。direct yaml1 patch 的完整边界见 `skills/核心纪律_skill_v*.md`（版本号最大的那份，按 `vN` 整数比较取最大；与其它启动器同约定，勿钉死 v1）A4：白名单不可加宽；`核心假设.md` 是 canonical，yaml1 是派生缓存；三处不同源时 md 赢，停止并回到 `/comp`，不得继续手 patch yaml1 去凑一致。
 
 ## 触发
 
@@ -107,9 +107,10 @@ yaml1 侧改 `terminal.perpetual_growth` 标量（小数，不×100）。
 | `below_op.{科目}.abs` | `#{科目}` | — | below_line_abs | abs_mn | 直接 |
 | `tax.rate` | `#有效税率` | — | tax_rate | pct | ×100 |
 | `minority.rate` | `#少数股东损益` | — | minor_rate | pct | ×100 |
+| `financial_expense.other_fin_exp_abs` | `#其他财务费用` | — | fin_exp_abs | abs_mn | 直接 |
 
 > `{线}` / `{科目}` 为业务线名 / below-OP 科目名，须与 knobs 块 anchor 一致。`below_op.{科目}` 覆盖：资产减值损失 / 信用减值损失 / 其他收益 / 投资净收益 / 公允价值变动净收益 / 资产处置收益 / 营业外收入 / 营业外支出。
-> 未覆盖 path → 报错停止，不猜。前端新增旋钮族须先在此表登记。
+> 未覆盖 path → 报错停止并提示在 `docs/旋钮白名单与结构判定.md` §一白名单登记，不猜、不静默 patch。前端新增旋钮族须先在该文档与本表登记（登记入口 = 该文档，未登记时报错停、不得降级硬 patch）。
 
 ## yaml1 旋钮定位规则（定点 patch yaml1 用，小数不转换）
 

@@ -26,7 +26,7 @@ D:\MKA\docs\MKA规则导航图.md               # 迷路时的契约索引；不
 D:\MKA\skills\核心纪律_skill_v*.md          # A1-A7 横切纪律
 D:\MKA\skills\核心假设源语言_skill_v*.md     # B 系列块语法 + §B4 family 词表与硬规则
 D:\MKA\docs\knobs块契约.md                   # 末尾 official knobs 块语法真源
-D:\MKA\skills\核心假设编辑器_skill_v*.md     # KA 裁决流程 runbook（§2-§10）
+D:\MKA\skills\核心假设编辑器_skill_v*.md     # KA 裁决流程 runbook（§2-§10）；取 vN 整数最大版
 ```
 
 `docs/MKA规则导航图.md` 只用于分流和找真源，不作为裁决证据。`/ka` 完整继承核心纪律 A1-A7；最终文件符合核心假设源语言 B，末尾 official `knobs` 块语法以 `docs/knobs块契约.md` 为准。标准块头、候选稿清单和 recommended `reference 裁决回执` 见 `docs/核心假设源语言语法规范.md`。每条业务线块头 `compiler: <family>` 必须落在源语言 §B4 可执行集合内，family 硬规则以 §B4 为准。交互风格继承核心纪律 A4，本启动器不复述。cleaner 折叠机制、unit_factor 换算等 yaml1 侧细节见 `docs/yaml1算法模板契约.md`（`/comp` 读，`/ka` 不需加载）。
@@ -59,7 +59,7 @@ Glob 检查 `companies\{公司}\核心假设*.md`，只认公司根目录。
 
 ## 3. 加载核心假设编辑器 skill
 
-扫描并读取最新版本：
+扫描并读取最新版本（按 `vN` 的 N 做整数比较取最大，不是字符串排序）：
 
 ```text
 D:\MKA\skills\核心假设编辑器_skill_v*.md
@@ -67,11 +67,9 @@ D:\MKA\skills\核心假设编辑器_skill_v*.md
 
 共享 A/B 是上位真源；编辑器 skill 补 KA 本地裁决流程（§2-§10）。**本启动器 §4-§6b 把材料拉起来后，进入编辑器 runbook 走裁决流程。**
 
-不要再把旧 v19（已归档至 `deprecatedlogs/04_核心假设生成修改器_skill_v19.md`）当 `/ka` 主工作流。旧 v19 的 Excel 阅读职责已迁给 `/load`，研报/纪要职责已迁给 `/brkd`，modify 职责已从 `/ka` 删除。
-
 ## 3b. 人工筛选门
 
-`/ka` 不主动扩大材料面。markdown 存储区、`WEBCLAUDE` 打包目录、`Agent\Load\` 沙箱副本、临时转换件和历史 cache 默认不是证据入口；看见 markdown 不等于必须吸收。
+`/ka` 不主动扩大材料面。判断材料入口的排除规则（markdown 存储区、`WEBCLAUDE` 打包目录、`Agent\Load\` 沙箱副本、临时转换件和历史 cache 默认不是判断材料；看见 markdown 不等于必须吸收）见编辑器 runbook §0 / 核心纪律 A0.1，本启动器不复述；下面只讲 KA 目录特有规则。
 
 本轮只读以下明确入口：同权重判断材料、`Agent业务讨论.md`、KA 目录顶层全部 markdown、已完成 LOAD 主产物、Alphapai reference/factpack、`/init` 事实索引和旧 official 对照。其他材料只有在用户明确说“这份材料进入本轮判断”时才可读取，并要在 overview 里说明它为何进入。
 
@@ -136,7 +134,7 @@ Alphapai reference 或信息指引中的 BS/CF/DCF 线索只进收纳区或 `/da
 
 新的 reference/draft/model-extracted/factpack 候选应包含 `## 待 /ka 裁决清单`。读取 reference 时先把这节当作晋升议程：每条事项必须在 `/ka` 裁决中落到“采纳入 official / 收纳 / 缺口待补 / 丢弃并说明理由”之一，不能只因候选稿里已有 knobs 就静默晋升。旧 reference 若缺这节，不硬停，但必须在 overview 中标记“缺待 /ka 裁决清单”，并从正文、收纳区、缺口和 knobs 自报里补一版议程后再裁决。
 
-`/ka` 不能凭空生成。继续前必须至少具备 BRKD 产物、已完成 LOAD 产物或 KA 目录任一顶层 markdown 之一。若三者都没有，停止：
+`/ka` 不能凭空生成。继续前必须至少具备以下三者之一（**门禁档定义，`/webka` 须与之一致**）：(1) **BRKD 档** = 公司根目录 `Agent业务讨论.md`；(2) **LOAD 档** = KA 目录已完成的 `核心假设参考load_*.md`（完成性判定见 §6）；(3) **KA 目录 markdown 档** = KA 目录任一顶层 markdown（含 `核心假设参考brkd_*.md`，归此档，不计 BRKD 档）。若三者都没有，停止：
 
 ```text
 当前没有已完成 LOAD 产物、没有 BRKD 产物 Agent业务讨论.md，也没有可读 KA 目录 markdown。/ka 不能凭空生成。建议先跑 /brkd、补完 /load，或把要给 /ka 看的 markdown 放入 KA 目录后再回来。

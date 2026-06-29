@@ -76,6 +76,8 @@ forbidden_materials.md
 
 这是 v19 的“锁时间轴”迁移到 `/load` 后的归口。若边界不清、`model_boundary.json` 有 conflict、或手读模型发现边界和 prepare 严重冲突，必须停止并报告。不要靠后来的年报补判断。
 
+prepare 锁定的四数是**机器初值**，AI 手读模型是对初值的**校验**——一致则确认；手读发现 prepare 误判可修正（重跑 prepare 或显式 override `model_boundary.json`），严重冲突则停止报告。"锁"不是禁止 AI 改，而是机器初值供 AI 校验。
+
 时间轴四数至少落在三处：本次交互第一次 overview 的第一项、产出文件抬头、进入“中期”段之前的二次核对。铁律：不默认、不平推、不等分析师自己说；先问、先确认、先写进底稿，再进下一道工序。
 
 ## 3. 只读 allowed_materials
@@ -148,7 +150,7 @@ sheet 读取习惯：
 - load-vintage 隔离：后验事实绝不写进模型预测。
 - `model_boundary.*` 是 vintage 时间轴唯一归口。
 - 同权重判断材料（公司判断和最新观点 + 重要文件）不得覆盖模型时间轴、预测起点或旋钮。
-- 权威顺序：模型公式层 > 模型内文字 > `allowed_materials` > 背景口径。
+- 权威顺序：见 §1（单一真源，此处不重述）。
 - forbidden_materials 沙箱不能破。
 - 主产物写 KA 参考稿区：`companies/{公司}/Skills素材包/KA（ALPHAPAI拆出来的东西放在这里）/核心假设参考load_{运行YYYYMMDD}.md`，供 `/ka` 读取。
 - 同步副本写 `Agent/Load/{load_id}/核心假设参考load_{运行YYYYMMDD}.md`，供 `/load` 续写/同步与审计留痕。

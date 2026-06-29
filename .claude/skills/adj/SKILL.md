@@ -33,10 +33,13 @@ D:\MKA\skills\核心假设源语言_skill_v*.md
 
 从 `$ARGUMENTS` 定位 `D:\MKA\companies\{公司}`。
 
-模式判断：
+模式判断（单一决策树，关键词仅作提示信号不作判据）：
 
-- 请求包含“增量”“读材料”“ADJ材料”“新信息”“边际信息” -> incremental。
-- 否则 -> quick。
+1. 请求能否**语义映射**到已有 knobs 的 `values[i]`（或 `terminal.perpetual_growth` 标量）？
+   - 能 + 不碰结构/horizon/fade → **quick**。
+   - 不能，或带了新业务理由/新材料/结构变化（“新开渠道”“竞争格局变了”“管理层目标变化”等）→ **incremental**。
+2. 关键词“增量/读材料/ADJ材料/新信息/边际信息”只是 incremental 的提示信号；命中不强制 incremental，不命中也不强制 quick——以第 1 步语义映射为准。
+3. 映射不到且无新业务理由 → 不猜，列出可拨 knobs，问是否调整最接近的 knob，或建议 incremental。
 
 ## 2. 共同前置读取
 
@@ -55,26 +58,17 @@ D:\MKA\skills\核心假设源语言_skill_v*.md
 
 quick 只能做已有 knobs 的数值小改。
 
-这张 quick 白名单不可加宽；任何新增 path、改结构、改 slug、改 family、改 horizon 或改 fade 的请求都转 `/adj incremental` 或 `/comp`。
+**quick 可拨旋钮白名单 + 禁止清单 + 结构判定的单一真源是 `docs/旋钮白名单与结构判定.md`**（§一白名单、§二禁止、§三结构判定表）。本启动器不重抄，只守其约束：白名单不可加宽；任何新增 path、改结构、改 slug、改 family、改 horizon 或 fade 的请求都转 `/adj incremental` 或 `/comp`；结构改动走 §三判定表，不用"参数化翻转/推翻裁决基础"等主观词。
 
-允许：
+quick 允许的动作：
 
-- 只拨动已经存在的 knobs 数值。
+- 只拨动已经存在的 knobs 数值（须落在白名单内）。
 - 修改 `核心假设.md` 正文预测行 + 末尾 `knobs` 块。
 - 定点 patch 最新 yaml1 中对应已有 path / values。
 - 跑 `py -m src.forecast --yaml1 "<今日yaml1>"`。
   - **(audit R6/H2a)** official forecast 现在会自动跑 yaml1 结构/路径保真闸门:若 quick patch 不慎越界(改了 family/结构/path、偏离 defaults 命名空间),Gate A/B 会 FAIL 并阻断 forecast(exit 4),逼你回 `/comp`——quick 不再能静默把结构性改动送进 DCF。确需临时放行设 `MKA_FIDELITY_GATE=warn`。
 
 `knobs` 块语法以 `docs/knobs块契约.md` 为准；quick 只改已有条目的 `values[i]`，不改块结构。
-
-禁止：
-
-- 新增/删除收入线、费用线、below-OP 项。
-- 改 compiler family。
-- 改显式期、衰减期长度、`terminal.fade.to_year` 或 `terminal.fade.target_growth`。
-- 整体毛利与分线毛利互相翻转。
-- 改历史事实、来源说明、业务线命名。
-- 改 yaml1 结构或发明 yaml1 path。
 
 若用户请求不是已有 knobs 数值调整，返回：
 
@@ -158,8 +152,7 @@ incremental 本地纪律：
 - 只读同权重判断材料、现有正式稿和 ADJ markdown，不通读其它材料。
 - 改动清单必须写：哪行、哪年、从 X 到 Y、为什么、哪来的。
 - 级联不静默：改原子时 headline/加总/knobs 同步过。
-- 参数化翻转等于局部 re-init：开骨架门，列连带清单。
-- 新信息推翻裁决基础时，弹回 `/ka 重建`，不硬补丁。
+- 结构改动按 `docs/旋钮白名单与结构判定.md` §三判定表处理：新增/删除线、改参数化族、改 horizon/fade → incremental 开骨架门、列连带清单；thesis 方向反转 → 弹回 `/ka 重建`，不硬补丁。
 - manifest 的 `unsupported/error` 必须进入缺口。
 
 ## 5. 汇报

@@ -85,7 +85,7 @@ companies\{公司}\Agent\Load\{load_id}\
 
 ## 4. 先加载模型装载器 skill，再读沙箱
 
-扫描并读取最新版本：
+扫描并读取最新版本（按 `vN` 的 N 做整数比较取最大，不是字符串排序）：
 
 ```text
 D:\MKA\skills\模型装载器_skill_v*.md
@@ -109,19 +109,7 @@ Agent\Load\{load_id}\allowed_materials\
 
 ## 6. 主产物与沙箱副本路径
 
-完成稿的**主产物写 KA 参考稿区**：
-
-```text
-companies\{公司}\Skills素材包\KA（ALPHAPAI拆出来的东西放在这里）\核心假设参考load_{运行YYYYMMDD}.md
-```
-
-供 `/ka` 到 KA 参考稿区读取。`核心假设参考load_` 前缀不可省略，防止被误认作 official 核心假设。写完主产物后，必须把同一内容同步到沙箱副本：
-
-```text
-companies\{公司}\Agent\Load\{load_id}\核心假设参考load_{运行YYYYMMDD}.md
-```
-
-沙箱副本供 `/load` 后续续写/同步与审计留痕；两份内容必须一字不差。overview 确认门、源语言写法、抬头/收入/毛利/费用/中期/收纳区/knobs 块的逐段写法见 runbook §6-§7。
+同步纪律（两份一字不差）、单写源方向的**单一真源是模型装载器 runbook §1/§5/§7**（`模型装载器_skill_v*.md`），本启动器不重抄同步纪律，只钉写落点：主产物写 KA 参考稿区 `companies\{公司}\Skills素材包\KA（ALPHAPAI拆出来的东西放在这里）\核心假设参考load_{运行YYYYMMDD}.md`（供 `/ka` 读取，前缀不可省略），同步副本写 `companies\{公司}\Agent\Load\{load_id}\核心假设参考load_{运行YYYYMMDD}.md`。脚手架在沙箱、AI 续写改沙箱、定稿后同步到 KA 参考稿区。overview 确认门、源语言写法、各段逐段写法见 runbook §6-§7。
 
 ## 7. CLI
 
@@ -130,6 +118,8 @@ companies\{公司}\Agent\Load\{load_id}\核心假设参考load_{运行YYYYMMDD}.
 /load 002946
 /load 002946.SZ
 ```
+
+> 注：底层 `src.model_load` 用 `prepare` 子命令（`py -m src.model_load prepare "{公司}" --overwrite`），与 `src.brkd_prepare`/`src.webload`/`src.ka_prepare` 等无子命令的 CLI 风格不同——model_load 是唯一带子命令的 prepare 模块；`/webload` 内部直接复用 `prepare_load` 函数、不走子命令。
 
 ## 8. 退出码
 

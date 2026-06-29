@@ -36,6 +36,20 @@ companies\{公司}\Skills素材包\最高权重材料-放Agent最应对齐的材
 
 **业务预理解参考(若存在)**:读 `companies\{公司}\Agent业务讨论.md`(由 `/brkd` 产出)。若存在,capex 商议第三点(扩张性 capex)时可用其产能/项目线索作起点,但 headline 须用年报/clean_annual 校验。
 
+## 轻资产判定（进入排程商议前必做）
+
+`/da` 是重资产外挂，轻资产公司用了只会把简单模型复杂化。进入第三动作前，先用历史财务事实做一次量化判定（判定主体是本启动器，不让执行者"凭感觉"）：
+
+1. 从 `Agent\data.db` 的 `clean_annual` 取近 3 年（缺则从 `Agent\defaults.yaml` 近似）：
+   - `capex/revenue` = `c_pay_acq_const_fiolta / revenue` 均值
+   - `固定资产/总资产` = `fix_assets / total_assets` 均值（fix_assets 取 resolve 后口径）
+2. 判定（**建议阈值，可被分析师推翻**）：
+   - `capex/revenue < 3%` **且** `固定资产/总资产 < 15%` → 提示"这家更像轻资产，defaults 的 `capex_pct`+`depr_rate` 可能已够用。确认仍要上 /da 吗？"
+3. 用户确认要上 → 继续第三动作。
+4. 用户放弃 → **不落盘 `da_schedule.yaml`**，提示"直接 `py -m src.forecast --ticker {代码}` 走轻资产默认路径即可"，停（exit 5）。
+
+判错补救：若商议阶段（第五动作）从 `da_facts_latest.json` 发现固定资产/总资产确实很小，允许中断并提示"建议改用轻资产路径"，不要硬跑完生成无意义的 schedule。
+
 ## 第三动作:判断 init / modify 模式
 
 Glob **非递归**检查 `companies\{公司}\Agent\da_schedule.yaml`:
@@ -47,7 +61,7 @@ Glob **非递归**检查 `companies\{公司}\Agent\da_schedule.yaml`:
 
 ## 第四动作:动态加载最新版 da 执行细则
 
-扫描 `D:\MKA\skills\`,找到匹配 `da_折旧摊销排程_skill_v*.md` 的文件中**版本号最大**的那一份。
+扫描 `D:\MKA\skills\`,找到匹配 `da_折旧摊销排程_skill_v*.md` 的文件中**版本号最大**的那一份（按文件名 `vN` 的 N 做整数比较取最大，不是字符串排序——避免 `v10 < v3` 的坑）。
 
 例如同时存在:
 
@@ -77,8 +91,7 @@ Glob **非递归**检查 `companies\{公司}\Agent\da_schedule.yaml`:
 ## 关键纪律(不可妥协)
 
 - **与 A/B 的关系**:本 skill 不写 `核心假设.md`(`核心纪律` A / `核心假设源语言` B 管 `核心假设.md` 写作,不直接适用);产物是 `da_schedule.yaml`,纪律见本执行细则 + `CLAUDE.md` 开发总原则 + 事实↔假设分离。
-- **先押再问拍板才落盘**:控制器先押(da_facts + 公司判断 → 推荐选型 + 预测值 + 理由 + 来源),再问用户"你认吗"。用户拍板每一项后才写 `Agent\da_schedule.yaml`。**禁止未经拍板就落盘**。
-- **排程讨论会口吻**:先给一页 memo:历史 capex/DA 基线、存量折旧、扩张 capex、转固时滞、终值 capex/DA、存量净增率 g 的建议。每项只问一个自然问题,如"这个 capex 排程你认吗?认了我写入 schedule,再看转固。"
+- **先押再问拍板才落盘 + 排程讨论会口吻**:见 `da_折旧摊销排程_skill_v*.md` §4.1-4.3（先押 da_facts+定调 → 推荐选型/预测值/理由/来源 → 逐项问"你认吗" → 拍板才写 `Agent\da_schedule.yaml`；讨论用一页 memo，不倾倒 YAML/JSON）。本启动器不重述。
 - **事实↔假设分离**:`da_facts.json`(事实,LLM 扒,只填表不推算,抽不到留 null 不补零)vs `da_schedule.yaml`(假设,商议后落盘)。两层不混。
 - **产物落 `companies\{公司}\Agent\da_schedule.yaml`**(用 `da_schedule_path`)。`enabled: true` 才被 `src.forecast` 消费；一旦 `enabled: true`，`da_roll` 失败、未执行或被忽略都必须阻断 official forecast，**不得自动回退轻资产路径**。只有 `enabled: false` 或文件缺失时，才允许使用轻资产默认路径。若分析师明确要临时忽略 DA，只能输出/运行 `reference·DA未生效`，不得覆盖正式 DCF。
 - **落盘后提示用户重跑** `py -m src.forecast --ticker {代码}`:`forecast.py` 的 `_maybe_roll_da_series` 会加载 da_schedule → `roll_da_series` 产 da_series → gpm→ex-dep 覆盖 → 注入 forecast_params → `calc.py` 重资产分支(BS 的 `fix_assets`/`cip` 从 da_series、CF/FCFF 的 capex/da 从 da_series)。`DaAlignError`(base_year ≠ defaults.base_period)硬抛；其他 `da_roll` 异常在 `enabled: true` 下同样阻断 official forecast，只能出 `reference·DA未生效`，不能 warning 后静默回退轻资产。
@@ -96,7 +109,11 @@ Glob **非递归**检查 `companies\{公司}\Agent\da_schedule.yaml`:
 
 ## 退出码
 
-- `0`:`Agent\da_schedule.yaml` 落盘成功(主产物已落盘,enabled 状态由商议结果决定)。
+完整退出码见 `docs/退出码与对齐契约.md`；此处只列 `/da` 启动器自身退出码。
+
+- `0`:`Agent\da_schedule.yaml` 落盘成功 **且 `enabled: true`**——重资产排程将被 `src.forecast` 消费。
+- `4`:落盘成功但 `enabled: false`（分析师选择不启用）——**不代表重资产 DCF 已生效**，forecast 仍走轻资产默认路径；需用户确认启用后再跑 forecast。
+- `5`:轻资产判定阶段用户放弃，未落盘 `da_schedule.yaml`——直接走轻资产默认路径即可。
 - `2`:输入无法解析为唯一公司目录。
 - `3`:缺少 `公司判断和最新观点.md` 或同权重定调材料准备失败。
 - `1`:执行细则流程异常或 IO 错误(da_schedule 未生成)。

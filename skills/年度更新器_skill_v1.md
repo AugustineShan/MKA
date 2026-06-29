@@ -154,7 +154,7 @@ py -m src.annual_update_fetcher --ticker <ticker> --history-end <H> --forecast-m
 
 若旧稿、真实值、thesis、偏离诊断或估算来源之间冲突，按 A2 与 B7 写“来源与裁决”：候选A、候选B、采用、为什么、未采用方去处。未采用方不能静默消失。
 
-结构性变化，例如新增/删除业务线、改变参数化族、改变 horizon/fade 长度，若超出年度滚轴，举旗转 `/adj incremental`，不静默吸收。
+结构改动按 `docs/旋钮白名单与结构判定.md` §三判定表处理：超出年度滚轴的（新增/删除业务线、改参数化族、改 horizon/fade 长度）举旗转 `/adj incremental`，thesis 方向反转转 `/ka` 重建，不静默吸收。
 
 ## 6. 第 5 步：收口
 

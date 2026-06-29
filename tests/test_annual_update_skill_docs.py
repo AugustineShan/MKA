@@ -44,7 +44,7 @@ def test_annual_update_editor_refs_shared_sources_and_local_specialization():
     assert "估算·待校准" in text
     assert "收入 -> 毛利/成本 -> 费用 -> below-OP 与税 -> 中期/terminal" in text
     assert "来源与裁决" in text
-    assert "结构性变化" in text
+    assert "结构改动" in text
     assert "转 `/adj incremental`" in text
     assert "滚后时间轴确认门" in text
     assert "terminal.fade.target_growth" in text
