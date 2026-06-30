@@ -70,9 +70,15 @@ def test_model_loader_v3_refs_shared_sources_and_extracts_excel_formula_layer():
     assert "时间轴四数至少落在三处" in text
     assert "不默认、不平推、不等分析师自己说" in text
     assert "像分析师开会，不像机器审表" in text
+    assert "展示优先用表格" in text
+    assert "把模型历史值和模型预测值放在同一张主表里" in text
+    assert "一次交互尽量只给一张表" in text
+    assert "把 source range、装载方式、风险/待确认点压进表格列" in text
+    assert "不要一段里拆成多张碎表" in text
     assert "不要在确认阶段整段倾倒完整 markdown" in text
     assert "### 聊天确认稿 vs 落盘稿" in text
     assert "会议 memo" in text
+    assert "| 线 | 模型历史实际 | 模型预测值 | source range | 我会怎么装 | 风险/待确认 |" in text
     assert "用户明确要看完整底稿时" in text
     assert "衰减期: YYYY / N年 / 模型未给" in text
     assert "永续增长: x% / 模型未给" in text

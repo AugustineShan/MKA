@@ -68,6 +68,9 @@ def test_knobs_contract_defines_manual_bs_cf_override_families():
     assert "`dividend_payout` 是 `/ka` 强制检测项" in text
     assert "`family: bs_scalar_pct`、`sub: dividend_payout`、`unit: pct`" in text
     assert "若只是明确沿用 defaults，只在正文说明，不写入 `knobs`" in text
+    assert "`other_fin_exp_abs` 与分红率不同" in text
+    assert "若明确沿用 defaults，也要写 `family: other_fin_exp_abs`" in text
+    assert "确保 yaml1 有 `income.financial_expense.other_fin_exp_abs` 可供前端编辑" in text
     assert "重资产排程优先 `/da`" in text
     assert "未被明示为核心 thesis 的 BS/CF/DCF 驱动因素" in text
     assert "`balance_sheet.dividend_payout` 是强制检测例外" in text

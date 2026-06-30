@@ -258,7 +258,12 @@ def _build_must_read(
 
     # 3. defaults.yaml（§1.1 必读审计对象）
     defaults = company_dir / "Agent" / "defaults.yaml"
-    _append_optional_file(parts, "defaults.yaml（§1.1 审计对象：base_period/关键参数/review_flags/分红率）", defaults, report)
+    _append_optional_file(
+        parts,
+        "defaults.yaml（§1.1 审计对象：base_period/关键参数/review_flags/分红率/other_fin_exp_abs）",
+        defaults,
+        report,
+    )
 
     # 4. 门禁材料（业务骨架来源）
     brkd = gates.get("brkd")
@@ -302,15 +307,25 @@ def _build_lookup(company_dir: Path, report: list[tuple[str, str]]) -> str:
     parts = [
         "# 速查参考（/ka 网页端合并包）\n\n"
         "本文件是 derived 事实快查，**只在裁决某行拿不准时才翻**，不要通读。\n"
-        "未含：financial_expense.yaml（/ka 默认不裁决财费，如需附注构成本地补跑后手动贴）、"
-        "年报正文（如需附注 excerpt 手动贴）、data.db（web 无法查 SQLite）。"
+        "财务费用先拆口径：生息利息项和利息净额交 defaults/引擎，"
+        "`other_fin_exp_abs` 是利润表外生·非利息项，默认沿用 defaults，特殊时才进入 /ka 数值门。\n"
+        "未含：年报正文（如需附注 excerpt 手动贴）、data.db（web 无法查 SQLite）。"
     ]
 
     # 1. core_metrics_overview.md（只取 .md，丢 json/csv）
     metrics_md = company_dir / "Agent" / "core_metrics_overview.md"
     _append_optional_file(parts, "core_metrics_overview.md（利润表事实速览）", metrics_md, report)
 
-    # 2. OfficialBreakdowns（取 .csv，丢 jsonl）
+    # 2. financial_expense.yaml（小型附注档案；用于区分利息项和 other_fin_exp_abs）
+    fin_exp_yaml = company_dir / "Agent" / "financial_expense.yaml"
+    _append_optional_file(
+        parts,
+        "financial_expense.yaml（财务费用附注档案：区分利息项与 other_fin_exp_abs）",
+        fin_exp_yaml,
+        report,
+    )
+
+    # 3. OfficialBreakdowns（取 .csv，丢 jsonl）
     ob_dir = official_breakdowns_dir(company_dir)
     if ob_dir.exists():
         csv_files = sorted(ob_dir.glob("*.csv"))
@@ -358,7 +373,8 @@ def _build_readme(
 
 - **不能跑脚本、不能读写本地文件系统**。裁决所需的规则与材料已经预合并到本包两份 md 里。
 - 本包共 3 份 md：本 readme、`必读和素材.md`、`速查参考.md`。
-- `data.db` 没打包（web 无法查 SQLite）；`financial_expense.yaml` 没打包（/ka 默认不裁决财费）；年报正文没打包（太大，如需附注 excerpt 请用户手动贴）。
+- `data.db` 没打包（web 无法查 SQLite）；年报正文没打包（太大，如需附注 excerpt 请用户手动贴）。
+- `financial_expense.yaml` 若存在已放进 `速查参考.md`：只用于区分生息利息项与 `other_fin_exp_abs`。利息净额不手拍；`other_fin_exp_abs` 默认沿用 defaults，特殊企业或材料明示汇兑/手续费/贴息趋势变化时才进入 /ka 数值门。
 
 ## 读取顺序
 

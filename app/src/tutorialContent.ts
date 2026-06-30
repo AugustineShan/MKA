@@ -484,7 +484,7 @@ export const codexGuidePrompts: { label: string; command: string; when: string; 
     label: "确认正式假设",
     command: "/ka",
     when: "已有 LOAD 产物或 Agent业务讨论.md，要生成正式核心假设。",
-    prompt: "公司【公司名】要跑 /ka。请按 MKA skill 协议执行：先读 D:\\MKA\\Codex.md 和 D:\\MKA\\docs\\技能简要分类.md，若分不清候选晋升或 BS/CF 例外先读 D:\\MKA\\docs\\MKA规则导航图.md；再读 D:\\MKA\\.claude\\skills\\ka\\SKILL.md，并加载最新版 核心纪律、核心假设源语言、knobs 块契约、核心假设编辑器 runbook。先检查根目录是否已有 official 核心假设；若已有且我没有明确说重建，就停止并建议 /adj 或 /annual-update。再检查三类启动门槛：已完成 LOAD、Agent业务讨论.md、KA 目录顶层 markdown，三者全无就停。通过后只读取人工筛选入口：同权重判断材料、BRKD 完成产物、KA 目录顶层全部 markdown、/init 事实和旧 official 对照；KA 目录里 核心假设参考*.md 按候选稿裁决，其他 markdown 按信息指引读。不要主动扩读 WEBCLAUDE、Agent/Load 沙箱副本或临时 markdown cache。入口窄但收纳要宽：已入场材料里有复盘价值但不入模的信息进收纳区/stash，不得乱扔。先对齐时间边界和骨架门，再裁收入、毛利、费用、below-OP、税、中期和 terminal。落盘前按铁律归档旧稿，写今日正式 核心假设.md；不写 yaml1，不跑 DCF。",
+    prompt: "公司【公司名】要跑 /ka。请按 MKA skill 协议执行：先读 D:\\MKA\\Codex.md 和 D:\\MKA\\docs\\技能简要分类.md，若分不清候选晋升或 BS/CF 例外先读 D:\\MKA\\docs\\MKA规则导航图.md；再读 D:\\MKA\\.claude\\skills\\ka\\SKILL.md，并加载最新版 核心纪律、核心假设源语言、knobs 块契约、核心假设编辑器 runbook。先检查根目录是否已有 official 核心假设；若已有且我没有明确说重建，就停止并建议 /adj 或 /annual-update。再检查三类启动门槛：已完成 LOAD、Agent业务讨论.md、KA 目录顶层 markdown，三者全无就停。通过后只读取人工筛选入口：同权重判断材料、BRKD 完成产物、KA 目录顶层全部 markdown、/init 事实和旧 official 对照；KA 目录里 核心假设参考*.md 按候选稿裁决，其他 markdown 按信息指引读。不要主动扩读 WEBCLAUDE、Agent/Load 沙箱副本或临时 markdown cache。入口窄但收纳要宽：已入场材料里有复盘价值但不入模的信息进收纳区/stash，不得乱扔。先对齐时间边界和骨架门，再裁收入、毛利、费用、below-OP、税、中期和 terminal；费用段必须把非息财务费用 other_fin_exp_abs 与销售/管理/研发/税金及附加同表同权重检测，默认读 Agent/financial_expense.yaml/defaults，沿用 defaults 也要写入 official knobs 以便 /comp 显式落 yaml1、前端可编辑，不能把利息净额写成 knob。落盘前按铁律归档旧稿，写今日正式 核心假设.md；不写 yaml1，不跑 DCF。",
   },
   {
     label: "生成三表 DCF",
@@ -558,6 +558,82 @@ export const codexGuideRules: { title: string; body: string }[] = [
   {
     title: "结束看五件事",
     body: "读了什么、写了什么、哪些门禁通过或拦住、跑了什么验证、产物路径在哪里。缺一项就让 Codex 补清楚。",
+  },
+];
+
+export const auditAssistantWorkflow: { title: string; body: string; output: string }[] = [
+  {
+    title: "1. 跑全覆盖雷达",
+    body: "先让 /audit 扫所有覆盖公司，得到谁最值得复核的排序。它只读历史 clean 数据和本地证据包，不改模型、不改假设。",
+    output: "risk_ranking.md / flags_matrix.yaml",
+  },
+  {
+    title: "2. 点进公司审计页",
+    body: "公司页第一屏先看审计结论、风险等级和关键发现；这一步回答老板最关心的：有没有需要立刻解释的异常。",
+    output: "Agent/audit/flags_latest.json",
+  },
+  {
+    title: "3. 按取证路径补证据",
+    body: "如果出现组合模式，按 Layer 2 playbook 去读应收、收入确认、受限资金、商誉减值等证据窗口。",
+    output: "evidence_pack_latest.json",
+  },
+  {
+    title: "4. 写成人类审计意见",
+    body: "规则命中不是结论。最后要把异常、经营解释、反证和仍需补查的材料合成一段可汇报的审计意见。",
+    output: "审计复核纪要",
+  },
+];
+
+export const auditAssistantReportSections: { title: string; body: string }[] = [
+  {
+    title: "先看结论",
+    body: "风险等级、分数、更新时间和一句话判断放在最上方。老板先知道是低风险、需复核，还是要升级取证。",
+  },
+  {
+    title: "再看关键发现",
+    body: "每个 flag 翻译成审计问题：它怀疑什么、证据是什么、下一步该查哪张表或哪段年报。",
+  },
+  {
+    title: "然后看取证路径",
+    body: "组合模式会变成 playbook，例如收入质量、现金真实性、资产窟窿。没有 playbook 时也要说明为什么暂不升级。",
+  },
+  {
+    title: "最后展开机器明细",
+    body: "rule_id、threshold、source_fields 和 snippets 全保留，但放到折叠区，给复核和 debug 用，不打断阅读。",
+  },
+];
+
+export const auditAssistantMethod: { title: string; body: string }[] = [
+  {
+    title: "Layer 0：数据口径",
+    body: "统一从 clean_annual、clean_quarterly、clean_warnings、clean_adjustments 和本地年报证据包取数。先保证口径可复现，再谈异常解释。",
+  },
+  {
+    title: "Layer 1：确定性排雷",
+    body: "用固定规则计算收入质量、现金流、营运资本、资产质量、偿债压力和统计模型。它负责发现线索，不负责下最终结论。",
+  },
+  {
+    title: "Layer 2：定向取证",
+    body: "把多个 flag 合成取证剧本，去看年报窗口、recon 记录、TuShare 辅助接口和必要的外部材料，判断异常是否能被经营事实解释。",
+  },
+  {
+    title: "Layer 3：审计汇报",
+    body: "把规则、证据和反证写成老板能读的复核意见：哪些已解释，哪些需跟进，哪些会影响模型或评级报告。",
+  },
+];
+
+export const auditAssistantPrinciples: { title: string; body: string }[] = [
+  {
+    title: "不把异常当结论",
+    body: "规则命中只能说明“这里值得查”。毛利率偏离可能是产品结构，也可能是成本口径；现金流背离可能是高速增长，也可能是收入质量下降。",
+  },
+  {
+    title: "先证伪，再升级",
+    body: "Layer 2 的价值不是找更多理由怀疑，而是主动找经营解释和反证。能被稳定政策、客户结构或季节性解释的，要降级。",
+  },
+  {
+    title: "保留机器痕迹",
+    body: "审计结论要给人读，但 rule_id、阈值、字段、年报行号和原始 evidence 都要留着。可读性不能以丢证据为代价。",
   },
 ];
 
@@ -688,7 +764,7 @@ export const skillPrinciples: SkillPrinciple[] = [
       "TuShare 增量取三表，年报/季报下载并生成 Markdown。",
       "clean.py 生成 clean 宽表并做年度/季度 hard check。",
       "年度失败时先走 reconciler；复杂残差再用 subagent 读年报提案，由 bridge 验闭合后写 approved override。",
-      "clean 成功后生成 Agent/core_metrics_overview.md/json/csv，供后续 Agent 快速理解收入、毛利率、费用率、利润率和税率趋势。",
+      "clean 成功后生成 Agent/core_metrics_overview.md/json/csv，供后续 Agent 快速理解年度收入、毛利率、费用率、利润率、税率趋势和最近 10 个季度核心证据。",
       "生成 financial_expense.yaml、OfficialBreakdowns 和数据拉取报告。",
     ],
     stops: [
@@ -800,13 +876,13 @@ export const skillPrinciples: SkillPrinciple[] = [
       "强制 §2 门禁（根目录有正式稿且未 --rebuild 则停）与 §6b 门禁（BRKD/LOAD/KA 目录 markdown 三者全无则停）。",
       "清空重建 WEBCLAUDE/webka(Claude帮你统摄核心假设）/。",
       "合并 必读和素材.md（4 份规则 + 同权重判断材料 + BRKD/LOAD + KA 目录 markdown/旧稿 + defaults.yaml）。",
-      "合并 不必要读强制碰到再速查.md（core_metrics_overview + OfficialBreakdowns）。",
+      "合并 不必要读强制碰到再速查.md（core_metrics_overview + financial_expense.yaml + OfficialBreakdowns）。",
       "写 readme first.md 入口（任务/读取顺序/输出契约/带回本地步骤）。",
     ],
     stops: [
       "§2 或 §6b 门禁未过就停，不打包。",
       "纯打包，不在本地裁决、不落盘核心假设。",
-      "不打包 data.db（web 无法查 SQLite）、financial_expense.yaml（/ka 默认不裁决财费）、年报正文（太大）。",
+      "不打包 data.db（web 无法查 SQLite）和年报正文（太大）；financial_expense.yaml 会进入速查参考，用来区分利息项与非息财务费用。",
     ],
     handoff: "网页端产出的 核心假设.md 由用户拷回本地，走 /ka 落盘（ka_archive 旧稿 + 写今日新稿）+ /comp。",
   },
@@ -932,7 +1008,7 @@ export const skills: SkillCard[] = [
     ],
     writes: [
       "Agent/data.db：raw_tushare、clean_annual、clean_quarterly、clean_adjustments、clean_warnings。",
-      "Agent/core_metrics_overview.md/json/csv：clean 后的利润表核心指标速览。",
+      "Agent/core_metrics_overview.md/json/csv：clean 后的利润表核心指标速览，md 含最近 10 个季度核心证据。",
       "公告/年报 与 公告/季报 的 PDF/Markdown；Agent/financial_expense.yaml；Agent/OfficialBreakdowns/。",
     ],
     next: "clean 成功后，已有 Excel 先 /load；没有模型先 /brkd；具备 LOAD 或 BRKD 产物后再 /ka。",
@@ -970,7 +1046,7 @@ export const skills: SkillCard[] = [
       "公司判断和最新观点.md、重要文件/ 与 Skills素材包/最高权重材料-放Agent最应对齐的材料/markdown存储区。",
       "Agent业务讨论.md：由 /brkd 生成的业务层草稿。",
       "Skills素材包/KA（ALPHAPAI拆出来的东西放在这里）/ 顶层全部 *.md：核心假设参考load_*.md 是 /load 旧模型假设源文；brkd/alphapai 参考稿和普通信息指引同处此目录。",
-      "Agent/core_metrics_overview.* 或 clean_annual，作为标准历史事实。",
+      "Agent/core_metrics_overview.* 或 clean_annual，作为标准历史事实；Agent/financial_expense.yaml 用于费用段检测非息财务费用 other_fin_exp_abs。",
       "最新年报 Markdown，只在裁决期按需查证，不通读升格。",
     ],
     writes: [
@@ -1031,11 +1107,11 @@ export const skills: SkillCard[] = [
       "4 份规则：核心纪律、核心假设源语言、knobs 块契约、核心假设编辑器 runbook。",
       "同权重判断材料（ka_prepare markdown 化）+ defaults.yaml。",
       "KA 目录顶层全部 *.md（核心假设参考*.md + 普通信息指引）+ Agent业务讨论.md + 旧正式稿（--rebuild 时）。",
-      "core_metrics_overview.md + OfficialBreakdowns csv（合并进速查 md）。",
+      "core_metrics_overview.md + financial_expense.yaml + OfficialBreakdowns csv（合并进速查 md）。",
     ],
     writes: ["WEBCLAUDE/webka(Claude帮你统摄核心假设）/ 下 3 份 md：readme first.md / 必读和素材.md / 不必要读强制碰到再速查.md。"],
     next: "把 3 份 md 上传网页端，先读 readme first.md，按编辑器 runbook 裁决产出 核心假设.md；拷回本地走 /ka 落盘（ka_archive + 写今日新稿）+ /comp。",
-    guardrails: ["纯打包，不在本地裁决、不落盘核心假设。", "§2 已有正式稿门禁与 §6b 骨架门禁硬停（与 /ka 一致）。", "不打包 data.db、financial_expense.yaml、年报正文。"],
+    guardrails: ["纯打包，不在本地裁决、不落盘核心假设。", "§2 已有正式稿门禁与 §6b 骨架门禁硬停（与 /ka 一致）。", "不打包 data.db 和年报正文；financial_expense.yaml 只进速查参考，用于区分利息项与 other_fin_exp_abs。"],
     mentalModel: "这是 /ka 的网页搬运箱。本地先把同权重判断材料 markdown 化、门禁预检，再把规则+材料合并成 3 份 md，网页端上传即可裁决。",
     notFor: "不负责 /load 网页端打包（那是 /webload）；不在本地落盘核心假设，回收手动走本地 /ka。",
   },

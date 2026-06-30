@@ -1,6 +1,7 @@
-"""Generate a clean-stage annual core metrics overview for agents.
+"""Generate a clean-stage core metrics overview for agents.
 
-The overview is a deterministic fact sheet built only from ``clean_annual``.
+The overview is a deterministic fact sheet built from ``clean_annual`` and,
+when available, recent ``clean_quarterly`` rows.
 It is intended for /init-time context: LLM-readable, stable across repeated
 runs, and independent from forecast/yaml outputs.
 """
@@ -22,11 +23,12 @@ from typing import Any
 from src.company_paths import company_dir_from_db_path, find_db_path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 OUTPUT_STEM = "core_metrics_overview"
 MARKDOWN_FILENAME = f"{OUTPUT_STEM}.md"
 JSON_FILENAME = f"{OUTPUT_STEM}.json"
 CSV_FILENAME = f"{OUTPUT_STEM}.csv"
+QUARTERLY_PERIOD_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -107,7 +109,8 @@ def _safe_div(numerator: float | None, denominator: float | None) -> float | Non
 def _yoy(current: float | None, previous: float | None) -> float | None:
     if current is None or previous in (None, 0):
         return None
-    return current / previous - 1.0
+    denominator = abs(previous) if previous < 0 else previous
+    return (current - previous) / denominator
 
 
 def _period_sort_key(period: str) -> tuple[int, str]:
@@ -154,16 +157,16 @@ def _read_meta(conn: sqlite3.Connection) -> dict[str, str]:
     return {str(key): str(value) for key, value in rows}
 
 
-def load_clean_annual(db_path: str | Path) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    """Load clean_annual rows with NULL preserved as None."""
+def _load_clean_table(db_path: str | Path, table: str) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Load clean rows with NULL preserved as None."""
     path = Path(db_path)
     with sqlite3.connect(path) as conn:
         conn.row_factory = sqlite3.Row
         meta = _read_meta(conn)
         try:
-            rows = conn.execute("SELECT * FROM clean_annual").fetchall()
+            rows = conn.execute(f"SELECT * FROM {table}").fetchall()
         except sqlite3.OperationalError as exc:
-            raise RuntimeError(f"clean_annual not found in {path}") from exc
+            raise RuntimeError(f"{table} not found in {path}") from exc
 
     parsed: list[dict[str, Any]] = []
     for row in rows:
@@ -175,11 +178,35 @@ def load_clean_annual(db_path: str | Path) -> tuple[dict[str, str], list[dict[st
         parsed.append(record)
     parsed.sort(key=lambda item: _period_sort_key(str(item["period"])))
     if not parsed:
-        raise RuntimeError(f"clean_annual is empty in {path}")
+        raise RuntimeError(f"{table} is empty in {path}")
     return meta, parsed
 
 
-def _compute_metric(spec: MetricSpec, row: dict[str, float | None], previous: dict[str, float | None] | None) -> float | None:
+def load_clean_annual(db_path: str | Path) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Load clean_annual rows with NULL preserved as None."""
+    return _load_clean_table(db_path, "clean_annual")
+
+
+def load_clean_quarterly(db_path: str | Path) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Load clean_quarterly rows with NULL preserved as None."""
+    return _load_clean_table(db_path, "clean_quarterly")
+
+
+def _same_quarter_prior_period(period: str) -> str | None:
+    if len(period) != 6 or period[4] != "Q" or period[5] not in "1234":
+        return None
+    try:
+        year = int(period[:4])
+    except ValueError:
+        return None
+    return f"{year - 1}Q{period[5]}"
+
+
+def _compute_metric(
+    spec: MetricSpec,
+    row: dict[str, float | None],
+    previous: dict[str, float | None] | None,
+) -> float | None:
     revenue = _value(row, "revenue")
     if spec.kind == "field":
         return _value(row, spec.field)
@@ -199,22 +226,25 @@ def _compute_metric(spec: MetricSpec, row: dict[str, float | None], previous: di
     raise ValueError(f"unknown metric kind: {spec.kind}")
 
 
-def build_core_metrics_overview(db_path: str | Path) -> dict[str, Any]:
-    """Build the JSON-serializable overview payload."""
-    path = Path(db_path)
-    meta, raw_rows = load_clean_annual(path)
-    periods = [str(row["period"]) for row in raw_rows]
-    annual_rows: list[dict[str, float | None]] = [
-        {key: value for key, value in row.items() if key != "period"}
-        for row in raw_rows
-    ]
-
+def _metric_rows_for_periods(
+    periods: list[str],
+    rows_by_period: dict[str, dict[str, float | None]],
+    *,
+    yoy_basis: str,
+) -> list[dict[str, Any]]:
     metric_rows: list[dict[str, Any]] = []
     for spec in METRIC_SPECS:
         values: dict[str, float | None] = {}
         for idx, period in enumerate(periods):
-            previous = annual_rows[idx - 1] if idx > 0 else None
-            values[period] = _compute_metric(spec, annual_rows[idx], previous)
+            row = rows_by_period[period]
+            previous: dict[str, float | None] | None = None
+            if spec.kind == "yoy":
+                if yoy_basis == "same_quarter":
+                    prior_period = _same_quarter_prior_period(period)
+                    previous = rows_by_period.get(prior_period) if prior_period else None
+                else:
+                    previous = rows_by_period[periods[idx - 1]] if idx > 0 else None
+            values[period] = _compute_metric(spec, row, previous)
         metric_rows.append(
             {
                 "key": spec.key,
@@ -225,12 +255,55 @@ def build_core_metrics_overview(db_path: str | Path) -> dict[str, Any]:
                 "values": values,
             }
         )
+    return metric_rows
+
+
+def _build_quarterly_section(db_path: Path) -> dict[str, Any]:
+    try:
+        _, raw_rows = load_clean_quarterly(db_path)
+    except RuntimeError as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "source": {"table": "clean_quarterly", "amount_unit": "million_cny", "ratio_unit": "ratio"},
+            "periods": [],
+            "rows": [],
+        }
+
+    periods_all = [str(row["period"]) for row in raw_rows]
+    quarterly_rows = {
+        str(row["period"]): {key: value for key, value in row.items() if key != "period"}
+        for row in raw_rows
+    }
+    periods = periods_all[-QUARTERLY_PERIOD_LIMIT:]
+    return {
+        "available": True,
+        "limit": QUARTERLY_PERIOD_LIMIT,
+        "source": {"table": "clean_quarterly", "amount_unit": "million_cny", "ratio_unit": "ratio"},
+        "periods": periods,
+        "rows": _metric_rows_for_periods(periods, quarterly_rows, yoy_basis="same_quarter"),
+        "yoy_basis": "same_quarter_prior_year",
+    }
+
+
+def build_core_metrics_overview(db_path: str | Path) -> dict[str, Any]:
+    """Build the JSON-serializable overview payload."""
+    path = Path(db_path)
+    meta, raw_rows = load_clean_annual(path)
+    periods = [str(row["period"]) for row in raw_rows]
+    annual_rows = {
+        str(row["period"]): {key: value for key, value in row.items() if key != "period"}
+        for row in raw_rows
+    }
+    metric_rows = _metric_rows_for_periods(periods, annual_rows, yoy_basis="previous_period")
+    quarterly = _build_quarterly_section(path)
 
     return {
         "schema_version": SCHEMA_VERSION,
         "source": {
             "db_file": "Agent/data.db" if path.parent.name == "Agent" else path.name,
             "table": "clean_annual",
+            "tables": ["clean_annual", "clean_quarterly"] if quarterly["available"] else ["clean_annual"],
             "amount_unit": "million_cny",
             "ratio_unit": "ratio",
         },
@@ -240,7 +313,20 @@ def build_core_metrics_overview(db_path: str | Path) -> dict[str, Any]:
         },
         "periods": periods,
         "rows": metric_rows,
+        "quarterly": quarterly,
     }
+
+
+def _append_metric_table(lines: list[str], rows: list[dict[str, Any]], periods: list[str]) -> None:
+    header = ["指标", *periods]
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("|" + "---|" + "---:|" * len(periods))
+    for row in rows:
+        cells = [str(row["label"])]
+        values = row.get("values") or {}
+        for period in periods:
+            cells.append(_format_value(values.get(period), str(row.get("unit"))))
+        lines.append("| " + " | ".join(cells) + " |")
 
 
 def render_markdown(payload: dict[str, Any]) -> str:
@@ -248,6 +334,9 @@ def render_markdown(payload: dict[str, Any]) -> str:
     source = payload.get("source") or {}
     periods = [str(period) for period in payload.get("periods", [])]
     rows = payload.get("rows", [])
+    quarterly = payload.get("quarterly") or {}
+    quarterly_periods = [str(period) for period in quarterly.get("periods", [])]
+    quarterly_rows = quarterly.get("rows", [])
 
     lines: list[str] = []
     title_name = company.get("name") or "未知公司"
@@ -255,7 +344,9 @@ def render_markdown(payload: dict[str, Any]) -> str:
     lines.append(f"# 年度核心指标速览 · {title_name} ({title_ticker})")
     lines.append("")
     lines.append(
-        "> 来源：Agent/data.db · clean_annual。金额单位为百万元；比率、同比按百分比展示。"
+        "> 来源：Agent/data.db · clean_annual"
+        + (" + clean_quarterly" if quarterly_periods else "")
+        + "。金额单位为百万元；比率、同比按百分比展示。"
         "本文件只含历史事实与机械计算，不含预测、估值或分析判断。"
     )
     lines.append("")
@@ -266,20 +357,24 @@ def render_markdown(payload: dict[str, Any]) -> str:
     lines.append("")
     lines.append("## 利润表核心链路")
     lines.append("")
-    header = ["指标", *periods]
-    lines.append("| " + " | ".join(header) + " |")
-    lines.append("|" + "---|" + "---:|" * len(periods))
-    for row in rows:
-        cells = [str(row["label"])]
-        values = row.get("values") or {}
-        for period in periods:
-            cells.append(_format_value(values.get(period), str(row.get("unit"))))
-        lines.append("| " + " | ".join(cells) + " |")
+    _append_metric_table(lines, rows, periods)
+    if quarterly_periods:
+        lines.append("")
+        lines.append(f"## 最近{len(quarterly_periods)}个季度核心证据")
+        lines.append("")
+        lines.append(
+            "> 来源：clean_quarterly 最近期间；季度同比按同季度上一年计算，不按环比计算。"
+            "`/ka` 需要年内实绩或预告证据时，优先读本节；只有本节缺字段或需核口径时再查 `Agent/data.db`。"
+        )
+        lines.append("")
+        _append_metric_table(lines, quarterly_rows, quarterly_periods)
     lines.append("")
     lines.append("## 口径提示")
     lines.append("")
     lines.append("- `-` 表示 clean_annual 为空、字段不存在，或比率分母为 0。")
     lines.append("- 费用率、利润率和所得税率均由 clean_annual 的历史字段机械相除得出。")
+    if quarterly_periods:
+        lines.append("- 最近季度节只展示 `clean_quarterly` 中最近 10 个期间；同比行用同季度上一年作为基准。")
     lines.append("- 信用减值损失优先读取 `income.credit_impa_loss`，兼容旧口径 `credit_impa_loss`。")
     return "\n".join(lines) + "\n"
 
@@ -335,7 +430,7 @@ def write_core_metrics_overview(db_path: str | Path) -> dict[str, Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate Agent/core_metrics_overview.* from clean_annual.")
+    parser = argparse.ArgumentParser(description="Generate Agent/core_metrics_overview.* from clean_annual and recent clean_quarterly.")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--ticker", help="A-share ticker, e.g. 002946.SZ")
     group.add_argument("--db", help="Path to Agent/data.db")

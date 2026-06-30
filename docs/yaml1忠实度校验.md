@@ -24,6 +24,15 @@
 
 Gate C 机制：每条旋钮带 `src`（如 `src: "#销售费用"`）→ 据此定位 .md 小节 → 抽数字做**符号+量级敏感的集合核对**（yaml1 的每个值必须能在 .md 对应小节找到）。单旋钮小节取整节加粗值；多旋钮共享小节（如 营业外收入/支出）按关键词收窄防串行。
 
+## 减值符号门 + top-level knob sub 兜底（2026-06-30）
+
+两道独立于 block-diff 的硬门，补 block-diff 自身盲区：
+
+- **减值符号门（`IMPACT_SIGN`）**：`cost_abs` 减值三字段（`assets_impair_loss`/`credit_impa_loss`/`oth_impair_loss_assets`，集合在 `src/impact_fields.py` 的 `IMPACT_ADJUSTMENT_FIELDS`）是带符号损益调整，引擎 `calc.py` 以 `+impact_adjustment` 并入 operate_profit。yaml1 中这三个 path 叶子若存严格正数 → FAIL。零放行（百润 assets_impair=0 等合法）。**为何需要**：block-diff 是"yaml1 vs .md knobs 块"逐值比对——若 .md 作者误写正数幅度（"损失项写正数金额"惯例）且 compiler 照抄正数，block-diff 两边都正会判 PASS，但引擎会把正数当加项加回、静默虚增利润。此门按 path 叶子名（TuShare 字段名）精确判定，不依赖中文 anchor 映射，无误报。存量公司 cost_abs 全为负/零，不破坏。
+- **top-level knob sub 兜底**：block-diff 对 top-level `kind: knob` 原本只按 `(anchor, None)` 查 knobs 块；若块条目带 `sub`（如 `balance_sheet.dividend_payout` ↔ `{anchor:#分红率, sub:dividend_payout}`）则匹配不上、误报"幻觉"。现在 `lookup(anchor, None)` 未命中时，用 yaml1 path 叶子名（`dividend_payout`）作为 sub 再查一次。复用现有 `lookup` 闭包 + `_SUB_ALIAS`，不改 `collect_knobs` 签名。
+
+配套：`.md` 侧 `ka_assumption_lint.py` 加 `COST_ABS_SIGN` 门（`family==cost_abs` 且正值 → FAIL），在 /ka 落盘时早拦，根本不到 /comp。`/ka` skill 已把 `ka_assumption_lint` 接成 official 稿落盘后必跑闸。符号约定单一真源在 `docs/knobs块契约.md` §7 family 表"符号"列 + `skills/yaml1compiler_v5.md` 附录A 减值符号结论。
+
 ## 判定与状态
 
 - `verdict: PASS` / `BLOCK`（有任一 `FAIL` 即 BLOCK，退出码 1）。

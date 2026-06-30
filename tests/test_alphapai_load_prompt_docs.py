@@ -20,6 +20,11 @@ def test_alphapai_load_prompt_keeps_reference_boundary_and_time_axis_discipline(
     assert "先会议 memo，后完整参考稿" in text
     assert "不要第一轮直接输出完整 `核心假设参考alphapai_yymmdd.md`" in text
     assert "像分析师开会一样" in text
+    assert "展示优先用表格" in text
+    assert "把业务拆分历史、预测候选、来源、分歧和待裁决点放在同一张主表里" in text
+    assert "一次交互尽量只给一张表" in text
+    assert "核心证据、候选和待裁决" in text
+    assert "| 区块/主题 | 历史事实/业务拆分证据 | 预测候选/方向 | 来源 | 主要分歧 | 待 /ka 裁决 |" in text
     assert "这个理解方向可以吗？" in text
     assert "再生成最终的 **`核心假设参考alphapai_yymmdd.md`**" in text
     assert "时间轴四数是参考候选，不是拍板结果" in text

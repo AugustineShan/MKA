@@ -37,6 +37,15 @@ def test_codex_tutorial_prompt_points_to_rule_navigation():
     assert "已入场材料有价值但不入模时，进收纳区/stash" in text
 
 
+def test_codex_tutorial_guides_ka_to_check_other_fin_exp_abs():
+    text = _read("app/src/tutorialContent.ts")
+
+    assert "非息财务费用 other_fin_exp_abs" in text
+    assert "沿用 defaults 也要写入 official knobs" in text
+    assert "financial_expense.yaml 会进入速查参考" in text
+    assert "core_metrics_overview.md + financial_expense.yaml + OfficialBreakdowns csv" in text
+
+
 def test_codex_tutorial_view_mentions_rule_navigation():
     text = _read("app/src/Tutorial.tsx")
 

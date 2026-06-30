@@ -13,6 +13,7 @@
 companies/*
 .recon/
 annuals/
+audit_runs/
 
 # Temporary scratch / spreadsheet dumps (recon JSON, data.db copies, .xlsm)
 tmp/

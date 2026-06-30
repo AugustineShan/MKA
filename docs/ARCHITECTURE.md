@@ -398,8 +398,10 @@ companies/{公司名}_{代码}/
 | 组件 | 职责 |
 |------|------|
 | `yaml2_schema.py` | YAML2 读写、必填路径校验、默认模型参数、review flag 常量 |
-| `defaults_gen.py` | 从 `data.db` 的 `clean_annual` + `meta` 抽取 `defaults.yaml`；每个参数保留 `value/source` 便于审计 |
-| `yaml1_cleaner.py` | 理解层 clean.py：读取 `yaml1*.yaml + defaults.yaml`，折叠 decomposition、展开 fade、resolve 到标准参数并做历史回测硬闸；支持无 yaml1 的恒等清洗（`--defaults-only`），中间产物默认写入 `Agent/.modelking/` |
+| `defaults_gen.py` | 从 `data.db` 的 `clean_annual` + `meta` 抽取 `defaults.yaml`；每个参数保留 `value/source` 便于审计。`revenue_items_abs.oth_b_income` 强制归零（已含在 `income.revenue`=clean_annual.revenue 总额内，防 `calc.py` `total_revenue` 双计），`source=zeroed_avoid_double_count` |
+| `yaml1_cleaner.py` | 理解层 clean.py：读取 `yaml1*.yaml + defaults.yaml`，折叠 decomposition、展开 fade、resolve 到标准参数并做历史回测硬闸；支持无 yaml1 的恒等清洗（`--defaults-only`），中间产物默认写入 `Agent/.modelking/`。per-family 收入折叠数学经 `src/revenue_fold.py` 单一引擎 |
+| `revenue_fold.py` | **收入折叠唯一引擎**（2026-06-30）：`project_leaf` 全 family（growth/abs/factor_product/driver_rate/vol_price[_margin]/formula DAG）+ `iter_leaves`/`is_decomposition_node` 遍历 + `REVENUE_FAMILIES` 合法族单一真源 + `Yaml1CleanError`。`yaml1_cleaner.fold_revenue`（forecast）与 `workbench._yaml1_revenue_view_from_data`（前端分线预览）共用，消除双引擎静默漂移；严格报错不静默 |
+| `unit_convert.py` | 旋钮 pct↔小数换算单一真源（2026-06-30）：`to_decimal`/`to_md_display` + `UNIT_PCT`/`UNIT_ABS`。`yaml1_fidelity_check._norm_unit` 调它；md 正文数值 = knobs 值经 `to_md_display` 的派生回显（frontend-edit）。前端展示 ×100 走 `_assumption_format` 的 `percent` 提示（TS 边界） |
 | `forecast.py` | **编排器**：读取 `yaml1*.yaml + defaults.yaml`，调用 `yaml1_cleaner.py` 生成逐年标准参数，再调用 `calc.py` 生成 `Agent/forecast/` 与内部产物；用户正式入口 |
 | `calc.py` | 纯算账核：只吃清洗后的逐年标准参数表（`--forecast-params`），按 IS→BS→CF→DCF 顺序生成预测；永远看不到 yaml1，也不直接读取 `defaults.yaml` |
 
@@ -489,7 +491,7 @@ companies/{公司名}_{代码}/
 | 组件 | 职责 |
 |------|------|
 | `app/` | React + Vite 前端；公司列表、Overview、核心假设渲染与假设沙盘、YAML1/Xcode 风 source view、DCF/三表、素材文件浏览 |
-| `src/workbench.py` | FastAPI 本地壳；扫描 `companies/`，读取本地文件，调用 `src.forecast.run_company_forecast()`；枚举可编辑假设并提供内存预览接口 |
+| `src/workbench.py` | FastAPI 本地壳；扫描 `companies/`，读取本地文件，调用 `src.forecast.run_company_forecast()`；枚举可编辑假设并提供内存预览接口。分线收入预览经 `src/revenue_fold.py` 同一引擎重算（与 forecast 一致），assumption-brief 生成 `/frontend-edit` prompt |
 | `src.forecast` | 仍是唯一正式 DCF 运行入口；前端按钮只调用它，不复刻模型逻辑 |
 
 核心假设页分为两层：默认只读展示 yaml1，进入 edit 模式后变成分析师假设沙盘。`GET /api/companies/{id}` 会返回 `editable_assumptions`，由后端从 yaml1 中自动枚举标准路径 knobs、收入拆分 driver factors、leaf margin 以及 terminal 参数；前端只渲染这份结构，不按公司名或业务线写死字段。
@@ -504,7 +506,7 @@ DCF tab 额外提供三个实时 sensitivity 滑块（WACC、terminal growth、t
 
 第 7 个顶级 tab「重资产排程」为**条件 tab**：仅当 `GET /api/companies/{id}` 返回 `da_view` 非 null（`Agent/da_schedule.yaml` 存在且 `enabled:true`）才渲染。`da_view` 由 `workbench._da_view()` 只读装配 `da_schedule.yaml` + `recon/da_facts_latest.json` + `.modelking/forecast_params.yaml["da_series"]` 三个磁盘文件，重算每类 `policy_dep` 与 `scale` 并调用 `da_roll.normalization_gate`。四段只读展示（存量快照 / 扩张排程+转固 / da_series 结果 / 历史证据折叠），类别名全部来自 `da_schedule.ppe.categories[].name`，N 类 N 行零公司特判；改假设走 `/da`，前端不写回。轻资产公司 `da_view=null`，tab 不可见。
 
-**首页模式（全局跨公司视图）**：Sidebar 顶部「首页」条目作为"特殊的公司"，选中时主区不再是某家公司的 tabs，而是首页自己的 subtab（首页 topbar 也挂「配置和教程」入口）。第一个 subtab「文件夹总览」用**一行一公司**的表展示所有公司文件夹健康度，两级分组表头（建模状态 / 预测与估值），列：公司 / 建模管线推进（未初始化/初始化完毕/预加载完毕/建模完毕/建模完毕且有DA表，pill 徽章）/ DCF建模日期（以 yaml1 为准；无值显示"尚未完整建模"）/ 历史版本 / 工作台素材（4 目录文件数求和）/ 最新市值(亿) / 26·27 营收增速 / 26·27 利润增速 / 26·27 PE / 操作。预测估值列来自 `_forecast_snapshot`（复用 `_derived_metrics` 读 `Agent/forecast/derived_metrics.json`：`market_snapshot.total_mv` + `annual["2026"/"2027"]` 的 `revenue_yoy`/`n_income_attr_p_yoy`/`pe`）；未完整建模（无 forecast 产物）这几列空白。数据来自只读端点 `GET /api/home/folder-overview`（`_folder_overview_signals`，单公司异常不拖垮整表）。性能：`_count_files` 用 `os.walk`+`len(files)`（零 per-file stat）；后端 1.5s TTL 快照缓存（archive 后失效）。实时：前端 3s 轮询（`visibilityState` 闸门，卸载清 interval）。操作区每行两个按钮：**[打开目录]** 调 `POST /api/companies/{id}/open-folder`（`os.startfile` 开 Explorer 到公司目录）；**[一键归档]**（当 yaml1 多版本或根目录多 Excel/有锁文件时显示）调 `POST /api/companies/{id}/archive-models`：`_archive_models` 把旧 yaml1 移入 `Agent/yaml1history/`、根目录旧 Excel 移入 `Agent/Modelhistory/`、`~$` 锁文件删除，各留最新一份（`git mv` 保历史，非 tracked 回退 `shutil.move`，撞名加 `-HHMMSS`）。点任一公司退出首页进公司视图。
+**首页模式（全局跨公司视图）**：Sidebar 顶部「首页」条目作为"特殊的公司"，选中时主区不再是某家公司的 tabs，而是首页自己的 subtab（首页 topbar 也挂「配置和教程」入口）。第一个 subtab「文件夹总览」用**一行一公司**的表展示所有公司文件夹健康度，两级分组表头（建模状态 / 预测与估值），列：公司 / 建模管线推进（未初始化/初始化完毕/预加载完毕/核心假设完毕/建模完毕/建模完毕且有DA表，pill 徽章）/ DCF建模日期（以 yaml1 为准；无值显示"尚未完整建模"）/ 历史版本 / 工作台素材（4 目录文件数求和）/ 最新市值(亿) / 26·27 营收增速 / 26·27 利润增速 / 26·27 PE / 操作。预测估值列来自 `_forecast_snapshot`（复用 `_derived_metrics` 读 `Agent/forecast/derived_metrics.json`：`market_snapshot.total_mv` + `annual["2026"/"2027"]` 的 `revenue_yoy`/`n_income_attr_p_yoy`/`pe`）；未完整建模（无 forecast 产物）这几列空白。数据来自只读端点 `GET /api/home/folder-overview`（`_folder_overview_signals`，单公司异常不拖垮整表）。性能：`_count_files` 用 `os.walk`+`len(files)`（零 per-file stat）；后端 1.5s TTL 快照缓存（archive 后失效）。实时：前端 3s 轮询（`visibilityState` 闸门，卸载清 interval）。操作区每行两个按钮：**[打开目录]** 调 `POST /api/companies/{id}/open-folder`（`os.startfile` 开 Explorer 到公司目录）；**[一键归档]**（当 yaml1 多版本或根目录多 Excel/有锁文件时显示）调 `POST /api/companies/{id}/archive-models`：`_archive_models` 把旧 yaml1 移入 `Agent/yaml1history/`、根目录旧 Excel 移入 `Agent/Modelhistory/`、`~$` 锁文件删除，各留最新一份（`git mv` 保历史，非 tracked 回退 `shutil.move`，撞名加 `-HHMMSS`）。点任一公司退出首页进公司视图。
 
 运行：
 ```bash

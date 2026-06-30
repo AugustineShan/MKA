@@ -191,3 +191,64 @@ def test_no_compiler_in_block_header_skipped():
     md = _pass_md().replace("[量×价族; compiler: factor_product]", "[量×价族]")
     findings = lint(md)
     assert "BAD_FAMILY" not in _codes(findings)
+
+
+# ─────────────── knobs §7 family 块头标签合法（revenue_family ∪ knobs family） ───────────────
+
+def test_knobs_family_compiler_tag_accepted():
+    # cost_rate / cost_abs / op_adj_abs / below_line_abs / tax_rate / minor_rate / bs_scalar_pct
+    # 都是合法的 knobs §7 family 块头标签，不得误报 BAD_FAMILY
+    for tag in ["cost_rate", "cost_abs", "op_adj_abs", "below_line_abs",
+                "tax_rate", "minor_rate", "bs_scalar_pct", "gpm", "leaf_margin"]:
+        md = _pass_md().replace("compiler: factor_product", "compiler: " + tag)
+        assert "BAD_FAMILY" not in _codes(lint(md)), tag
+
+
+def test_formula_compiler_tag_accepted():
+    # formula 块头标签合法（formula leaf 用 kind: formula，不是 revenue_family，但 .md 块头可写 compiler: formula）
+    md = _pass_md().replace("compiler: factor_product", "compiler: formula")
+    assert "BAD_FAMILY" not in _codes(lint(md))
+
+
+# ─────────────── cost_abs 减值符号门 ───────────────
+
+def test_cost_abs_positive_fails():
+    # .md 作者误写正数幅度（"损失项写正数金额"）→ FAIL COST_ABS_SIGN
+    entries = [
+        {"anchor": "#资产减值损失", "family": "cost_abs", "unit": "abs_mn",
+         "values": [66, 66, 66, 66]},
+    ]
+    md = _pass_md(entries=entries)
+    findings = lint(md)
+    assert "COST_ABS_SIGN" in _codes(findings)
+    assert verdict(findings) == "BLOCK"
+
+
+def test_cost_abs_negative_passes():
+    entries = [
+        {"anchor": "#资产减值损失", "family": "cost_abs", "unit": "abs_mn",
+         "values": [-66, -66, -66, -66]},
+    ]
+    findings = lint(_pass_md(entries=entries))
+    assert "COST_ABS_SIGN" not in _codes(findings)
+
+
+def test_cost_abs_zero_passes():
+    # 零放行（信用减值归零等合法）
+    entries = [
+        {"anchor": "#信用减值损失", "family": "cost_abs", "unit": "abs_mn",
+         "values": [0, 0, 0, 0]},
+    ]
+    findings = lint(_pass_md(entries=entries))
+    assert "COST_ABS_SIGN" not in _codes(findings)
+
+
+def test_non_cost_abs_positive_not_flagged():
+    # op_adj_abs（其他收益）正数合法 —— 只 cost_abs 族受符号门约束
+    entries = [
+        {"anchor": "#其他收益", "family": "op_adj_abs", "unit": "abs_mn",
+         "values": [85, 85, 85, 85]},
+    ]
+    findings = lint(_pass_md(entries=entries))
+    assert "COST_ABS_SIGN" not in _codes(findings)
+

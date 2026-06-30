@@ -840,6 +840,24 @@ def build_defaults(db_path: Path, ticker: str | None = None) -> dict[str, Any]:
             continue
         depr_samples.append(Sample(hist_row.period, depr / depreciable_assets))
 
+    revenue_items_abs = _normalized_param_map(
+        revenue_item_fields,
+        history,
+        endpoint="income",
+        review_flags=review_flags,
+        path_prefix="income.revenue_items_abs",
+    )
+    # oth_b_income 已包含在 income.revenue（clean_annual.revenue = 营业收入总额）内。
+    # 若 revenue_items_abs.oth_b_income 再以 5y median 计入，calc.py 的
+    # total_revenue = revenue + sum(revenue_items_abs) 会双计其他业务收入、虚增利润。
+    # 归零；其他业务收入由 income.revenue 承载（分解含 bridge leaf 时由 bridge 表达其 0% 增长）。
+    revenue_items_abs["oth_b_income"] = _param(
+        0.0,
+        "zeroed: oth_b_income included in income.revenue (clean_annual.revenue total)",
+        note="其他业务收入已含在 income.revenue 总额内；归零防 calc total_revenue 双计。",
+        method="zeroed_avoid_double_count",
+    )
+
     data: dict[str, Any] = {
         "version": YAML2_VERSION,
         "ticker": ticker,
@@ -863,13 +881,7 @@ def build_defaults(db_path: Path, ticker: str | None = None) -> dict[str, Any]:
         },
         "income": {
             "revenue": param(revenue, "clean_annual.revenue"),
-            "revenue_items_abs": _normalized_param_map(
-                revenue_item_fields,
-                history,
-                endpoint="income",
-                review_flags=review_flags,
-                path_prefix="income.revenue_items_abs",
-            ),
+            "revenue_items_abs": revenue_items_abs,
             "gpm": _normalized_param(
                 path="income.gpm",
                 samples=gpm_samples,

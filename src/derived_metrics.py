@@ -202,7 +202,8 @@ def yoy(current: Any, previous: Any) -> float | None:
     prev = to_float(previous)
     if cur is None or prev is None:
         return None
-    return safe_div(cur - prev, prev)
+    denominator = abs(prev) if prev < 0 else prev
+    return safe_div(cur - prev, denominator)
 
 
 def _sum_fields(row: dict[str, Any], fields: tuple[str, ...] | list[str]) -> float:

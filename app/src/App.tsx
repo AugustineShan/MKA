@@ -7,7 +7,10 @@ import type {
   AssumptionPatch,
   AssumptionPreview,
   AssumptionsKnob,
+  AuditFlag,
+  AuditPlaybookReview,
   BusinessFactBlock,
+  BusinessFactRow,
   BusinessFactView,
   CompanyDetail,
   CompanySummary,
@@ -59,6 +62,7 @@ const tabs: Array<{ key: TabKey; label: string }> = [
   { key: "reverse", label: "逆向 DCF" },
   { key: "quarterly", label: "季度展示" },
   { key: "da", label: "D&A" },
+  { key: "audit", label: "财务审计助理" },
 ];
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -84,10 +88,18 @@ async function apiPostJson<T>(path: string, body: Record<string, unknown>): Prom
 }
 
 async function previewAssumptions(companyId: string, patches: AssumptionPatch[]): Promise<AssumptionPreview> {
-  return apiPostJson<AssumptionPreview>(
-    `/api/companies/${encodeURIComponent(companyId)}/assumption-preview`,
-    { patches },
-  );
+  const response = await fetch(`/api/companies/${encodeURIComponent(companyId)}/assumption-preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ patches }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    const err = new Error(text || `Preview failed (${response.status})`) as Error & { status?: number };
+    err.status = response.status;
+    throw err;
+  }
+  return response.json() as Promise<AssumptionPreview>;
 }
 
 async function generateAssumptionBrief(
@@ -185,12 +197,18 @@ function average(values: Array<number | null>): number | null {
   return finite.reduce((sum, value) => sum + value, 0) / finite.length;
 }
 
+function growthRate(current: number | null | undefined, previous: number | null | undefined): number | null {
+  if (typeof current !== "number" || typeof previous !== "number" || !Number.isFinite(current) || !Number.isFinite(previous)) return null;
+  const denominator = previous < 0 ? Math.abs(previous) : previous;
+  if (Math.abs(denominator) < 1e-9) return null;
+  return (current - previous) / denominator;
+}
+
 function yearOverYear(series: Record<string, number> | undefined, year: string): number | null {
   if (!series) return null;
   const current = series[year];
   const previous = series[String(Number(year) - 1)];
-  if (typeof current !== "number" || typeof previous !== "number" || previous === 0) return null;
-  return current / previous - 1;
+  return growthRate(current, previous);
 }
 
 function statementValue(sheet: StatementSheet | undefined, fields: string[], year: string): number | null {
@@ -349,6 +367,13 @@ function formatMarketDate(value: unknown): string {
 
 function Overview({ detail }: { detail: CompanyDetail }) {
   const { summary, dcf_summary: dcf } = detail;
+  async function openCompanyFolder() {
+    try {
+      await apiPost<{ ok: boolean }>(`/api/companies/${encodeURIComponent(summary.id)}/open-folder`);
+    } catch (err) {
+      window.alert(`打开目录失败：${String(err)}`);
+    }
+  }
   const market = detail.derived_metrics?.market_snapshot ?? {};
   const valuation = detail.derived_metrics?.valuation ?? {};
   const ratingConfig = detail.rating_report ?? DEFAULT_RATING_REPORT_CONFIG;
@@ -389,6 +414,11 @@ function Overview({ detail }: { detail: CompanyDetail }) {
           <p>
             {summary.ticker ?? summary.code} · 行情日 {formatMarketDate(market.trade_date)}
           </p>
+        </div>
+        <div className="overview-hero-actions">
+          <button className="primary-button" type="button" onClick={() => void openCompanyFolder()}>
+            打开目录
+          </button>
         </div>
       </section>
 
@@ -1108,7 +1138,7 @@ function ValuationBridge({ dcf, detail }: { dcf: Record<string, unknown> | null 
 // ─────────────────────────── Full statement table (history | forecast) ───────────────────────────
 
 const STATEMENT_KEY_ROWS: Record<string, Set<string>> = {
-  is: new Set(["revenue", "total_revenue", "operate_profit", "total_profit", "n_income", "n_income_attr_p"]),
+  is: new Set(["revenue", "total_revenue", "operate_profit", "total_profit", "n_income_attr_p"]),
   bs: new Set(["money_cap", "total_assets", "total_liab", "total_hldr_eqy_inc_min_int", "total_hldr_eqy_exc_min_int"]),
   cf: new Set(["n_cashflow_act", "n_cashflow_inv_act", "n_cash_flows_fnc_act", "n_incr_cash_cash_equ", "c_cash_equ_end_period"]),
 };
@@ -1129,7 +1159,7 @@ const STATEMENT_RELOCATE_AFTER: Record<string, Record<string, string>> = {
   },
 };
 
-const QUARTERLY_KEY_ROWS = new Set(["revenue", "oper_cost", "operate_profit", "total_profit", "n_income"]);
+const QUARTERLY_KEY_ROWS = new Set(["revenue", "oper_cost", "operate_profit", "total_profit", "n_income_attr_p"]);
 
 type StatementDisplayFormat = "number" | "percent" | "signedPercent";
 
@@ -1152,7 +1182,7 @@ function calcYoy(values: Record<string, number | null>, years: string[]): Record
   return years.reduce<Record<string, number | null>>((acc, year, index) => {
     const current = values[year];
     const previous = index > 0 ? values[years[index - 1]] : null;
-    acc[year] = ratioOrNull(typeof current === "number" && typeof previous === "number" ? current - previous : null, previous);
+    acc[year] = growthRate(current, previous);
     return acc;
   }, {});
 }
@@ -1252,6 +1282,11 @@ function buildStatementDisplayRows(sheet: StatementSheet, showZeroRows: boolean,
     const totalProfit = rowMap.get("total_profit");
     const incomeTax = rowMap.get("income_tax");
     const netIncome = rowMap.get("n_income");
+    const parentNetIncome = rowMap.get("n_income_attr_p");
+    const marginIncome = parentNetIncome ?? netIncome;
+    const marginIncomeAnchor = marginIncome?.field;
+    const marginMetric = parentNetIncome ? "n_income_attr_p_margin" : "n_income_margin";
+    const yoyMetric = parentNetIncome ? "n_income_attr_p_yoy" : "n_income_yoy";
     const addMetric = (anchor: string, row: StatementDisplayRow | null | undefined) => {
       if (!row || (!showZeroRows && row.is_zero)) return;
       metricRowsByAnchor.set(anchor, [...(metricRowsByAnchor.get(anchor) ?? []), row]);
@@ -1270,9 +1305,9 @@ function buildStatementDisplayRows(sheet: StatementSheet, showZeroRows: boolean,
       if (operateProfit) addDerived("operate_profit", "operate_margin", "operate_margin_display", "营业利润率");
       if (totalProfit) addDerived("total_profit", "total_profit_margin", "total_profit_margin_display", "利润总额率");
       if (incomeTax && totalProfit) addDerived("income_tax", "effective_tax_rate", "income_tax_rate_display", "所得税率");
-      if (netIncome) {
-        addDerived("n_income", "n_income_margin", "net_margin_display", "净利率");
-        addDerived("n_income", "n_income_yoy", "n_income_yoy_display", "净利润同比", "signedPercent");
+      if (marginIncomeAnchor) {
+        addDerived(marginIncomeAnchor, marginMetric, "net_margin_display", "净利率");
+        addDerived(marginIncomeAnchor, yoyMetric, "n_income_yoy_display", "净利润同比", "signedPercent");
       }
     } else {
     const revValues = revenue?.values ?? {};
@@ -1303,9 +1338,9 @@ function buildStatementDisplayRows(sheet: StatementSheet, showZeroRows: boolean,
     if (operateProfit) addMetric("operate_profit", makeMetricRow("operate_margin_display", "营业利润率", ratioToRevenue(operateProfit)));
     if (totalProfit) addMetric("total_profit", makeMetricRow("total_profit_margin_display", "利润总额率", ratioToRevenue(totalProfit)));
     if (incomeTax && totalProfit) addMetric("income_tax", makeMetricRow("income_tax_rate_display", "所得税率", derivedMargin(incomeTax, totalProfit)));
-    if (netIncome) {
-      addMetric("n_income", makeMetricRow("net_margin_display", "净利率", ratioToRevenue(netIncome)));
-      addMetric("n_income", makeMetricRow("n_income_yoy_display", "净利润同比", calcYoy(netIncome.values, visibleYears), "signedPercent"));
+    if (marginIncomeAnchor && marginIncome) {
+      addMetric(marginIncomeAnchor, makeMetricRow("net_margin_display", "净利率", ratioToRevenue(marginIncome)));
+      addMetric(marginIncomeAnchor, makeMetricRow("n_income_yoy_display", "净利润同比", calcYoy(marginIncome.values, visibleYears), "signedPercent"));
     }
     }
   }
@@ -1405,6 +1440,9 @@ type AxisRow = {
   driver?: boolean;
   highlight?: boolean;
   editablePath?: string;
+  // 双向编辑：行显示的是派生值（同比/收入），编辑后反解出 driver 写到 editablePath 指向的指针。
+  // abs_from_yoy=abs 族同比行→反推 revenue_abs；yoy_from_abs=growth 族收入行→反推 revenue_yoy。
+  editableTransform?: "abs_from_yoy" | "yoy_from_abs";
   // int=整数金额(百万元) · num2=2位小数(参考项通用) · decimal=小数比率×100+%(旋钮) ·
   // percent1=无符号百分比1位 · signedDecimal=带符号同比% · volume=1位小数(万吨)
   format?: "int" | "num1" | "num2" | "decimal" | "decimal1" | "percent1" | "signedDecimal" | "volume" | "text";
@@ -1413,6 +1451,16 @@ type AxisRow = {
 type AssumptionInlineEdit = {
   pointer: string;
   raw: string;
+  // 双向编辑：transform 非空时 raw 是派生值（同比/收入），commit 时反解成 driver 值再写 draft。
+  transform?: "abs_from_yoy" | "yoy_from_abs";
+  year?: string;
+  inputFormat?: AxisRow["format"];
+};
+
+type InlineEditOpts = {
+  transform?: "abs_from_yoy" | "yoy_from_abs";
+  displayValue?: number | null;
+  inputFormat?: AxisRow["format"];
 };
 type AxisGroup = {
   title: string;
@@ -1482,6 +1530,77 @@ function yoySeries(history: Record<string, number | null> | undefined): Record<s
     out[y] = yearOverYear(clean, y);
   }
   return out;
+}
+
+// 本地即时派生（Tier 2）：preview 未返回时（打字 450ms 窗口 / forecast 报错），用纯 JS 按 driver draft
+// 重算分线收入+yoy+总收入，避免 derived 行卡在旧值。abs 族用 revenue_abs；growth 族用 revenue_yoy 反推。
+// 与后端 _evaluate_yaml1_revenue_leaf 同源；preview 返回后权威值覆盖本地值。
+function effectiveSegmentSeries(
+  seg: Yaml1RevenueSegment,
+  editable: EditableAssumption[],
+  drafts: Record<string, number | null>,
+  years: string[],
+): { revenues: Record<string, number | null>; yoys: Record<string, number | null>; drafted: boolean } {
+  const drivers = revenueDriversForSegment(editable, seg.key);
+  const absDriver = drivers.find((r) => revenueDriverKey(r, seg.key) === "revenue_abs");
+  const yoyDriver = drivers.find((r) => revenueDriverKey(r, seg.key) === "revenue_yoy");
+  const revValues: Record<string, number | null> = {};
+  for (const [y, v] of Object.entries(seg.history_revenues ?? {})) revValues[y] = v;
+  for (const y of years) revValues[y] = seg.revenues[y] ?? null;
+  let drafted = false;
+  const ordered = [...years].sort((a, b) => Number(a) - Number(b));
+  if (seg.family === "abs" && absDriver) {
+    for (const y of ordered) {
+      const cell = editableCellForPeriod(absDriver, y);
+      if (cell && cell.pointer in drafts) {
+        revValues[y] = drafts[cell.pointer];
+        drafted = true;
+      }
+    }
+  } else if (yoyDriver) {
+    let previous: number | null = seg.base_revenue;
+    for (const y of ordered) {
+      const cell = editableCellForPeriod(yoyDriver, y);
+      let yoy: number | null = null;
+      if (cell && cell.pointer in drafts) { yoy = drafts[cell.pointer]; drafted = true; }
+      else yoy = seg.yoys[y] ?? null;
+      if (typeof yoy === "number" && typeof previous === "number") {
+        revValues[y] = previous * (1 + yoy);
+        previous = revValues[y] as number;
+      } else {
+        revValues[y] = seg.revenues[y] ?? null;
+        previous = revValues[y];
+      }
+    }
+  }
+  return { revenues: revValues, yoys: yoySeries(revValues), drafted };
+}
+
+type LocalRevenueView = {
+  segMap: Map<string, { revenues: Record<string, number | null>; yoys: Record<string, number | null> }>;
+  totalRevenues: Record<string, number | null>;
+  anyDraft: boolean;
+};
+
+function deriveLocalRevenueView(
+  view: Yaml1RevenueView | null | undefined,
+  editable: EditableAssumption[],
+  drafts: Record<string, number | null>,
+): LocalRevenueView | null {
+  if (!view?.segments?.length) return null;
+  const segMap = new Map<string, { revenues: Record<string, number | null>; yoys: Record<string, number | null> }>();
+  const totalRevenues: Record<string, number | null> = {};
+  let anyDraft = false;
+  for (const seg of view.segments) {
+    const eff = effectiveSegmentSeries(seg, editable, drafts, view.years);
+    segMap.set(seg.key, { revenues: eff.revenues, yoys: eff.yoys });
+    if (eff.drafted) anyDraft = true;
+    for (const y of view.years) {
+      const v = eff.revenues[y];
+      totalRevenues[y] = (totalRevenues[y] ?? 0) + (typeof v === "number" ? v : 0);
+    }
+  }
+  return { segMap, totalRevenues, anyDraft };
 }
 
 function ratioSeries(
@@ -1681,8 +1800,8 @@ function UnifiedYearTable({
   drafts?: Record<string, number | null>;
   inlineEdit?: AssumptionInlineEdit | null;
   onInlineEditChange?: (raw: string) => void;
-  onStartInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell) => void;
-  onCommitInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell) => void;
+  onStartInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell, opts?: InlineEditOpts) => void;
+  onCommitInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell, opts?: InlineEditOpts) => void;
   onCancelInlineEdit?: () => void;
 }) {
   const periodClass = (year: string) => {
@@ -1703,6 +1822,37 @@ function UnifiedYearTable({
     return cell ? { assumption, cell } : null;
   };
 
+  // 按渲染顺序展开所有可编辑 cell，供 Tab 键跳转。
+  const editableCells = useMemo(() => {
+    const out: Array<{ assumption: EditableAssumption; cell: EditableAssumptionCell; row: AxisRow; year: string }> = [];
+    if (editMode) {
+      for (const g of groups) {
+        for (const r of g.rows) {
+          for (const y of years) {
+            const ec = editableCell(r, y);
+            if (ec) out.push({ assumption: ec.assumption, cell: ec.cell, row: r, year: y });
+          }
+        }
+      }
+    }
+    return out;
+    // editableCell 闭包依赖 editableByPath；groups/years/editMode 是 props。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups, years, editMode, editableByPath]);
+
+  // Tab 提交当前 cell 并自动进入下一个可编辑 cell 的编辑模式（Shift+Tab 反向）。
+  const tabToNext = (currentCell: EditableAssumptionCell, reverse?: boolean) => {
+    const idx = editableCells.findIndex((c) => c.cell.pointer === currentCell.pointer);
+    if (idx < 0) return;
+    const next = editableCells[idx + (reverse ? -1 : 1)];
+    if (!next) return;
+    const transform = next.row.editableTransform;
+    const opts: InlineEditOpts | undefined = transform
+      ? { transform, displayValue: next.row.values[next.year], inputFormat: next.row.format }
+      : undefined;
+    onStartInlineEdit?.(next.assumption, next.cell, opts);
+  };
+
   return (
     <div className={`table-scroll workbook-scroll ${stickySummary ? "summary-sticky-scroll" : ""}`}>
       <table className={`financial-table unified-table ${stickySummary ? "summary-sticky-table" : ""}`}>
@@ -1715,7 +1865,9 @@ function UnifiedYearTable({
           </tr>
         </thead>
         <tbody>
-          {groups.map((g, gi) => (
+          {groups.map((g, gi) => {
+            const highlightRowIndices = g.rows.map((row, idx) => row.highlight ? idx : -1).filter((idx) => idx >= 0);
+            return (
             <Fragment key={gi}>
               <tr className={`group-header-row ${stickySummary && gi === 0 ? "sticky-summary-group" : ""}`}>
                 <th colSpan={years.length + 1}>
@@ -1736,23 +1888,31 @@ function UnifiedYearTable({
               {g.rows.map((r, ri) => {
                 const rowHasEditable = editMode && years.some((y) => Boolean(editableCell(r, y)));
                 const stickySummaryRow = stickySummary && gi === 0 && r.highlight && ri < 4;
+                const isFirstHighlight = highlightRowIndices.length > 0 && highlightRowIndices[0] === ri;
+                const isLastHighlight = highlightRowIndices.length > 0 && highlightRowIndices[highlightRowIndices.length - 1] === ri;
                 return (
-                <tr key={ri} className={`${r.bold ? "key-row" : ""} ${r.muted ? "muted-row" : ""} ${r.driver ? "driver-assumption-row" : ""} ${r.highlight ? "summary-highlight-row" : ""} ${stickySummaryRow ? `sticky-summary-row sticky-summary-row-${ri}` : ""} ${rowHasEditable ? "editable-assumption-row" : ""}`}>
+                <tr key={ri} className={`${r.bold ? "key-row" : ""} ${r.muted ? "muted-row" : ""} ${r.driver ? "driver-assumption-row" : ""} ${r.highlight ? "summary-highlight-row" : ""} ${isFirstHighlight ? "summary-highlight-first" : ""} ${isLastHighlight ? "summary-highlight-last" : ""} ${stickySummaryRow ? `sticky-summary-row sticky-summary-row-${ri}` : ""} ${rowHasEditable ? "editable-assumption-row" : ""}`}>
                   <td className="statement-label" title={r.note ?? r.label}>
                     {r.override ? <span className="override-dot" title="主动覆盖 / 查证" /> : null}
                     {r.label}
                   </td>
                   {years.map((y) => {
                     const v = r.values[y];
-                    const editable = editMode ? editableCell(r, y) : null;
-                    const currentValue = editable ? editableValueForCell(editable.cell, drafts) : v;
-                    const changed = editable ? editableCellChanged(editable.cell, drafts) : false;
-                    const isInline = Boolean(editable && inlineEdit?.pointer === editable.cell.pointer);
+                    const draftable = editableCell(r, y);
+                    const editable = editMode ? draftable : null;
+                    const transform = r.editableTransform;
+                    const isDerived = Boolean(draftable) && Boolean(transform);
+                    const hasDraftValue = draftable ? draftable.cell.pointer in drafts : false;
+                    const currentValue = isDerived ? v : (draftable && hasDraftValue ? editableValueForCell(draftable.cell, drafts) : v);
+                    const changed = draftable ? editableCellChanged(draftable.cell, drafts) : false;
+                    const isInline = Boolean(editable && inlineEdit?.pointer === editable.cell.pointer && (inlineEdit?.transform ?? null) === (transform ?? null));
+                    const startOpts: InlineEditOpts | undefined = isDerived ? { transform, displayValue: v, inputFormat: r.format } : undefined;
+                    const commitOpts: InlineEditOpts | undefined = isDerived ? { transform } : undefined;
                     return (
                       <td
                         className={`numeric ${periodClass(y)} ${typeof currentValue === "number" && currentValue < 0 ? "negative" : ""} ${editable ? "assumption-editable-cell" : ""} ${changed ? "assumption-cell-changed" : ""}`}
                         key={y}
-                        onClick={editable && !isInline ? () => onStartInlineEdit?.(editable.assumption, editable.cell) : undefined}
+                        onClick={editable && !isInline ? () => onStartInlineEdit?.(editable.assumption, editable.cell, startOpts) : undefined}
                       >
                         {editable && isInline ? (
                           <div className="assumption-inline-editor">
@@ -1760,11 +1920,17 @@ function UnifiedYearTable({
                               autoFocus
                               onBlur={(event) => {
                                 if (event.currentTarget.dataset.cancel === "true") return;
-                                onCommitInlineEdit?.(editable.assumption, editable.cell);
+                                onCommitInlineEdit?.(editable.assumption, editable.cell, commitOpts);
                               }}
                               onChange={(event) => onInlineEditChange?.(event.currentTarget.value)}
                               onKeyDown={(event) => {
-                                if (event.key === "Enter") onCommitInlineEdit?.(editable.assumption, editable.cell);
+                                if (event.key === "Enter") onCommitInlineEdit?.(editable.assumption, editable.cell, commitOpts);
+                                if (event.key === "Tab") {
+                                  event.preventDefault();
+                                  onCommitInlineEdit?.(editable.assumption, editable.cell, commitOpts);
+                                  tabToNext(editable.cell, event.shiftKey);
+                                  return;
+                                }
                                 if (event.key === "Escape") {
                                   event.currentTarget.dataset.cancel = "true";
                                   onCancelInlineEdit?.();
@@ -1779,14 +1945,16 @@ function UnifiedYearTable({
                             className={`assumption-inline-cell ${changed ? "is-manual" : ""}`}
                             onClick={(event) => {
                               event.stopPropagation();
-                              onStartInlineEdit?.(editable.assumption, editable.cell);
+                              onStartInlineEdit?.(editable.assumption, editable.cell, startOpts);
                             }}
                             type="button"
                           >
-                            {editableDisplayValue(editable.assumption, currentValue)}
+                            {isDerived ? formatAxisCell(currentValue, r.format) : editableDisplayValue(editable.assumption, currentValue)}
                           </button>
                         ) : (
-                          formatAxisCell(v, r.format)
+                          draftable && hasDraftValue && !isDerived
+                            ? editableDisplayValue(draftable.assumption, currentValue)
+                            : formatAxisCell(currentValue, r.format)
                         )}
                       </td>
                     );
@@ -1795,7 +1963,7 @@ function UnifiedYearTable({
                 );
               })}
             </Fragment>
-          ))}
+          );})}
         </tbody>
       </table>
     </div>
@@ -1832,6 +2000,88 @@ function businessFactBlocksToAxisGroups(blocks: BusinessFactBlock[]): AxisGroup[
     }));
 }
 
+// business-facts 路径的本地即时派生：editable driver cell 已靠 draft 覆盖显示收入/同比，
+// 但派生行（abs 族的同比、growth 族的收入）是静态 values，编辑后不联动。这里按 entity 分组，
+// 用编辑后的 driver 本地重算派生行，与 legacy 路径的 effectiveSegmentSeries 同源。
+function effectiveRowValues(
+  row: BusinessFactRow,
+  editable: EditableAssumption[],
+  drafts: Record<string, number | null>,
+): Record<string, number | null> {
+  const out: Record<string, number | null> = { ...row.values };
+  const path = row.editable_path;
+  if (!path) return out;
+  const driver = editable.find((r) => r.path === path);
+  if (!driver) return out;
+  for (const cell of driver.cells) {
+    if (cell.pointer in drafts) out[cell.year] = drafts[cell.pointer];
+  }
+  return out;
+}
+
+function revenueFromEffectiveYoy(
+  revRow: BusinessFactRow,
+  effectiveYoy: Record<string, number | null>,
+  years: string[],
+): Record<string, number | null> {
+  const ordered = [...years].sort((a, b) => Number(a) - Number(b));
+  const out: Record<string, number | null> = {};
+  let prev: number | null = null;
+  for (const y of ordered) {
+    const yoy = effectiveYoy[y];
+    if (typeof yoy === "number" && typeof prev === "number") {
+      out[y] = prev * (1 + yoy);
+    } else {
+      out[y] = revRow.values[y] ?? null;
+    }
+    prev = out[y];
+  }
+  return out;
+}
+
+function deriveBusinessFactBlocks(
+  blocks: BusinessFactBlock[],
+  editable: EditableAssumption[],
+  drafts: Record<string, number | null>,
+  applyDrafts: boolean,
+): BusinessFactBlock[] {
+  if (!applyDrafts) return blocks;
+  return blocks.map((block) => {
+    const byEntity = new Map<string, BusinessFactRow[]>();
+    for (const row of block.rows) {
+      const list = byEntity.get(row.entity_key) ?? [];
+      list.push(row);
+      byEntity.set(row.entity_key, list);
+    }
+    const years = Object.keys(block.rows[0]?.values ?? {});
+    const newRows = block.rows.map((row) => {
+      const siblings = byEntity.get(row.entity_key) ?? [];
+      const revRow = siblings.find((r) => r.metric === "revenue");
+      const yoyRow = siblings.find((r) => r.metric === "revenue_yoy");
+      // abs 族：收入行可编辑 → 用编辑后收入重算同比行
+      if (row.metric === "revenue_yoy" && revRow?.editable_path) {
+        const effRev = effectiveRowValues(revRow, editable, drafts);
+        return { ...row, values: yoySeries(effRev) };
+      }
+      // growth 族：同比行可编辑 → 用编辑后同比重算收入行
+      if (row.metric === "revenue" && yoyRow?.editable_path && !row.editable_path) {
+        const effYoy = effectiveRowValues(yoyRow, editable, drafts);
+        return { ...row, values: revenueFromEffectiveYoy(row, effYoy, years) };
+      }
+      // 销量/单价：_yoy 行可编辑 → 用编辑后增长率复利出绝对值行（历史末值 × Π(1+增长率)）
+      if ((row.metric === "volume" || row.metric === "price") && !row.editable_path) {
+        const growthRow = siblings.find((r) => r.metric === `${row.metric}_yoy`);
+        if (growthRow?.editable_path) {
+          const effGrowth = effectiveRowValues(growthRow, editable, drafts);
+          return { ...row, values: revenueFromEffectiveYoy(row, effGrowth, years) };
+        }
+      }
+      return row;
+    });
+    return { ...block, rows: newRows };
+  });
+}
+
 function businessFactYears(blocks: BusinessFactBlock[]): string[] {
   return unionYears(blocks.map((block) => block.rows.flatMap((row) => Object.keys(row.values))));
 }
@@ -1859,9 +2109,9 @@ function BusinessFactTable({
   drafts?: Record<string, number | null>;
   inlineEdit?: AssumptionInlineEdit | null;
   onCancelInlineEdit?: () => void;
-  onCommitInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell) => void;
+  onCommitInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell, opts?: InlineEditOpts) => void;
   onInlineEditChange?: (raw: string) => void;
-  onStartInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell) => void;
+  onStartInlineEdit?: (assumption: EditableAssumption, cell: EditableAssumptionCell, opts?: InlineEditOpts) => void;
 }) {
   return (
     <UnifiedYearTable
@@ -1882,6 +2132,7 @@ function BusinessFactTable({
 }
 
 function displayKnobLabel(label: string, path: string): string {
+  if (path === "income.financial_expense.other_fin_exp_abs") return "非息财务费用";
   const cleaned = label.replace(/^#/, "").replace(/\(.*\)$/, "").replace(/^(减|加):/, "").trim() || path;
   if (path.startsWith("income.cost_rates.") && !cleaned.endsWith("率")) return `${cleaned}率`;
   return cleaned;
@@ -1916,15 +2167,13 @@ function profitRowsForRevenueBlock(
   baseYear: number,
   revenueValues: Record<string, number | null>,
 ): AxisRow[] {
-  const netIncome: Record<string, number | null> = {};
   const attrNetIncome: Record<string, number | null> = {};
   for (const year of years) {
-    netIncome[year] = statementValueFromPreview(baseSheet, previewSheet, ["n_income"], year, baseYear);
     attrNetIncome[year] = statementValueFromPreview(baseSheet, previewSheet, ["n_income_attr_p"], year, baseYear);
   }
   const netMargin: Record<string, number | null> = {};
   for (const year of years) {
-    const income = netIncome[year];
+    const income = attrNetIncome[year];
     const revenue = revenueValues[year];
     netMargin[year] = typeof income === "number" && typeof revenue === "number" && revenue !== 0 ? income / revenue : null;
   }
@@ -1980,7 +2229,7 @@ function historicalAssumptionValues(path: string, sheet: StatementSheet | undefi
 
 const REVENUE_DRIVER_LABELS: Record<string, string> = {
   volume: "销量增速",
-  price: "吨价增速",
+  price: "单价增速",
   revenue_yoy: "营收增速",
   margin: "毛利率",
 };
@@ -2113,19 +2362,40 @@ function buildRevenueGroups(
   editable: EditableAssumption[] = [],
   fullStatementSheets?: StatementSheet[],
   previewStatementSheets?: StatementSheet[],
+  previewRevenueView?: Yaml1RevenueView | null,
+  localRevenueView?: LocalRevenueView | null,
 ): AxisGroup[] {
   const groups: AxisGroup[] = [];
+  // 草稿驱动的分线收入重算：preview 的 revenue_view 由后端按 patches 重算分线收入得来，
+  // 优先于静态 seg.revenues，使编辑 yoy 后分线收入行联动（与总收入行同源）。
+  const previewSegByKey = new Map<string, Yaml1RevenueSegment>(
+    (previewRevenueView?.segments ?? []).map((s) => [s.key, s]),
+  );
   // 总收入：历史从完整 IS 表 revenue 补全，base+预测来自 revenueView，拼成完整时间轴
   const fullIs = fullStatementSheets?.find((s) => s.key === "is");
   const previewIs = previewStatementSheets?.find((s) => s.key === "is");
   const totalValues: Record<string, number | null> = {};
   if (fullIs) {
     for (const y of fullIs.years) {
-      if (Number(y) <= view.base_year) totalValues[y] = statementValue(fullIs, ["revenue"], y);
+      totalValues[y] = statementValue(fullIs, ["revenue"], y);
     }
   }
   totalValues[String(view.base_year)] = view.base_revenue;
-  for (const y of view.years) totalValues[y] = statementValue(previewIs, ["revenue"], y) ?? view.revenues[y] ?? null;
+  const forecastYears = unionYears([
+    view.years,
+    previewIs?.years,
+    previewRevenueView?.years,
+    fullIs?.years.filter((y) => Number(y) > view.base_year),
+  ]);
+  for (const y of forecastYears) {
+    if (Number(y) <= view.base_year) continue;
+    totalValues[y] = previewRevenueView?.revenues[y]
+      ?? (localRevenueView?.anyDraft && y in localRevenueView.totalRevenues ? localRevenueView.totalRevenues[y] : null)
+      ?? statementValue(previewIs, ["revenue"], y)
+      ?? view.revenues[y]
+      ?? statementValue(fullIs, ["revenue"], y)
+      ?? null;
+  }
   const totalYoy: Record<string, number | null> = yoySeries(totalValues);
   const totalRows: AxisRow[] = [
     { label: "营业收入", bold: true, highlight: true, values: totalValues, format: "int" },
@@ -2154,13 +2424,34 @@ function buildRevenueGroups(
     // 两者都不进 inlineDriverRows，避免与收入/同比行重复显示。
     const revenueAbsDriver = segmentDrivers.find((row) => revenueDriverKey(row, seg.key) === "revenue_abs");
     const inlineDriverRows = segmentDrivers.filter((row) => row !== revenueYoyDriver && row !== revenueAbsDriver);
-    const revValues: Record<string, number | null> = { ...(seg.history_revenues ?? {}), ...seg.revenues };
-    segRows.push({ label: `${seg.name} · 收入`, values: revValues, note: seg.note, format: "int", editablePath: revenueAbsDriver?.path });
-    const yoyValues: Record<string, number | null> = { ...yoySeries(seg.history_revenues), ...seg.yoys };
+    const previewSeg = previewSegByKey.get(seg.key);
+    const segRevenues = previewSeg?.revenues ?? localRevenueView?.segMap.get(seg.key)?.revenues ?? seg.revenues;
+    const segYoys = previewSeg?.yoys ?? localRevenueView?.segMap.get(seg.key)?.yoys ?? seg.yoys;
+    const revValues: Record<string, number | null> = { ...(seg.history_revenues ?? {}), ...segRevenues };
+    const isAbsFamily = Boolean(revenueAbsDriver);
+    const isGrowthFamily = Boolean(revenueYoyDriver);
+    segRows.push({
+      label: `${seg.name} · 收入`,
+      values: revValues,
+      note: seg.note,
+      format: "int",
+      editablePath: revenueAbsDriver?.path ?? revenueYoyDriver?.path,
+      // growth 族收入是派生值：编辑后反推 revenue_yoy 写到 yoy driver。
+      editableTransform: isGrowthFamily && !isAbsFamily ? "yoy_from_abs" : undefined,
+    });
+    const yoyValues: Record<string, number | null> = { ...yoySeries(seg.history_revenues), ...segYoys };
     if (revenueYoyDriver) {
       for (const cell of revenueYoyDriver.cells) yoyValues[cell.year] = cell.value;
     }
-    segRows.push({ label: `${seg.name} · 同比`, muted: true, values: yoyValues, format: "signedDecimal", editablePath: revenueYoyDriver?.path });
+    segRows.push({
+      label: `${seg.name} · 同比`,
+      muted: true,
+      values: yoyValues,
+      format: "signedDecimal",
+      editablePath: revenueYoyDriver?.path ?? revenueAbsDriver?.path,
+      // abs 族同比是派生值：编辑后反推 revenue_abs 写到 abs driver。
+      editableTransform: isAbsFamily && !isGrowthFamily ? "abs_from_yoy" : undefined,
+    });
     const grossMarginHistory = segmentGrossMarginHistory(seg);
     const hasGrossMarginHistory = hasSeriesValues(grossMarginHistory);
     const marginDriver = inlineDriverRows.find((row) => revenueDriverKey(row, seg.key) === "margin");
@@ -2275,6 +2566,24 @@ function parseEditableInput(row: EditableAssumption, raw: string): number | null
   const parsed = Number(trimmed.replace(/,/g, "").replace(/%$/, ""));
   if (!Number.isFinite(parsed)) return null;
   return editableIsPercent(row) ? parsed / 100 : parsed;
+}
+
+// 派生行（双向编辑）的输入/解析：按 AxisRow.format 处理，与 driver 的 assumption format 解耦。
+// signedDecimal/decimal*/percent1 = 比率，输入按百分数录入（61.9 → 0.619）；int/num* = 原值。
+function axisInputValue(value: number | null, format: AxisRow["format"] | undefined): string {
+  if (value == null) return "";
+  const isRate = format === "signedDecimal" || format === "decimal" || format === "decimal1" || format === "percent1";
+  const scaled = isRate ? value * 100 : value;
+  return `${Number(scaled.toFixed(6))}`;
+}
+
+function axisParseInput(raw: string, format: AxisRow["format"] | undefined): number | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const parsed = Number(trimmed.replace(/,/g, "").replace(/%$/, ""));
+  if (!Number.isFinite(parsed)) return null;
+  const isRate = format === "signedDecimal" || format === "decimal" || format === "decimal1" || format === "percent1";
+  return isRate ? parsed / 100 : parsed;
 }
 
 function editableCellForPeriod(row: EditableAssumption, period: string): EditableAssumptionCell | undefined {
@@ -2441,6 +2750,80 @@ function EditableAssumptionsTable({
           })}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// Fade 期 / 终值 编辑条：model 表最下方，横向 4 字段。
+// Fade 期长 = fade.to_year - explicit_end，编辑它反推 fade.to_year = explicit_end + 期长。
+function FadeEditStrip({ terminal, editMode, drafts, onDraft }: {
+  terminal: EditableAssumption[];
+  editMode: boolean;
+  drafts: Record<string, number | null>;
+  onDraft: (pointer: string, value: number | null) => void;
+}) {
+  if (!terminal.length) return null;
+  const cellOf = (path: string) => {
+    const row = terminal.find((r) => r.path === path);
+    const cell = row?.cells[0];
+    if (!row || !cell) return { row: null as EditableAssumption | null, pointer: null as string | null, value: null as number | null };
+    return { row, pointer: cell.pointer, value: cell.pointer in drafts ? drafts[cell.pointer] : cell.value };
+  };
+  const explicit = cellOf("terminal.explicit_end");
+  const toYear = cellOf("terminal.fade.to_year");
+  const target = cellOf("terminal.fade.target_growth");
+  const perpet = cellOf("terminal.perpetual_growth");
+  const fadeLength = typeof toYear.value === "number" && typeof explicit.value === "number" ? toYear.value - explicit.value : null;
+
+  const renderField = (label: string, row: EditableAssumption | null, pointer: string | null, value: number | null) => {
+    if (!row || !pointer) return null;
+    const changed = pointer in drafts && drafts[pointer] !== row.cells[0]?.value;
+    return (
+      <label className={`terminal-edit-field ${changed ? "changed" : ""}`} key={label}>
+        <span>{label}</span>
+        {editMode ? (
+          <input
+            onChange={(event) => onDraft(pointer, parseEditableInput(row, event.currentTarget.value))}
+            type="number"
+            value={editableInputValue(row, value)}
+          />
+        ) : (
+          <strong>{editableDisplayValue(row, value)}</strong>
+        )}
+      </label>
+    );
+  };
+
+  const lengthRow = toYear.row;
+  const lengthChanged = toYear.pointer != null && toYear.pointer in drafts;
+  const lengthOriginal = typeof toYear.row?.cells[0]?.value === "number" && typeof explicit.value === "number"
+    ? (toYear.row.cells[0].value as number) - explicit.value : null;
+
+  return (
+    <div className="terminal-edit-strip fade-edit-strip">
+      <div className="fade-edit-heading">Fade 期 / 终值</div>
+      {renderField("显式期末", explicit.row, explicit.pointer, explicit.value)}
+      {lengthRow && toYear.pointer ? (
+        <label className={`terminal-edit-field ${lengthChanged && fadeLength !== lengthOriginal ? "changed" : ""}`}>
+          <span>Fade 期长(年)</span>
+          {editMode ? (
+            <input
+              onChange={(event) => {
+                const len = Number(event.currentTarget.value);
+                const base = typeof explicit.value === "number" ? explicit.value : null;
+                if (Number.isFinite(len) && base != null) onDraft(toYear.pointer as string, base + len);
+                else onDraft(toYear.pointer as string, null);
+              }}
+              type="number"
+              value={typeof fadeLength === "number" ? String(fadeLength) : ""}
+            />
+          ) : (
+            <strong>{typeof fadeLength === "number" ? formatNumber(fadeLength, 0) : "-"}</strong>
+          )}
+        </label>
+      ) : null}
+      {renderField("衰退目标增速", target.row, target.pointer, target.value)}
+      {renderField("永续增速", perpet.row, perpet.pointer, perpet.value)}
     </div>
   );
 }
@@ -2852,6 +3235,7 @@ function YamlWorkbook({
   annualRevenueBreakdown,
   yaml1Text,
   path,
+  onPreviewChange,
 }: {
   companyId: string;
   initialPresentation?: Yaml1Presentation | null;
@@ -2866,6 +3250,8 @@ function YamlWorkbook({
   annualRevenueBreakdown?: AnnualRevenueBreakdownRow[];
   yaml1Text?: string | null;
   path?: string | null;
+  // 把 preview 镜像到父级，供季度表等 sibling tab 实时消费试算结果。
+  onPreviewChange?: (preview: AssumptionPreview | null) => void;
 }) {
   const [presentation, setPresentation] = useState<Yaml1Presentation | null>(initialPresentation ?? null);
   const [presentationStatus, setPresentationStatus] = useState<string[]>([]);
@@ -2882,8 +3268,12 @@ function YamlWorkbook({
   const [inlineEdit, setInlineEdit] = useState<AssumptionInlineEdit | null>(null);
   const [yamlSubtab, setYamlSubtab] = useState<YamlSubtab>("model");
   const [modelRangeMode, setModelRangeMode] = useState<"recent" | "full">("recent");
-  const editableRows = editableAssumptions ?? [];
+  const [modelSummaryPinned, setModelSummaryPinned] = useState(false);
+  // editable 可被 409 自愈刷新：yaml1 被外部改写后 cell.value 过期，重载后 patches 自动重算重试。
+  const [editableState, setEditableState] = useState<EditableAssumption[]>(editableAssumptions ?? []);
+  const editableRows = editableState;
   const patches = useMemo(() => buildAssumptionPatches(editableRows, draftValues), [editableRows, draftValues]);
+  const hasDraftEdits = patches.length > 0;
   const editablePathMap = useMemo(() => editableRowsByPath(editableRows), [editableRows]);
   const editablePeriodList = useMemo(() => editablePeriods(editableRows), [editableRows]);
   const editablePeriodSet = useMemo(() => new Set(editablePeriodList), [editablePeriodList]);
@@ -2902,13 +3292,30 @@ function YamlWorkbook({
     setInlineEdit(null);
     setYamlSubtab("model");
     setModelRangeMode("recent");
+    setModelSummaryPinned(false);
+    setEditableState(editableAssumptions ?? []);
   }, [initialPresentation, path]);
 
+  async function refreshEditableAssumptions() {
+    try {
+      const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}`);
+      if (!res.ok) return;
+      const d = (await res.json()) as { editable_assumptions?: EditableAssumption[] };
+      if (Array.isArray(d.editable_assumptions)) setEditableState(d.editable_assumptions);
+    } catch {
+      /* ignore — 409 自愈失败时退化到普通错误展示 */
+    }
+  }
+
   useEffect(() => {
-    if (!editMode || patches.length === 0) {
+    if (patches.length === 0) {
       setPreview(null);
       setPreviewLoading(false);
       setPreviewError(null);
+      return;
+    }
+    if (!editMode) {
+      setPreviewLoading(false);
       return;
     }
     setPreviewLoading(true);
@@ -2920,6 +3327,13 @@ function YamlWorkbook({
           setPreviewError(typeof firstError === "string" ? firstError : null);
         })
         .catch((error) => {
+          const status = (error as Error & { status?: number }).status;
+          if (status === 409) {
+            // editable 过期（yaml1 被外部改写）：重载后 patches 重算、effect 自动重试一次。
+            setPreviewError(null);
+            refreshEditableAssumptions();
+            return;
+          }
           setPreview(null);
           setPreviewError(error instanceof Error ? error.message : "Preview failed");
         })
@@ -2927,6 +3341,11 @@ function YamlWorkbook({
     }, 450);
     return () => window.clearTimeout(timer);
   }, [companyId, editMode, patches]);
+
+  // 镜像 preview 到父级，供季度表等 sibling tab 实时消费试算结果。
+  useEffect(() => {
+    onPreviewChange?.(preview);
+  }, [preview, onPreviewChange]);
 
   function generatePresentation() {
     setPresentationRunning(true);
@@ -2957,14 +3376,49 @@ function YamlWorkbook({
     setBriefError(null);
   }
 
-  function startInlineEdit(assumption: EditableAssumption, cell: EditableAssumptionCell) {
-    setInlineEdit({ pointer: cell.pointer, raw: editableInputValue(assumption, editableValueForCell(cell, draftValues)) });
+  function startInlineEdit(assumption: EditableAssumption, cell: EditableAssumptionCell, opts?: InlineEditOpts) {
+    const transform = opts?.transform;
+    const inputFormat = opts?.inputFormat;
+    const val = transform && opts?.displayValue !== undefined ? opts.displayValue : editableValueForCell(cell, draftValues);
+    const raw = transform && inputFormat ? axisInputValue(val, inputFormat) : editableInputValue(assumption, val);
+    setInlineEdit({ pointer: cell.pointer, raw, transform, year: cell.year, inputFormat });
   }
 
-  function commitInlineEdit(assumption: EditableAssumption, cell: EditableAssumptionCell) {
+  function commitInlineEdit(assumption: EditableAssumption, cell: EditableAssumptionCell, opts?: InlineEditOpts) {
     if (!inlineEdit || inlineEdit.pointer !== cell.pointer) return;
-    updateDraft(cell.pointer, parseEditableInput(assumption, inlineEdit.raw));
+    const transform = opts?.transform ?? inlineEdit.transform;
+    if (transform) {
+      const derivedValue = axisParseInput(inlineEdit.raw, inlineEdit.inputFormat);
+      commitDerivedEdit(cell.pointer, cell.year, transform, derivedValue);
+    } else {
+      updateDraft(cell.pointer, parseEditableInput(assumption, inlineEdit.raw));
+    }
     setInlineEdit(null);
+  }
+
+  // 双向编辑反解：从派生值（同比/收入）反推出 driver 值写到 driver 指针。
+  //   abs_from_yoy: 用户编辑 abs 族的同比 → revenue_abs[T] = 上期收入 × (1+yoy)
+  //   yoy_from_abs: 用户编辑 growth 族的收入 → revenue_yoy[T] = 收入/上期收入 − 1
+  function commitDerivedEdit(driverPointer: string, year: string, transform: "abs_from_yoy" | "yoy_from_abs", derivedValue: number | null) {
+    if (!revenueView) return;
+    const driverRow = editableRows.find((r) => r.cells.some((c) => c.pointer === driverPointer));
+    if (!driverRow) return;
+    const parts = driverRow.path.split("."); // income.revenue.{segKey}.{knob}
+    const segKey = parts.length >= 4 ? parts[2] : null;
+    const seg = segKey ? revenueView.segments.find((s) => s.key === segKey) : null;
+    if (!seg) return;
+    const prevYear = String(Number(year) - 1);
+    const eff = effectiveSegmentSeries(seg, editableRows, draftValues, revenueView.years);
+    let prevRev = eff.revenues[prevYear];
+    if ((prevRev === null || prevRev === undefined) && Number(prevYear) === seg.base_year) prevRev = seg.base_revenue;
+    if (transform === "abs_from_yoy") {
+      if (typeof prevRev !== "number" || prevRev === 0) { updateDraft(driverPointer, null); return; }
+      const yoy = typeof derivedValue === "number" ? derivedValue : 0;
+      updateDraft(driverPointer, prevRev * (1 + yoy));
+    } else {
+      if (typeof prevRev !== "number" || prevRev === 0 || typeof derivedValue !== "number") { updateDraft(driverPointer, null); return; }
+      updateDraft(driverPointer, growthRate(derivedValue, prevRev));
+    }
   }
 
   async function generateBrief() {
@@ -3026,17 +3480,26 @@ function YamlWorkbook({
         [String(revenueView.base_year)],
       ])
     : [];
-  const legacyRevenueGroups = revenueView ? buildRevenueGroups(revenueView, presentation, secondaryBlocks, segmentAttachedBlocks, displayBlocks, displayWarnings, editableRows, fullStatementSheets, preview?.statement_sheets) : [];
-  const factModelGroups = businessFactBlocksToAxisGroups(factModelBlocks);
+  // 本地即时派生：preview 未返回时（450ms 窗口 / 报错）用 draft 重算分线收入+yoy+总收入，避免卡旧值。
+  const localRevenueView = useMemo(
+    () => (hasDraftEdits ? deriveLocalRevenueView(revenueView, editableRows, draftValues) : null),
+    [hasDraftEdits, revenueView, editableRows, draftValues],
+  );
+  const legacyRevenueGroups = revenueView ? buildRevenueGroups(revenueView, presentation, secondaryBlocks, segmentAttachedBlocks, displayBlocks, displayWarnings, editableRows, fullStatementSheets, preview?.statement_sheets, preview?.revenue_view, localRevenueView) : [];
+  // business-facts 路径本地派生：编辑 driver 后重算派生行（abs 族同比、growth 族收入）。
+  const factModelBlocksDerived = useMemo(
+    () => deriveBusinessFactBlocks(factModelBlocks, editableRows, draftValues, hasDraftEdits),
+    [factModelBlocks, editableRows, draftValues, hasDraftEdits],
+  );
+  const factModelGroups = businessFactBlocksToAxisGroups(factModelBlocksDerived);
   const modelOverviewGroups = factModelGroups.length ? legacyRevenueGroups.slice(0, 1) : [];
   const revenueGroups = factModelGroups.length ? [...modelOverviewGroups, ...factModelGroups] : legacyRevenueGroups;
-  const factYears = businessFactYears(factModelBlocks);
+  const factYears = businessFactYears(factModelBlocksDerived);
 
   // ② 关键假设区
   const asmBase = assumptionsView ? Number(assumptionsView.base_period) : 0;
   const assumptionGroups = assumptionsView ? buildAssumptionsGroups(assumptionsView, fullStatementSheets) : [];
   const assumptionYears = assumptionsView?.years ?? [];
-  const terminal = assumptionsView?.terminal;
   const representedEditablePaths = new Set<string>();
   for (const group of [...revenueGroups, ...assumptionGroups]) {
     for (const row of group.rows) {
@@ -3047,7 +3510,9 @@ function YamlWorkbook({
   const supplementalEditableGroups = buildEditableAxisGroups(supplementalEditableRows, representedEditablePaths);
   const assumptionSideGroups = [...supplementalEditableGroups, ...assumptionGroups];
   const modelGroups = [...revenueGroups, ...assumptionSideGroups];
-  const modelYears = unionYears([factYears, revenueYears, assumptionYears, editablePeriodList]);
+  const fullIsYears = fullStatementSheets?.find((s) => s.key === "is")?.years ?? [];
+  const modelGroupYears = modelGroups.flatMap((group) => group.rows.flatMap((row) => Object.keys(row.values)));
+  const modelYears = unionYears([factYears, revenueYears, assumptionYears, editablePeriodList, modelGroupYears, fullIsYears]);
   const modelVisibleYears = useMemo(() => {
     if (modelRangeMode === "full") return modelYears;
     const base = revenueBase || asmBase;
@@ -3122,7 +3587,9 @@ function YamlWorkbook({
         </div>
         <div className="assumption-preview-status">
           <span>{patches.length ? `${patches.length} 处改动` : "无草稿改动"}</span>
-          <span>{previewLoading ? "Preview 重算中..." : preview ? "Preview 已更新" : "使用正式 forecast"}</span>
+          <span className={previewError ? "preview-status-error" : ""}>
+            {previewLoading ? "Preview 重算中..." : previewError ? "试算失败·部分行未刷新" : preview ? "Preview 已更新" : "使用正式 forecast"}
+          </span>
           {preview?.dcf_summary?.per_share_value != null ? <strong>试算每股 {formatNumber(preview.dcf_summary.per_share_value, 2)}</strong> : null}
         </div>
         {patches.length ? (
@@ -3130,7 +3597,7 @@ function YamlWorkbook({
             如果想保存本次假设编辑，请点击生成Claude Code指令按钮
           </div>
         ) : null}
-        {previewError ? <div className="error-banner">{previewError}</div> : null}
+        {previewError ? <div className="error-banner preview-error-banner">{previewError}</div> : null}
         {briefError ? <div className="error-banner">{briefError}</div> : null}
         {briefPrompt ? (
           <div className="ka-prompt-box">
@@ -3148,11 +3615,28 @@ function YamlWorkbook({
               <div className="eyebrow">① Model table</div>
               <h2>收入拆分 + 关键假设</h2>
             </div>
-            <div className="range-toggle model-range-toggle" role="group">
-              <button className={modelRangeMode === "recent" ? "active" : ""} onClick={() => setModelRangeMode("recent")} type="button">近5年 + 预测</button>
-              <button className={modelRangeMode === "full" ? "active" : ""} onClick={() => setModelRangeMode("full")} type="button">展开全部年份</button>
+            <div className="model-table-controls">
+              <div className="range-toggle model-range-toggle" role="group">
+                <button className={modelRangeMode === "recent" ? "active" : ""} onClick={() => setModelRangeMode("recent")} type="button">近5年 + 预测</button>
+                <button className={modelRangeMode === "full" ? "active" : ""} onClick={() => setModelRangeMode("full")} type="button">展开全部年份</button>
+              </div>
+              <button
+                aria-pressed={modelSummaryPinned}
+                className={`model-pin-button ${modelSummaryPinned ? "active" : ""}`}
+                onClick={() => setModelSummaryPinned((value) => !value)}
+                title={modelSummaryPinned ? "再次点击取消固定" : "固定收入和利润行"}
+                type="button"
+              >
+                点击固定收入和利润行（方便测算）
+              </button>
             </div>
           </div>
+          <FadeEditStrip
+            terminal={editableRows.filter((row) => row.group === "terminal")}
+            editMode={editMode}
+            drafts={draftValues}
+            onDraft={updateDraft}
+          />
           <UnifiedYearTable
             years={modelVisibleYears}
             baseYear={revenueBase || asmBase}
@@ -3166,9 +3650,8 @@ function YamlWorkbook({
             onCommitInlineEdit={commitInlineEdit}
             onInlineEditChange={(raw) => setInlineEdit((current) => current ? { ...current, raw } : current)}
             onStartInlineEdit={startInlineEdit}
-            stickySummary
+            stickySummary={modelSummaryPinned}
           />
-          {terminal && terminal.explicit_end != null ? <TerminalBlock terminal={terminal} /> : null}
         </section>
       ) : null}
 
@@ -3603,6 +4086,9 @@ function DcfView({ detail }: { detail: CompanyDetail }) {
         />
       </div>
       <ValuationBridge dcf={dcf} detail={detail.dcf_detail ?? []} />
+      {detail.yaml1_assumptions_view?.terminal && detail.yaml1_assumptions_view.terminal.explicit_end != null ? (
+        <TerminalBlock terminal={detail.yaml1_assumptions_view.terminal} />
+      ) : null}
     </div>
   );
 }
@@ -4060,6 +4546,582 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
+function AuditAssistantView({ detail }: { detail: CompanyDetail }) {
+  const audit = detail.audit_view;
+  if (!audit || audit.status === "missing") {
+    return (
+      <EmptyState
+        title="财务审计助理尚未生成"
+        body="先运行 py -m src.audit_engine --coverage 当前公司 --with-evidence。完成后这里会展示风险分、flags、组合模式和证据包摘要。"
+      />
+    );
+  }
+  if (audit.status === "error") {
+    return <EmptyState title="审计产物读取失败" body={audit.error || "Agent/audit 里的 latest JSON 暂时无法解析。"} />;
+  }
+
+  const flags = audit.flags ?? [];
+  const evidence = audit.evidence;
+  const playbooks = evidence?.layer2_playbook_reviews ?? [];
+  const snippets = evidence?.annual_report_snippets ?? [];
+  const endpoints = Object.entries(evidence?.tushare_auxiliary?.endpoints ?? {});
+  const sourceSummary = evidence?.local_sources ?? {};
+  const sortedFlags = [...flags].sort(auditFlagSort);
+  const materialFlags = sortedFlags.filter((flag) => auditSeverityWeight(flag.severity) >= auditSeverityWeight("MEDIUM"));
+  const headlineFlags = (materialFlags.length ? materialFlags : sortedFlags).slice(0, 4);
+  const primaryFlag = headlineFlags[0];
+  const auditTone = auditRiskTone(audit.risk_level);
+  const patternText = audit.pattern_tags?.length
+    ? audit.pattern_tags.map(auditPatternLabel).join(" / ")
+    : "尚未形成组合风险模式";
+  const evidenceLine = auditEvidenceStatus(sourceSummary, snippets.length, evidence?.tushare_auxiliary?.status);
+
+  return (
+    <div className="view-stack audit-page">
+      <section className="audit-executive">
+        <div className="audit-executive-copy">
+          <div className="eyebrow">Audit briefing</div>
+          <h1>{detail.summary.name} 财务审计初筛纪要</h1>
+          <p>{auditRiskNarrative(audit.risk_level, flags.length, playbooks.length)}</p>
+          <div className="audit-executive-meta">
+            <span>更新：{audit.modified_at ? formatDate(audit.modified_at) : "未记录"}</span>
+            <span>证据：{evidenceLine}</span>
+            <span>模式：{patternText}</span>
+          </div>
+        </div>
+        <div className={`audit-verdict-card ${auditTone}`}>
+          <span>本轮判断</span>
+          <strong>{auditRiskLabel(audit.risk_level)}</strong>
+          <div className="audit-score-meter" aria-label="risk score">
+            <b style={{ width: `${Math.max(4, Math.min(100, audit.risk_score ?? 0))}%` }} />
+          </div>
+          <small>风险分 {formatNumber(audit.risk_score, 0)} / 规则命中 {flags.length}</small>
+        </div>
+      </section>
+
+      <section className="audit-board-grid">
+        <div className="audit-board-cell">
+          <span>本轮命中</span>
+          <strong>{flags.length}</strong>
+          <small>{materialFlags.length ? `${materialFlags.length} 条需要解释` : "仅观察项或无异常"}</small>
+        </div>
+        <div className="audit-board-cell">
+          <span>组合模式</span>
+          <strong>{audit.pattern_tags?.length || 0}</strong>
+          <small>{patternText}</small>
+        </div>
+        <div className="audit-board-cell">
+          <span>待取证</span>
+          <strong>{playbooks.length}</strong>
+          <small>{playbooks.length ? "已生成定向取证路径" : "暂不升级为组合取证"}</small>
+        </div>
+        <div className="audit-board-cell">
+          <span>证据窗口</span>
+          <strong>{snippets.length}</strong>
+          <small>年报摘要与本地证据包</small>
+        </div>
+      </section>
+
+      <section className="audit-panel audit-briefing-panel">
+        <div className="audit-panel-head">
+          <div>
+            <div className="eyebrow">Executive memo</div>
+            <h2>审计负责人摘要</h2>
+          </div>
+        </div>
+        <div className="audit-briefing-grid">
+          <article>
+            <span>主要关注</span>
+            <strong>{primaryFlag ? auditRuleCopy(primaryFlag.rule_id).title : "未发现需要立即解释的异常"}</strong>
+            <p>{primaryFlag ? auditRuleCopy(primaryFlag.rule_id).concern : "本轮确定性规则没有给出高优先级复核线索。"}</p>
+          </article>
+          <article>
+            <span>建议动作</span>
+            <strong>{playbooks.length ? "进入 Layer 2 定向取证" : materialFlags.length ? "逐条解释中风险信号" : "保留为例行观察"}</strong>
+            <p>{auditRecommendedAction(primaryFlag, playbooks.length)}</p>
+          </article>
+          <article>
+            <span>证据状态</span>
+            <strong>{snippets.length ? "已有年报窗口" : "只有规则输出"}</strong>
+            <p>{snippets.length ? "证据包已截取年报关键窗口；请优先读收入确认、审计意见、应收账款和资产质量段落。" : "当前证据包未命中年报窗口，后续需要直接打开本地年报或 recon 文件。"}</p>
+          </article>
+        </div>
+      </section>
+
+      <section className="audit-panel">
+        <div className="audit-panel-head">
+          <div>
+            <div className="eyebrow">Key findings</div>
+            <h2>关键发现</h2>
+          </div>
+          <span>规则命中被翻译成审计问题；机器字段在下方折叠明细中保留。</span>
+        </div>
+        {headlineFlags.length ? (
+          <div className="audit-finding-list">
+            {headlineFlags.map((flag, index) => (
+              <AuditFindingCard flag={flag} index={index} key={`${flag.rule_id}-${flag.period ?? ""}`} />
+            ))}
+          </div>
+        ) : (
+          <div className="audit-muted-box">本轮没有命中结构化风险信号。</div>
+        )}
+      </section>
+
+      <section className="audit-two-column">
+        <div className="audit-panel">
+          <div className="audit-panel-head">
+            <div>
+              <div className="eyebrow">Layer 2 playbooks</div>
+              <h2>下一步取证路径</h2>
+            </div>
+          </div>
+          {playbooks.length ? (
+            <div className="audit-playbook-list">
+              {playbooks.map((review) => <AuditPlaybookCard key={review.playbook_id} review={review} />)}
+            </div>
+          ) : (
+            <div className="audit-muted-box">当前没有需要升级到 Layer 2 的组合取证任务。</div>
+          )}
+        </div>
+
+        <div className="audit-panel">
+          <div className="audit-panel-head">
+            <div>
+              <div className="eyebrow">Evidence pack</div>
+              <h2>证据来源摘要</h2>
+            </div>
+          </div>
+          <div className="audit-source-grid">
+            <div>
+              <span>年报 Markdown</span>
+              <strong>{String(sourceSummary.annual_markdown_count ?? "-")}</strong>
+            </div>
+            <div>
+              <span>Recon JSON</span>
+              <strong>{String(sourceSummary.recon_json_count ?? "-")}</strong>
+            </div>
+            <div>
+              <span>TuShare</span>
+              <strong>{evidence?.tushare_auxiliary?.status || "skipped"}</strong>
+            </div>
+          </div>
+          {snippets.length ? (
+            <details className="audit-details-list" open>
+              <summary>查看年报证据窗口</summary>
+              <div className="audit-snippet-list">
+                {snippets.map((snippet, idx) => (
+                  <article className="audit-snippet" key={`${snippet.path}-${snippet.start_line}-${idx}`}>
+                    <header>
+                      <span>{auditSnippetSectionLabel(snippet.section)}</span>
+                      <code>{snippet.start_line ? `L${snippet.start_line}-${snippet.end_line ?? snippet.start_line}` : "local"}</code>
+                    </header>
+                    <p>{auditSnippetPreview(snippet.text_preview || snippet.keyword || "已命中本地年报窗口。")}</p>
+                  </article>
+                ))}
+              </div>
+            </details>
+          ) : (
+            <div className="audit-muted-box">证据包尚未命中年报窗口，Layer 2 需要直接读取本地年报或 recon 文件。</div>
+          )}
+        </div>
+      </section>
+
+      <details className="audit-panel audit-raw-panel">
+        <summary>
+          <div>
+            <div className="eyebrow">Machine detail</div>
+            <h2>机器明细与路径</h2>
+          </div>
+          <span>展开查看 rule_id、threshold、source_fields 和辅助接口。</span>
+        </summary>
+        <div className="audit-path-row">
+          {audit.flags_path ? <code>{audit.flags_path}</code> : null}
+          {audit.evidence_path ? <code>{audit.evidence_path}</code> : null}
+        </div>
+        {flags.length ? (
+          <div className="table-scroll workbook-scroll">
+            <table className="financial-table audit-flags-table">
+              <thead>
+                <tr>
+                  <th>Rule</th>
+                  <th>Severity</th>
+                  <th>Period</th>
+                  <th>Value</th>
+                  <th>Threshold</th>
+                  <th>Evidence</th>
+                  <th>Fields</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedFlags.map((flag) => (
+                  <tr key={`${flag.rule_id}-${flag.period ?? ""}`}>
+                    <td><code>{flag.rule_id}</code></td>
+                    <td><span className={`audit-severity ${auditRiskTone(flag.severity)}`}>{flag.severity}</span></td>
+                    <td>{flag.period || "-"}</td>
+                    <td className="numeric">{auditValue(flag.value)}</td>
+                    <td>{flag.threshold || "-"}</td>
+                    <td>{flag.evidence_text || "-"}</td>
+                    <td>{flag.source_fields?.join(", ") || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+        <div className="audit-panel-head">
+          <div>
+            <div className="eyebrow">TuShare auxiliary</div>
+            <h2>辅助接口覆盖</h2>
+          </div>
+          <span>{evidence?.tushare_auxiliary?.date_range ? Object.values(evidence.tushare_auxiliary.date_range).join(" - ") : "未拉取或无缓存"}</span>
+        </div>
+        {endpoints.length ? (
+          <div className="audit-endpoint-grid">
+            {endpoints.map(([name, item]) => (
+              <div className="audit-endpoint" key={name}>
+                <code>{name}</code>
+                <strong>{item.rows ?? 0}</strong>
+                <span>{item.status || item.error || "unknown"}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="audit-muted-box">未启用 TuShare evidence，或当前缓存里没有辅助接口摘要。</div>
+        )}
+      </details>
+    </div>
+  );
+}
+
+function AuditFindingCard({ flag, index }: { flag: AuditFlag; index: number }) {
+  const copy = auditRuleCopy(flag.rule_id);
+  const tone = auditRiskTone(flag.severity);
+  return (
+    <article className={`audit-finding-card ${tone}`}>
+      <header>
+        <div>
+          <span>发现 {index + 1}</span>
+          <h3>{copy.title}</h3>
+        </div>
+        <span className={`audit-severity ${tone}`}>{auditSeverityLabel(flag.severity)}</span>
+      </header>
+      <p>{copy.concern}</p>
+      <div className="audit-finding-evidence">
+        <span>{flag.period || "最近一期"}</span>
+        <strong>{auditFindingValue(flag)}</strong>
+        <p>{flag.evidence_text || "规则已命中，但证据文本为空。"}</p>
+      </div>
+      <footer>
+        <strong>下一步</strong>
+        <span>{copy.action}</span>
+      </footer>
+    </article>
+  );
+}
+
+function AuditPlaybookCard({ review }: { review: AuditPlaybookReview }) {
+  const observations = Object.entries(review.observations ?? {}).slice(0, 8);
+  const hypotheses = review.hypotheses ?? [];
+  return (
+    <article className="audit-playbook">
+      <header>
+        <div>
+          <code>{auditPlaybookLabel(review.playbook_id)}</code>
+          <h3>{auditPlaybookFrame(review.preliminary_frame || review.verdict)}</h3>
+        </div>
+        <span>{review.industry_context || "general"}</span>
+      </header>
+      {review.trigger_flags?.length ? (
+        <div className="audit-trigger-row">
+          {review.trigger_flags.map((flag) => (
+            <span className={`audit-severity ${auditRiskTone(flag.severity)}`} key={`${flag.rule_id}-${flag.period ?? ""}`}>
+              {flag.rule_id}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {observations.length ? (
+        <dl className="audit-observations">
+          {observations.map(([key, value]) => (
+            <Fragment key={key}>
+              <dt>{key}</dt>
+              <dd>{auditObservationValue(key, value)}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      ) : null}
+      {hypotheses.length ? (
+        <div className="audit-hypotheses">
+          {hypotheses.map((item, idx) => (
+            <div key={String(item.id ?? idx)}>
+              <strong>{String(item.id ?? `H${idx + 1}`)}</strong>
+              <p>{String(item.question ?? item.confirm_if ?? item.dismiss_if ?? "需要继续取证。")}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {review.required_next_evidence?.length ? (
+        <ul className="audit-required-list">
+          {review.required_next_evidence.map((item) => <li key={item}>{item}</li>)}
+        </ul>
+      ) : null}
+    </article>
+  );
+}
+
+const AUDIT_SEVERITY_ORDER: Record<string, number> = {
+  CRITICAL: 100,
+  HIGH: 60,
+  MEDIUM: 25,
+  LOW: 5,
+};
+
+type AuditRuleCopy = {
+  title: string;
+  concern: string;
+  action: string;
+};
+
+const AUDIT_RULE_COPY: Record<string, AuditRuleCopy> = {
+  BENEISH_M_SCORE: {
+    title: "Beneish 盈余操纵模型提示",
+    concern: "综合模型在应收、毛利、资产质量、折旧、费用和应计利润之间寻找同向异常。",
+    action: "拆开 DSRI、GMI、AQI、TATA 等因子，确认异常来自经营变化、会计估计，还是收入/应计项目压力。",
+  },
+  ALTMAN_Z_SCORE: {
+    title: "财务稳健性承压",
+    concern: "Altman Z 分数落入观察区，说明营运资本、盈利能力、杠杆和资产周转的组合表现偏弱。",
+    action: "结合短债、利息保障倍数、经营现金流和债务到期结构，判断是周期压力还是持续经营风险。",
+  },
+  LOW_EARNINGS_QUALITY: {
+    title: "利润含金量不足",
+    concern: "净利润没有被经营现金流充分支持，利润质量需要解释。",
+    action: "优先核对应收、存货、合同负债、票据和期后回款，区分高增长占款与收入质量恶化。",
+  },
+  CASH_RECEIPT_LOW: {
+    title: "销售收现偏弱",
+    concern: "销售商品收到的现金相对收入偏低，收入转化为现金的效率不足。",
+    action: "追踪客户账期、经销商回款、票据结算和期后收款，检查是否存在放宽信用推动收入。",
+  },
+  SLOAN_ACCRUAL_HIGH: {
+    title: "应计利润占比偏高",
+    concern: "利润中过多部分来自非现金应计项目，后续反转风险更高。",
+    action: "拆解经营现金流、投资现金流和非经常项目，检查利润是否依赖资产负债表扩张。",
+  },
+  CFO_NI_DIVERGENCE: {
+    title: "净利润与经营现金流背离",
+    concern: "净利润趋势向上，但经营现金流没有同步改善。",
+    action: "把收入、应收、存货、预收/合同负债放在同一张表里，看利润增长是否靠营运资本透支。",
+  },
+  AR_REVENUE_RATIO_HIGH: {
+    title: "应收增长快于收入",
+    concern: "应收账款扩张速度超过收入，可能意味着赊销增加、回款变慢或收入确认更激进。",
+    action: "读取应收账龄、坏账计提、前五大客户和期后回款；如经销/平台客户集中，核对信用政策变化。",
+  },
+  INVENTORY_REVENUE_RATIO_HIGH: {
+    title: "存货增长快于收入",
+    concern: "存货扩张明显快于收入，可能反映需求放缓、备货压力或跌价准备不足。",
+    action: "检查存货结构、库龄、跌价准备、产能利用率和期后销售，确认是否为正常备货周期。",
+  },
+  DEPOSIT_LOAN_MISMATCH: {
+    title: "存贷双高或利率异常",
+    concern: "货币资金与有息负债同时偏高，或隐含利率不合理，资金真实性和受限情况需要解释。",
+    action: "核对受限资金、质押、担保、银行借款明细、利息收入和利息支出，排除资金占用或虚增现金。",
+  },
+  CIP_NOT_TRANSFERRING: {
+    title: "在建工程长期未转固",
+    concern: "在建工程相对固定资产长期偏高，可能是项目延迟、资本化激进或资产质量问题。",
+    action: "查看在建工程项目明细、预算进度、转固时点和产能投放，确认是否真实可用。",
+  },
+  OTHER_RECEIVABLE_HIGH: {
+    title: "其他应收款占用异常",
+    concern: "其他应收款占总资产比例偏高或增长过快，容易藏关联方占用、保证金或非经营款项。",
+    action: "打开其他应收款对象明细，核对账龄、坏账计提、关联方性质和期后收回情况。",
+  },
+  GOODWILL_HIGH: {
+    title: "商誉占净资产偏高",
+    concern: "商誉占权益比例较高，减值测试对估值和利润稳定性影响较大。",
+    action: "读取商誉减值测试、资产组划分、折现率、增长率和管理层预测，和实际经营趋势交叉验证。",
+  },
+  PREPAYMENT_HIGH: {
+    title: "预付款项偏高",
+    concern: "预付款项相对成本偏高且持续上升，可能反映采购锁价，也可能是资金占用或供应链异常。",
+    action: "核对主要预付对象、采购合同、关联方关系和期后到货，确认商业合理性。",
+  },
+  Q4_REVENUE_ANOMALY: {
+    title: "四季度收入占比异常",
+    concern: "四季度收入占比偏离历史和行业季节性，可能存在截止性、压货或一次性确认问题。",
+    action: "读取收入确认政策、季节性解释、经销商库存和期后退货，重点做收入截止性测试。",
+  },
+  CONTRACT_LIABILITY_DECLINE: {
+    title: "合同负债连续下降",
+    concern: "预收/合同负债连续下降，若收入仍增长，可能说明订单质量或渠道蓄水变弱。",
+    action: "结合新增订单、经销商政策、预收款变化和收入增长，判断收入是否透支未来需求。",
+  },
+  GROSS_MARGIN_DEVIATION: {
+    title: "毛利率偏离历史区间",
+    concern: "毛利率相对历史波动显著，可能来自产品结构、原材料价格、会计估计或成本结转节奏变化。",
+    action: "拆产品/地区毛利率、原材料价格、库存跌价和成本归集口径，确认变化是否有经营解释。",
+  },
+  SELLING_EXPENSE_INEFFICIENCY: {
+    title: "销售费用投入效率下降",
+    concern: "销售费用增速明显快于收入，获客、渠道或促销效率可能下降。",
+    action: "核对渠道费用、平台佣金、广告投放和收入增速，看费用投入是否能在后续收入兑现。",
+  },
+};
+
+function auditSeverityWeight(value?: string | null): number {
+  return AUDIT_SEVERITY_ORDER[String(value ?? "").toUpperCase()] ?? 0;
+}
+
+function auditFlagSort(a: AuditFlag, b: AuditFlag): number {
+  return auditSeverityWeight(b.severity) - auditSeverityWeight(a.severity)
+    || String(a.rule_id).localeCompare(String(b.rule_id));
+}
+
+function auditSeverityLabel(value?: string | null): string {
+  const normalized = String(value ?? "").toUpperCase();
+  if (normalized === "CRITICAL") return "重大";
+  if (normalized === "HIGH") return "高";
+  if (normalized === "MEDIUM") return "中";
+  if (normalized === "LOW") return "观察";
+  return normalized || "待定";
+}
+
+function auditRiskLabel(value?: string | null): string {
+  const normalized = String(value ?? "").toUpperCase();
+  if (normalized === "CRITICAL") return "重大风险";
+  if (normalized === "HIGH") return "高风险";
+  if (normalized === "MEDIUM") return "需复核";
+  if (normalized === "LOW") return "低风险";
+  return "已生成";
+}
+
+function auditRiskNarrative(level: string | null | undefined, flagCount: number, playbookCount: number): string {
+  const normalized = String(level ?? "").toUpperCase();
+  if (normalized === "CRITICAL") return "本轮出现重大风险组合，不能停留在规则层。建议立即进入 Layer 2，围绕收入、现金或资产真实性做定向取证。";
+  if (normalized === "HIGH") return "本轮存在高优先级异常，需要管理层解释和证据复核。先读关键发现，再按 playbook 补证据。";
+  if (normalized === "MEDIUM") return `本轮命中 ${flagCount} 条规则，结论是“需要解释”而不是“已经造假”。${playbookCount ? "已有组合取证路径，建议继续追证。" : "暂无组合模式，先逐条核对经营解释。"}`;
+  if (normalized === "LOW") return "本轮没有发现需要立即升级的财务异常。低风险或观察项仍保留在机器明细中，供后续季度滚动比较。";
+  return "审计雷达已生成，请先确认风险分、关键发现和证据包是否完整。";
+}
+
+function auditRuleCopy(ruleId: string): AuditRuleCopy {
+  return AUDIT_RULE_COPY[ruleId] ?? {
+    title: ruleId.replace(/_/g, " "),
+    concern: "该规则命中了一个需要解释的财务数据异常。",
+    action: "回到对应字段、年报附注和历史趋势，确认异常是否能被经营事实解释。",
+  };
+}
+
+function auditRecommendedAction(flag: AuditFlag | undefined, playbookCount: number): string {
+  if (playbookCount > 0) return "先按下方取证路径读证据窗口；每个假设都要找确认材料和反证材料。";
+  if (!flag) return "继续保留为季度滚动监控；新一期数据披露后重新跑 /audit。";
+  return auditRuleCopy(flag.rule_id).action;
+}
+
+function auditFindingValue(flag: AuditFlag): string {
+  const percentRules = new Set([
+    "LOW_EARNINGS_QUALITY",
+    "CASH_RECEIPT_LOW",
+    "SLOAN_ACCRUAL_HIGH",
+    "DEPOSIT_LOAN_MISMATCH",
+    "CIP_NOT_TRANSFERRING",
+    "OTHER_RECEIVABLE_HIGH",
+    "GOODWILL_HIGH",
+    "PREPAYMENT_HIGH",
+    "Q4_REVENUE_ANOMALY",
+    "GROSS_MARGIN_DEVIATION",
+  ]);
+  const multipleRules = new Set([
+    "AR_REVENUE_RATIO_HIGH",
+    "INVENTORY_REVENUE_RATIO_HIGH",
+    "SELLING_EXPENSE_INEFFICIENCY",
+  ]);
+  if (typeof flag.value !== "number" || Number.isNaN(flag.value)) return "-";
+  if (percentRules.has(flag.rule_id)) return formatPercent(flag.value, 1);
+  if (multipleRules.has(flag.rule_id)) return formatMultiple(flag.value, 2);
+  return auditValue(flag.value);
+}
+
+function auditPatternLabel(value: string): string {
+  const map: Record<string, string> = {
+    CHANNEL_STUFFING: "渠道压货/收入前置",
+    CASH_FABRICATION: "现金真实性",
+    ASSET_HOLE: "资产质量窟窿",
+    RECEIVABLE_INFLATION: "应收膨胀",
+    BIG_BATH_OR_CUTOFF: "四季度截止性/大洗澡",
+  };
+  return map[value] ?? value.replace(/_/g, " ");
+}
+
+function auditEvidenceStatus(sourceSummary: Record<string, unknown>, snippetCount: number, tushareStatus?: string | null): string {
+  const annual = sourceSummary.annual_markdown_count ?? "-";
+  const recon = sourceSummary.recon_json_count ?? "-";
+  const tushare = tushareStatus || "skipped";
+  return `${annual} 份年报 / ${recon} 个 recon / 年报窗口 ${snippetCount} / TuShare ${tushare}`;
+}
+
+function auditSnippetSectionLabel(value?: string | null): string {
+  const map: Record<string, string> = {
+    audit_opinion: "审计意见",
+    mda_risk: "经营风险",
+    revenue_recognition: "收入确认",
+    receivables_aging: "应收账款",
+    pledge_guarantee: "质押担保",
+    related_party: "关联交易",
+    other_receivables: "其他应收款",
+    cip_detail: "在建工程",
+    goodwill_detail: "商誉减值",
+  };
+  return value ? map[value] ?? value : "年报窗口";
+}
+
+function auditSnippetPreview(value: string): string {
+  const compact = value.replace(/\b\d{1,5}:\s*/g, "").replace(/\s+/g, " ").trim();
+  return compact.length > 220 ? `${compact.slice(0, 219).trim()}…` : compact;
+}
+
+function auditPlaybookLabel(value: string): string {
+  const map: Record<string, string> = {
+    DSRI_HIGH_GROWTH_CASH_CONSUMPTION: "收入质量取证",
+    CASH_FABRICATION: "现金真实性取证",
+    ASSET_HOLE: "资产质量取证",
+  };
+  return map[value] ?? value.replace(/_/g, " ");
+}
+
+function auditPlaybookFrame(value?: string | null): string {
+  const map: Record<string, string> = {
+    possible_growth_cash_consumption: "可能是高增长带来的营运资本占用，也可能是收入质量压力。",
+    needs_targeted_revenue_collection_review: "需要围绕收入确认、回款和客户账期做定向复核。",
+    insufficient_evidence: "证据不足，暂不能形成结论。",
+    not_run: "尚未执行 Layer 2 判断。",
+  };
+  return value ? map[value] ?? value.replace(/_/g, " ") : "需要定向复核";
+}
+
+function auditRiskTone(value?: string | null): string {
+  const normalized = String(value ?? "").toLowerCase();
+  if (normalized.includes("critical")) return "critical";
+  if (normalized.includes("high")) return "high";
+  if (normalized.includes("medium")) return "medium";
+  if (normalized.includes("low")) return "low";
+  return "neutral";
+}
+
+function auditValue(value: AuditFlag["value"]): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "-";
+  const abs = Math.abs(value);
+  return formatNumber(value, abs < 10 ? 2 : 1);
+}
+
+function auditObservationValue(key: string, value: unknown): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return value == null ? "-" : String(value);
+  if (/(growth|ratio|to_|margin|rate)/i.test(key)) return formatPercent(value, 1);
+  return formatNumber(value, Math.abs(value) < 10 ? 2 : 1);
+}
+
 const QUARTERS = ["Q1", "Q2", "Q3", "Q4"] as const;
 
 const STATE_LABELS: Record<string, string> = {
@@ -4151,7 +5213,129 @@ function quarterlyInputPlaceholder(option: QuarterlyDriverOption): string {
   return option.format === "percent" ? "0.02 / 2%" : "百万元";
 }
 
-function QuarterlyTable({ companyId, initialView }: { companyId: string; initialView?: QuarterlyView | null }) {
+// 从 preview 的 IS sheet 抽出指定年度的各字段年度值，供季度表按比率缩放。
+function extractPreviewAnnual(sheets: StatementSheet[] | null | undefined, year: number): Record<string, number> {
+  const out: Record<string, number> = {};
+  const is = sheets?.find((s) => s.key === "is");
+  if (!is) return out;
+  const y = String(year);
+  for (const row of is.rows) {
+    const v = row.values?.[y];
+    if (row.field && typeof v === "number") out[row.field] = v;
+  }
+  return out;
+}
+
+// 试算缩放：用 preview 年度值 / saved 年度值 的比率缩放 view.year 的非 actual 季度绝对值行；
+// 再从缩放后的绝对值重算比率行（yoy/毛利率/费用率/净利率/税率），使季度表整体一致。
+type RatioDef =
+  | { kind: "yoy"; base: string }
+  | { kind: "ratio"; num: Array<{ field: string; sign: 1 | -1 }>; den: string };
+
+// 比率行字段 → 分子/分母定义。基于 IS 标准勾稽（非公司特判）：*_yoy=同比，*_rate=费率/收入，*_margin=利润率。
+const QUARTERLY_RATIO_DEFS: Record<string, RatioDef> = {
+  revenue_yoy: { kind: "yoy", base: "revenue" },
+  oper_cost_yoy: { kind: "yoy", base: "oper_cost" },
+  n_income_yoy: { kind: "yoy", base: "n_income_attr_p" },
+  gross_margin: { kind: "ratio", num: [{ field: "revenue", sign: 1 }, { field: "oper_cost", sign: -1 }], den: "revenue" },
+  n_income_margin: { kind: "ratio", num: [{ field: "n_income_attr_p", sign: 1 }], den: "revenue" },
+  biz_tax_surchg_rate: { kind: "ratio", num: [{ field: "biz_tax_surchg", sign: 1 }], den: "revenue" },
+  sell_exp_rate: { kind: "ratio", num: [{ field: "sell_exp", sign: 1 }], den: "revenue" },
+  admin_exp_rate: { kind: "ratio", num: [{ field: "admin_exp", sign: 1 }], den: "revenue" },
+  rd_exp_rate: { kind: "ratio", num: [{ field: "rd_exp", sign: 1 }], den: "revenue" },
+  fin_exp_rate: { kind: "ratio", num: [{ field: "fin_exp", sign: 1 }], den: "revenue" },
+  income_tax_rate: { kind: "ratio", num: [{ field: "income_tax", sign: 1 }], den: "total_profit" },
+};
+
+function priorQuarterPeriod(period: string): string | null {
+  const m = /^(\d{4})Q(\d)$/.exec(period);
+  if (!m) return null;
+  return `${Number(m[1]) - 1}Q${m[2]}`;
+}
+
+function scaleQuarterlyView(view: QuarterlyView, previewAnnual: Record<string, number>): QuarterlyView {
+  const year = view.year;
+  // ① 缩放绝对值行
+  const scaledRows = view.rows.map((row) => {
+    if (row.format !== "number") return row;
+    const savedAnnual = view.annual?.[row.field];
+    const newAnnual = previewAnnual[row.field];
+    if (typeof savedAnnual !== "number" || savedAnnual === 0 || typeof newAnnual !== "number") return row;
+    const ratio = newAnnual / savedAnnual;
+    if (!Number.isFinite(ratio) || Math.abs(ratio - 1) < 1e-9) return row;
+    const newValues: Record<string, number | null> = {};
+    for (const [period, val] of Object.entries(row.values)) {
+      const py = periodYear(period);
+      const state = view.period_states?.[period] ?? view.quarter_states[String(periodQuarterNumber(period))] ?? "inherit";
+      if (py === year && state !== "actual" && typeof val === "number") {
+        newValues[period] = val * ratio;
+      } else {
+        newValues[period] = val;
+      }
+    }
+    return { ...row, values: newValues };
+  });
+  // ② 从缩放后的绝对值重算比率行
+  const absByField = new Map<string, Record<string, number | null>>();
+  for (const row of scaledRows) {
+    if (row.format === "number") absByField.set(row.field, row.values);
+  }
+  const annualAbs: Record<string, number | null> = { ...view.annual, ...previewAnnual };
+  const recomputedAnnual: Record<string, number | null> = {};
+  const ratioRows = scaledRows.map((row) => {
+    const def = QUARTERLY_RATIO_DEFS[row.field];
+    if (!def || row.format !== "percent") return row;
+    const newValues: Record<string, number | null> = {};
+    for (const period of Object.keys(row.values)) {
+      if (def.kind === "yoy") {
+        const baseVals = absByField.get(def.base);
+        const cur = baseVals?.[period];
+        const prior = baseVals?.[priorQuarterPeriod(period) ?? ""];
+        newValues[period] = growthRate(cur, prior);
+      } else {
+        let num = 0;
+        let okNum = true;
+        for (const part of def.num) {
+          const v = absByField.get(part.field)?.[period];
+          if (typeof v !== "number") { okNum = false; break; }
+          num += part.sign * v;
+        }
+        const den = absByField.get(def.den)?.[period];
+        newValues[period] = okNum && typeof den === "number" && den !== 0 ? num / den : null;
+      }
+    }
+    // 年度列：yoy=新年度/上年年度和；ratio=年度分子/分母
+    let newAnnual: number | null = null;
+    if (def.kind === "yoy") {
+      const baseAnnual = annualAbs[def.base];
+      const baseVals = absByField.get(def.base);
+      let priorYearAnnual = 0;
+      let hasPrior = false;
+      for (const p of Object.keys(row.values)) {
+        if (periodYear(p) !== year) continue; // 只累加 view.year 各季的上年同期，得到上一年年度和
+        const pp = priorQuarterPeriod(p);
+        const v = pp ? baseVals?.[pp] : undefined;
+        if (typeof v === "number") { priorYearAnnual += v; hasPrior = true; }
+      }
+      newAnnual = hasPrior ? growthRate(baseAnnual, priorYearAnnual) : null;
+    } else {
+      let num = 0;
+      let okNum = true;
+      for (const part of def.num) {
+        const v = annualAbs[part.field];
+        if (typeof v !== "number") { okNum = false; break; }
+        num += part.sign * v;
+      }
+      const den = annualAbs[def.den];
+      newAnnual = okNum && typeof den === "number" && den !== 0 ? num / den : null;
+    }
+    recomputedAnnual[row.field] = newAnnual;
+    return { ...row, values: newValues } as QuarterlyRow;
+  });
+  return { ...view, rows: ratioRows, annual: { ...annualAbs, ...recomputedAnnual } };
+}
+
+function QuarterlyTable({ companyId, initialView, preview }: { companyId: string; initialView?: QuarterlyView | null; preview?: AssumptionPreview | null }) {
   const [view, setView] = useState<QuarterlyView | null | undefined>(initialView);
   const [edit, setEdit] = useState<QuarterlyEdit | null>(null);
   const [drawerPeriod, setDrawerPeriod] = useState<string | null>(null);
@@ -4162,6 +5346,12 @@ function QuarterlyTable({ companyId, initialView }: { companyId: string; initial
   useEffect(() => {
     setView(initialView);
   }, [initialView]);
+
+  // 试算缩放：假设编辑时按 preview 年度 IS 比率缩放 view.year 的非 actual 季度绝对值行。
+  const displayView = useMemo<QuarterlyView | null | undefined>(
+    () => (view && preview ? scaleQuarterlyView(view, extractPreviewAnnual(preview.statement_sheets, view.year)) : view),
+    [view, preview],
+  );
 
   const editableAssumptionPeriods = view
     ? QUARTERS.slice(0, 3)
@@ -4175,7 +5365,7 @@ function QuarterlyTable({ companyId, initialView }: { companyId: string; initial
   if (!view) return <EmptyState title="无季度视图" body="forecast_is.csv 或 data.db 暂不可用。" />;
 
   const periods = view.periods?.length ? view.periods : QUARTERS.map((quarter) => `${view.year}${quarter}`);
-  const visibleRows = view.rows.filter((row) => !row.is_zero);
+  const visibleRows = (displayView ?? view).rows.filter((row) => !row.is_zero);
   const yearGroups = periods.reduce<Array<{ year: string; periods: string[] }>>((groups, period) => {
     const year = String(periodYear(period) ?? "");
     const last = groups[groups.length - 1];
@@ -4254,7 +5444,10 @@ function QuarterlyTable({ companyId, initialView }: { companyId: string; initial
         <div className="section-heading compact">
           <div>
             <div className="eyebrow">Quarterly tracking · 百万元</div>
-            <h2>{timeRangeLabel} 季度利润表追踪</h2>
+            <h2>
+              {timeRangeLabel} 季度利润表追踪
+              {preview ? <span className="preview-status-error" style={{ marginLeft: 12, fontSize: 13 }}>试算·按年度比率缩放（含同比/毛利率/费率重算）</span> : null}
+            </h2>
           </div>
           <div className="quarter-state-row">
             {QUARTERS.map((quarter) => {
@@ -4352,8 +5545,8 @@ function QuarterlyTable({ companyId, initialView }: { companyId: string; initial
                         </td>
                       );
                     })}
-                    <td className={`numeric annual-cell ${typeof view.annual[row.field] === "number" && (view.annual[row.field] ?? 0) < 0 ? "negative" : ""}`}>
-                      {formatQuarterlyValue(row, view.annual[row.field])}
+                    <td className={`numeric annual-cell ${typeof (displayView ?? view).annual[row.field] === "number" && ((displayView ?? view).annual[row.field] ?? 0) < 0 ? "negative" : ""}`}>
+                      {formatQuarterlyValue(row, (displayView ?? view).annual[row.field])}
                     </td>
                   </tr>
                 );
@@ -4388,8 +5581,9 @@ function QuarterlyTable({ companyId, initialView }: { companyId: string; initial
                     <input
                       inputMode="decimal"
                       onChange={(event) => {
+                        const value = event.currentTarget.value;
                         setError(null);
-                        setDrawerDrafts((drafts) => ({ ...drafts, [draftKey]: event.currentTarget.value }));
+                        setDrawerDrafts((drafts) => ({ ...drafts, [draftKey]: value }));
                       }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter") void saveOverride(drawerPeriod, option.param, drawerDrafts[draftKey] ?? "", option);
@@ -4428,6 +5622,8 @@ function QuarterlyTable({ companyId, initialView }: { companyId: string; initial
   );
 }
 
+// yaml1 与 quarterly 共享 edit session：保持 YamlWorkbook 挂载（季度 tab 时 hidden），
+// 把 preview 镜像到本层喂给 QuarterlyTable，编辑假设时季度表实时按年度比率缩放。
 function DetailView({
   detail,
   tab,
@@ -4435,40 +5631,54 @@ function DetailView({
   detail: CompanyDetail;
   tab: TabKey;
 }) {
-  if (tab === "overview") return <Overview detail={detail} />;
-  if (tab === "statements") return <StatementsView detail={detail} />;
-  if (tab === "quarterly") return <QuarterlyTable companyId={detail.summary.id} initialView={detail.quarterly_view} />;
-  if (tab === "yaml1") {
-    return (
-      <YamlWorkbook
-        companyId={detail.summary.id}
-        initialPresentation={detail.yaml1_presentation}
-        path={detail.yaml1_path}
-        revenueView={detail.yaml1_revenue_view}
-        businessFactsView={detail.yaml1_business_facts_view}
-        statementSheets={detail.statement_sheets}
-        fullStatementSheets={detail.full_statement_sheets}
-        stashView={detail.yaml1_stash_view}
-        displayContract={detail.yaml1_display_contract}
-        assumptionsView={detail.yaml1_assumptions_view}
-        editableAssumptions={detail.editable_assumptions}
-        annualRevenueBreakdown={detail.annual_revenue_breakdown}
-        yaml1Text={detail.yaml1_text}
-      />
-    );
+  const [preview, setPreview] = useState<AssumptionPreview | null>(null);
+  // 编辑态持久化：YamlWorkbook 在所有子页面下保持挂载（非 yaml1 tab 时 hidden），
+  // 这样同公司内切子页面编辑不丢；离开公司时 detail 变化触发 YamlWorkbook reset 清空。
+  // preview 镜像到本层，供季度表等 sibling 实时消费。
+  const showYaml = tab === "yaml1";
+  let active: React.ReactNode = null;
+  if (!showYaml) {
+    if (tab === "overview") active = <Overview detail={detail} />;
+    else if (tab === "statements") active = <StatementsView detail={detail} />;
+    else if (tab === "quarterly") active = <QuarterlyTable companyId={detail.summary.id} initialView={detail.quarterly_view} preview={preview} />;
+    else if (tab === "dcf") active = <DcfView detail={detail} />;
+    else if (tab === "reverse") active = <ReverseDcfView detail={detail} />;
+    else if (tab === "da" && detail.da_view) active = <DaSchedule detail={detail} />;
+    else if (tab === "audit") active = <AuditAssistantView detail={detail} />;
+    else active = <Overview detail={detail} />;
   }
-  if (tab === "dcf") return <DcfView detail={detail} />;
-  if (tab === "reverse") return <ReverseDcfView detail={detail} />;
-  if (tab === "da" && detail.da_view) return <DaSchedule detail={detail} />;
-  return <Overview detail={detail} />;
+  return (
+    <>
+      <div style={{ display: showYaml ? "block" : "none" }} aria-hidden={!showYaml}>
+        <YamlWorkbook
+          companyId={detail.summary.id}
+          initialPresentation={detail.yaml1_presentation}
+          path={detail.yaml1_path}
+          revenueView={detail.yaml1_revenue_view}
+          businessFactsView={detail.yaml1_business_facts_view}
+          statementSheets={detail.statement_sheets}
+          fullStatementSheets={detail.full_statement_sheets}
+          stashView={detail.yaml1_stash_view}
+          displayContract={detail.yaml1_display_contract}
+          assumptionsView={detail.yaml1_assumptions_view}
+          editableAssumptions={detail.editable_assumptions}
+          annualRevenueBreakdown={detail.annual_revenue_breakdown}
+          yaml1Text={detail.yaml1_text}
+          onPreviewChange={setPreview}
+        />
+      </div>
+      {active}
+    </>
+  );
 }
 
 const STAGE_TONE: Record<PipelineStage, string> = {
   "未初始化": "stage-0",
   "初始化完毕": "stage-1",
   "预加载完毕": "stage-2",
-  "建模完毕": "stage-3",
-  "建模完毕且有DA表": "stage-4",
+  "核心假设完毕": "stage-3",
+  "建模完毕": "stage-4",
+  "建模完毕且有DA表": "stage-5",
 };
 
 const fmtMv = (v: number | null | undefined) =>

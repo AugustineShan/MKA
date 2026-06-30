@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -184,18 +185,61 @@ def _anchor_values(row: dict[str, float], prev_row: dict[str, float] | None = No
 # ---------------------------------------------------------------------------
 
 
+# 识别「财务费用」附注靠结构形状，不靠列头措辞。
+# 利润表/合并报表里也出现「财务费用」行，但那行后面紧跟数字（当期/上期金额）；
+# 而附注标题（如「44、财务费用」）后面跟的是表头/标签行（「项目」「本期金额」等，非数字）。
+# 用「标题 + 紧随非数字行」这个形状差异区分附注与报表行，避免枚举 本期发生额/本期金额/本期数/本年金额
+# 等随准则版本漂移的列头字符串——每出一个新措辞就不必再补一行。
+_NOTE_HEADING = re.compile(
+    r"^\s*(?:\d+\s*[、.．:）)]|[（(][一二三四五六七八九十百\d]+[)）]|[一二三四五六七八九十]+、)?\s*财务费用\s*$"
+)
+# 带编号前缀的附注标题（如「65、财务费用」「（六十五）财务费用」「六十五、财务费用」）。
+# A 股年报附注标题强制带序号；利润表里的「财务费用」行是裸标题，不带序号。用这个差异
+# 优先命中真正的附注标题，避开利润表「财务费用 + 附注索引标签(如 七．65)」的伪标题——
+# 后者「财务费用」后跟的「七．65」是非数字的索引标签，形状上和「附注标题+表头」无法区分。
+_NOTE_PREFIX = re.compile(
+    r"^\s*(?:\d+\s*[、.．:）)]|[（(][一二三四五六七八九十百\d]+[)）]|[一二三四五六七八九十]+、)"
+)
+# 纯数字行（含千分位、负号、括号负数、百分号、破折号空值），用于判断「紧随后行是否为数值」。
+_NUMERIC_LINE = re.compile(r"^\s*[（(]?-?[\d,]+(?:\.\d+)?%?[)）]?\s*$|^\s*[—–-]\s*$")
+
+
+def _is_numeric_line(s: str) -> bool:
+    return bool(_NUMERIC_LINE.match(s))
+
+
 def _slice_financial_expense_note(lines: list[str]) -> dict[str, Any] | None:
-    """Find the financial-expense note table and return a compact window."""
-    for idx, line in enumerate(lines):
-        if "财务费用" not in line:
-            continue
-        stripped = line.strip().lstrip("-").strip()
-        if not stripped or ("财务费用" not in stripped):
-            continue
-        nearby = lines[idx : idx + 8]
-        has_current = any("本期发生额" in ln for ln in nearby)
-        has_previous = any("上期发生额" in ln for ln in nearby)
-        if has_current and has_previous:
+    """Find the financial-expense note table by structural shape, return a compact window.
+
+    不匹配列头字符串：只在「财务费用」附注标题后紧跟非数字行（表头/标签）时命中，
+    从而与利润表里「财务费用」行（后跟数值）区分。列头措辞交给 LLM 按年份语义识别。
+
+    两遍扫描：第一遍只认带编号前缀的附注标题（准则标准格式「65、财务费用」）；找不到
+    再退回第二遍认裸「财务费用」标题。利润表里「财务费用」行后常跟附注索引标签（如
+    「七．65」，非数字），裸标题无编号前缀被第一遍跳过，从而落点优先到真正的编号附注
+    标题，避开利润表伪标题。保留裸标题回退以兼容序号格式异常的年报。
+
+    质量门：标题后表体必须含可读数值。PDF→MD 偶发把老年报扫描页转成 mojibake
+    （标题「36、财务费用」在、表体全是乱码、一个数字都没有）——这种 note 不可用，
+    跳过它让外层 attempts fall through 到下一份年报（如改用后一年报的上期列）。
+    """
+    for require_prefix in (True, False):
+        for idx, line in enumerate(lines):
+            if not _NOTE_HEADING.match(line):
+                continue
+            if require_prefix and not _NOTE_PREFIX.match(line):
+                continue
+            j = idx + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j >= len(lines) or _is_numeric_line(lines[j]):
+                continue  # 后紧跟数值 = 利润表「财务费用」行，非附注
+            numeric_count = sum(
+                1 for k in range(idx + 1, min(idx + 61, len(lines)))
+                if _is_numeric_line(lines[k])
+            )
+            if numeric_count < 2:
+                continue  # 表体无数值（乱码段），不可用
             window = compact_window(lines, idx, before=5, after=60)
             return {
                 "start_line": window["start_line"],
@@ -209,7 +253,6 @@ def _llm_prompt(
     ticker: str,
     base_period: str,
     report_year: str,
-    target_column: str,
     anchors: dict[str, float],
     note: dict[str, Any],
 ) -> list[dict[str, str]]:
@@ -219,7 +262,6 @@ def _llm_prompt(
         "report_year": report_year,
         "clean_anchors_million_cny": anchors,
         "note_unit": "元人民币",
-        "target_column": target_column,
         "note_snippet": note,
     }
     system = (
@@ -227,10 +269,15 @@ def _llm_prompt(
         "并换算成「百万元人民币」。不要编造表格外数据。"
     )
     user = (
-        f"请读取下面年报片段中的「财务费用」附注表，提取 base_period 对应的「{target_column}」列数据。\n"
+        f"下面是 {report_year} 年年度报告中的「财务费用」附注片段。"
+        f"请提取 **{base_period} 年** 对应那一列的各项明细——"
+        f"若 {base_period} 与 {report_year} 相同取本期列，若 {base_period} 是 {report_year} 的上一年则取上期列；"
+        "按片段中列头与年份的语义对应关系选列（列头措辞不固定，可能是 本期发生额/本期金额/本期数/本年金额 或直接标年份，按语义匹配即可）。\n"
         "换算规则：元人民币 → 百万元人民币，除以 1,000,000。\n"
         "符号规则（关键）：\n"
-        "- 利息支出类项目（银行借款利息支出、租赁负债利息支出、债券利息支出等）取正数，计入 interest_expense_gross。\n"
+        "- interest_expense_gross = 利润表「利息费用」行口径：利息支出（银行借款/租赁负债/债券利息支出等，正数）"
+        "＋「未确认融资费用转回」（正数加项）－「减：未实现融资收益转回」。"
+        "资本化利息、财政贴息不在此列（另计）。这样与 TuShare fin_exp_int_exp 对齐，避免分类飘移。\n"
         "- 资本化利息支出：表中通常以负数列示（加：资本化的利息支出），取绝对值，作为正数 capitalized_interest。\n"
         "- 财政贴息冲减财务费用：表中通常以负数列示，取绝对值，作为正数 interest_subsidy。\n"
         "- 利息收入：表中通常以负数列示，取绝对值，作为正数 interest_income。\n"
@@ -330,25 +377,50 @@ def _run_checks(
     total_residual = abs(total_check_value - anchors["fin_exp"])
     total_ok = total_residual <= TOLERANCE
 
-    basis_ok = basis["residual"] <= TOLERANCE
+    # basis_check 把 LLM 抽的利息支出跟 TuShare 的 fin_exp_int_exp 交叉比对，是「额外」校验。
+    # 当 TuShare 该字段为 0/缺失（A 股常见 TuShare 缺口，年报有而 TuShare 留空）时，这个交叉
+    # 比对没有独立基准可用——属 N/A，不是年报证据有问题。此时不应用 basis 否决 approved；
+    # total_check（components 求和=fin_exp，残差 0）才是真正的完整性门，仍照常把关。
+    clean_int_exp = anchors.get("fin_exp_int_exp", 0.0)
+    basis_applicable = abs(clean_int_exp) > TOLERANCE
+    basis_ok = (not basis_applicable) or (basis["residual"] <= TOLERANCE)
+    basis_skip_reason = None if basis_applicable else "TuShare fin_exp_int_exp=0/缺失，basis 交叉校验 N/A"
 
     fin_exp = anchors["fin_exp"]
     other = derived["other_fin_exp_abs"]
     other_ratio = abs(other) / abs(fin_exp) if abs(fin_exp) > 10 else None
     other_to_revenue = abs(other) / abs(anchors["revenue"]) if anchors["revenue"] else None
+    # other_check 防 LLM 把残差全塞进 other 却因 total_check 平凡通过而误 approved。
+    # 但分母用 fin_exp（利息收支冲减后的净额），货币资金充裕、利息收入大的公司
+    # 净额被冲小、比例放大，1.0/2.0 会误伤正常情形（如永艺 2017 basis N/A=1.06、
+    # 2025 basis 通过=2.40）。提到 5.0 容纳利息收入冲减；完整性仍由 total_check
+    # （分量求和=fin_exp）+ basis_check（利息支出 vs TuShare）+ extraction_check（非全0）三道把关。
+    other_ratio_threshold = 5.0
     other_ok = True
     other_warning = None
-    if other_ratio is not None and other_ratio > 2.0:
+    if other_ratio is not None and other_ratio > other_ratio_threshold:
         other_ok = False
-        other_warning = f"other_fin_exp_abs / fin_exp = {other_ratio:.2f}"
+        other_warning = f"other_fin_exp_abs / fin_exp = {other_ratio:.2f} (basis {'N/A' if not basis_applicable else 'applicable'}, 阈值 {other_ratio_threshold})"
     elif other_to_revenue is not None and other_to_revenue > 0.10:
         other_ok = False
         other_warning = f"other_fin_exp_abs / revenue = {other_to_revenue:.2f}"
 
+    # 抽取退化守卫：fin_exp≠0 但利息支出与利息收入均为 0 → 几乎必是抽取失败
+    # （真实非零财务费用一定有利息收支活动；全 0 时 other_fin_exp_abs=fin_exp，
+    # total_check 平凡通过）。强制 low，堵住 basis N/A 路径下「自信但错」的缺口。
+    extraction_ok = not (
+        abs(fin_exp) > TOLERANCE
+        and components["interest_expense_gross"] == 0.0
+        and components["interest_income"] == 0.0
+    )
+    extraction_warning = None if extraction_ok else (
+        "fin_exp≠0 但利息支出与利息收入均为 0，疑似抽取失败（全部金额塞进 other）"
+    )
+
     confidence = "low"
-    if llm_confidence == "high" and total_ok and basis_ok and other_ok:
+    if llm_confidence == "high" and total_ok and basis_ok and other_ok and extraction_ok:
         confidence = "high"
-    elif llm_confidence in {"high", "medium"} and total_ok and basis_ok:
+    elif llm_confidence in {"high", "medium"} and total_ok and basis_ok and extraction_ok:
         confidence = "medium"
 
     status = "approved" if confidence == "high" else "fallback"
@@ -365,6 +437,8 @@ def _run_checks(
             "detected_value": basis["detected_value"],
             "clean_value": basis["clean_value"],
             "residual": basis["residual"],
+            "applicable": basis_applicable,
+            "skip_reason": basis_skip_reason,
             "ok": basis_ok,
         },
         "other_check": {
@@ -372,6 +446,10 @@ def _run_checks(
             "warning": other_warning,
             "other_to_fin_exp": other_ratio,
             "other_to_revenue": other_to_revenue,
+        },
+        "extraction_check": {
+            "ok": extraction_ok,
+            "warning": extraction_warning,
         },
         "confidence": confidence,
         "status": status,
@@ -394,15 +472,17 @@ def _analyze_period(
     """Analyze one clean_annual period.  Returns a period record."""
     anchors = _anchor_values(row, prev_row)
 
+    # 先试 base_period 年报（取本期列），再试 base_period+1 年报（取上期列）。
+    # 列头措辞不在此判定——LLM 拿到 report_year + base_period 按年份语义选列。
     attempts = [
-        (base_period, "本期发生额"),
-        (str(int(base_period) + 1), "上期发生额"),
+        (base_period, "本期"),
+        (str(int(base_period) + 1), "上期"),
     ]
     report_year = attempts[0][0]
-    target_column = attempts[0][1]
+    target_column = None
     md_path = None
     note: dict[str, Any] | None = None
-    for attempt_report_year, attempt_target_column in attempts:
+    for attempt_report_year, col_kind in attempts:
         attempt_path = annual_markdown_path(company_dir, attempt_report_year)
         if attempt_path is None:
             continue
@@ -411,7 +491,7 @@ def _analyze_period(
         if attempt_note is None:
             continue
         report_year = attempt_report_year
-        target_column = attempt_target_column
+        target_column = f"{base_period}年（{attempt_report_year}年报{col_kind}列）"
         md_path = attempt_path
         note = attempt_note
         break
@@ -429,20 +509,25 @@ def _analyze_period(
         "confidence": "low",
     }
 
-    if md_path is None:
+    if md_path is None or note is None or target_column is None:
         record["error"] = (
             f"No financial expense note found for report years "
-            f"{attempts[0][0]} ({attempts[0][1]}) or {attempts[1][0]} ({attempts[1][1]})"
+            f"{attempts[0][0]} (本期) or {attempts[1][0]} (上期)"
         )
         return record
 
-    if note is None:
-        record["error"] = f"Financial expense note not found in {md_path}"
-        return record
-
-    messages = _llm_prompt(ticker, base_period, report_year, target_column, anchors, note)
+    messages = _llm_prompt(ticker, base_period, report_year, anchors, note)
     llm_response = call_llm(messages)
     record["llm"] = llm_response
+
+    # 区分两类失败：
+    # - status="error"：LLM 调用本身失败（429/超时/截断/空 env/key 未配置），可重试，
+    #   下次 init 自动重跑（_archive_covers 把非 approved 期视作待重跑）。
+    # - status="fallback"：LLM 答了但不可解析或低置信，是证据不足非调用故障。
+    if isinstance(llm_response, dict) and llm_response.get("error") and not llm_response.get("components"):
+        record["error"] = f"LLM call failed: {llm_response['error']}"
+        record["status"] = "error"
+        return record
 
     parsed = _parse_llm_response(llm_response)
     if parsed is None:
@@ -534,25 +619,47 @@ def analyze(
     return evidence_path
 
 
-def _archive_needs_retry(archive: dict[str, Any] | None, company_dir: Path) -> bool:
+def _archive_covers(
+    archive: dict[str, Any] | None,
+    rows: list[tuple[str, dict[str, float]]],
+    company_dir: Path,
+) -> bool:
+    """旧 archive 是否完整覆盖 clean_annual 所有期、无需重跑。
+
+    任一期缺失、版本过期、或非 approved 且仍有匹配年报 MD 可重试 → 返回 False。
+    非 approved 但无年报 MD 的期（pre-IPO/未下载）作为永久无证据接受，不触发重跑。
+    """
     if archive is None:
-        return True
+        return False
     if int(archive.get("version") or 0) != EVIDENCE_VERSION:
-        return True
+        return False
     periods = archive.get("periods")
     if not isinstance(periods, dict):
-        return True
-    for base_period, record in periods.items():
-        if isinstance(record, dict) and record.get("status") == "approved":
+        return False
+    for base_period, _row in rows:
+        record = periods.get(base_period)
+        if isinstance(record, dict) and record.get("status") == "approved" and record.get("confidence") == "high":
             continue
         try:
             next_report_year = str(int(base_period) + 1)
         except (TypeError, ValueError):
-            return True
-        for report_year in (str(base_period), next_report_year):
-            if annual_markdown_path(company_dir, report_year) is not None:
-                return True
-    return False
+            return False
+        has_md = (
+            annual_markdown_path(company_dir, str(base_period)) is not None
+            or annual_markdown_path(company_dir, next_report_year) is not None
+        )
+        if has_md:
+            return False  # 非 approved 且有 MD → 值得重跑
+    return True
+
+
+def _is_approved_record(record: Any) -> bool:
+    return (
+        isinstance(record, dict)
+        and record.get("status") == "approved"
+        and record.get("confidence") == "high"
+        and bool((record.get("checks") or {}).get("total_check", {}).get("ok"))
+    )
 
 
 def analyze_all_periods(
@@ -567,33 +674,52 @@ def analyze_all_periods(
     Markdown exists, extracts the financial-expense note decomposition.  The
     resulting YAML is the historical archive; ``defaults_gen`` reads the latest
     approved year from it.
+
+    增量合并：非 force 时复用旧 archive 里 approved+high 且 total_check 过的记录，
+    只重跑非 approved 的期（含 LLM 调用失败的 error 期、低置信 fallback 期、新增期），
+    合并写入——避免每次 init 把已通过期也重调 LLM。force 时全重跑。
     """
     if company_dir is None:
         company_dir = find_company_dir(ticker)
     db_path = default_db_path(company_dir, str(db_path) if db_path else None)
 
     yaml_path = default_yaml_path(company_dir)
+    old_archive: dict[str, Any] | None = None
     if yaml_path.exists() and not force:
-        archive = load_financial_expense_yaml(company_dir)
-        if not _archive_needs_retry(archive, company_dir):
-            return yaml_path
+        old_archive = load_financial_expense_yaml(company_dir)
 
     rows = _read_annual_rows(db_path, ticker)
-    periods: dict[str, Any] = {}
-    latest_period: str | None = None
-    latest_record: dict[str, Any] | None = None
+    if not force and old_archive is not None and _archive_covers(old_archive, rows, company_dir):
+        return yaml_path
+
     rows_with_prev = [
         (period, row, rows[idx - 1][1] if idx > 0 else None)
         for idx, (period, row) in enumerate(rows)
     ]
 
-    # Each period is independent (own markdown slice + own LLM call, no shared
-    # state), so analyze them concurrently. parallel_map preserves input order.
+    # 旧 archive 里可复用的 approved 记录（仅同版本且非 force）。
+    old_periods: dict[str, Any] = {}
+    if not force and isinstance(old_archive, dict) and int(old_archive.get("version") or 0) == EVIDENCE_VERSION:
+        old_periods = old_archive.get("periods") or {}
+
+    def _keep(period: str) -> bool:
+        return _is_approved_record(old_periods.get(period))
+
+    to_run = [(p, row, prev) for (p, row, prev) in rows_with_prev if not _keep(p)]
+
+    # 只重跑非 approved 的期；每期独立（自己的 MD 切片 + LLM 调用，无共享状态），
+    # 并发跑。parallel_map 保持输入顺序。
     records = parallel_map(
         lambda item: _analyze_period(ticker, company_dir, db_path, item[0], item[1], item[2]),
-        rows_with_prev,
-    )
-    for (base_period, _row), record in zip(rows, records):
+        to_run,
+    ) if to_run else []
+
+    periods: dict[str, Any] = {}
+    latest_period: str | None = None
+    latest_record: dict[str, Any] | None = None
+    run_iter = iter(records)
+    for base_period, _row, _prev in rows_with_prev:
+        record = old_periods[base_period] if _keep(base_period) else next(run_iter)
         periods[base_period] = record
         if latest_period is None or base_period > latest_period:
             latest_period = base_period
@@ -602,7 +728,7 @@ def analyze_all_periods(
     data: dict[str, Any] = {
         "version": EVIDENCE_VERSION,
         "analyzer_version": EVIDENCE_VERSION,
-        "retry_policy": "retry_non_approved_periods_when_matching_annual_markdown_exists",
+        "retry_policy": "retry_non_approved_periods_merge_approved_keep",
         "ticker": ticker,
         "company_dir": str(company_dir),
         "db_path": str(db_path),

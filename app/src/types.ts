@@ -451,8 +451,8 @@ export type AssumptionPreview = {
   result_rows: StatementRow[];
   warnings?: Array<Record<string, unknown>>;
   errors?: Array<Record<string, unknown>>;
+  revenue_view?: Yaml1RevenueView | null;
 };
-
 export type CompanyDetail = {
   summary: CompanySummary;
   core_assumption_md?: string | null;
@@ -478,6 +478,74 @@ export type CompanyDetail = {
   annual_revenue_breakdown?: AnnualRevenueBreakdownRow[];
   materials: FileItem[];
   da_view?: DaView | null;
+  audit_view?: AuditView | null;
+};
+
+export type AuditSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | string;
+
+export type AuditFlag = {
+  rule_id: string;
+  severity: AuditSeverity;
+  period?: string | null;
+  value?: number | null;
+  threshold?: string | null;
+  evidence_text?: string | null;
+  source_fields?: string[];
+  details?: Record<string, unknown>;
+};
+
+export type AuditSnippet = {
+  section?: string | null;
+  keyword?: string | null;
+  path?: string | null;
+  start_line?: number | null;
+  end_line?: number | null;
+  text_preview?: string | null;
+};
+
+export type AuditPlaybookReview = {
+  playbook_id: string;
+  trigger_flags?: Array<Pick<AuditFlag, "rule_id" | "severity" | "period" | "value" | "evidence_text">>;
+  industry_context?: string | null;
+  preliminary_frame?: string | null;
+  observations?: Record<string, unknown>;
+  hypotheses?: Array<Record<string, unknown>>;
+  required_next_evidence?: string[];
+  verdict?: string | null;
+};
+
+export type AuditEndpointSummary = {
+  status?: string;
+  rows?: number;
+  columns?: string[];
+  error?: string | null;
+};
+
+export type AuditEvidenceSummary = {
+  path?: string | null;
+  verdict?: Record<string, unknown> | null;
+  local_sources?: Record<string, unknown> | null;
+  annual_report_snippets?: AuditSnippet[];
+  layer2_playbook_reviews?: AuditPlaybookReview[];
+  tushare_auxiliary?: {
+    status?: string;
+    date_range?: Record<string, string>;
+    endpoints?: Record<string, AuditEndpointSummary>;
+    error?: string | null;
+  } | null;
+};
+
+export type AuditView = {
+  status: "ready" | "missing" | "error" | string;
+  flags_path?: string | null;
+  evidence_path?: string | null;
+  modified_at?: number | null;
+  risk_score?: number | null;
+  risk_level?: string | null;
+  pattern_tags?: string[];
+  flags?: AuditFlag[];
+  evidence?: AuditEvidenceSummary | null;
+  error?: string | null;
 };
 
 export interface DaCategory {
@@ -516,7 +584,7 @@ export interface DaView {
   facts: Record<string, unknown> | null;
 }
 
-export type TabKey = "overview" | "yaml1" | "quarterly" | "statements" | "dcf" | "reverse" | "da";
+export type TabKey = "overview" | "yaml1" | "quarterly" | "statements" | "dcf" | "reverse" | "da" | "audit";
 
 export type SettingsField = {
   key: string;
@@ -559,6 +627,7 @@ export type PipelineStage =
   | "未初始化"
   | "初始化完毕"
   | "预加载完毕"
+  | "核心假设完毕"
   | "建模完毕"
   | "建模完毕且有DA表";
 

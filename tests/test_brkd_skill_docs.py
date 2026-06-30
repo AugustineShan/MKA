@@ -57,7 +57,13 @@ def test_business_preunderstanding_v3_outputs_comp_style_draft():
     assert "时间线索：材料年份、历史事实区间、建议 horizon" in text
     assert "像分析师开会，不像机器审表" in text
     assert "业务理解会议 memo" in text
+    assert "展示优先用表格" in text
+    assert "把历史值和预测候选/方向放在同一张主表里" in text
+    assert "一次交互尽量只给一张表" in text
+    assert "把来源、处理去向、待 `/ka` 裁决点、收纳/风险压进表格列" in text
+    assert "不要一段里拆成多张碎表" in text
     assert "确认后，文件里仍按下面模板写全历史事实" in text
+    assert "| 主题/业务线 | 历史实际/证据 | 预测候选/方向 | 来源 | 我怎么处理 | 待 /ka 裁决/风险 |" in text
     assert "headline 财务事实" in text
     assert "Agent/OfficialBreakdowns" in text
     assert "标准财务率历史少写，业务拆分历史多写" in text

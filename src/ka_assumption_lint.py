@@ -41,6 +41,15 @@ from .yaml1_fidelity_check import ALLOWED_FAMILY, extract_knobs_block
 
 KNOBS_UNIT = {"pct", "ratio", "abs_mn"}
 
+# compiler 块头标签合法集 = revenue_family（收入 leaf 算法模板）∪ knobs 块 §7 family 名。
+# .md `### ... [上挂: ...; compiler: <X>]` 的 X 可能是任一侧；只校验 ASCII X 不自创/拼错。
+ALLOWED_COMPILER_TAGS = ALLOWED_FAMILY | {
+    "factor_yoy", "gpm", "leaf_margin", "cost_rate", "tax_rate",
+    "minor_rate", "op_adj_abs", "cost_abs", "below_line_abs",
+    "other_fin_exp_abs", "bs_revenue_pct", "bs_cogs_days",
+    "bs_scalar_pct", "formula_input", "formula",
+}
+
 # margin 互斥的 knobs family
 GPM_FAMILY = "gpm"
 LEAF_MARGIN_FAMILY = "leaf_margin"
@@ -59,7 +68,7 @@ def lint(md_text):
     """校验 核心假设.md，返回 findings 列表 [(severity, code, detail), ...]。
 
     severity ∈ {"FAIL", "WARN"}；有 FAIL 即 verdict=BLOCK。
-    code 是稳定标识（供测试断言）：KNOBS_MISSING / KNOBS_PARSE / HORIZON / UNIT / LEN / MARGIN_MUTEX / BAD_FAMILY。
+    code 是稳定标识（供测试断言）：KNOBS_MISSING / KNOBS_PARSE / HORIZON / UNIT / LEN / MARGIN_MUTEX / BAD_FAMILY / COST_ABS_SIGN。
     """
     findings = []
 
@@ -131,6 +140,16 @@ def _check_knob_entries(entries, H, findings):
             findings.append(("FAIL", "LEN",
                              "knobs[{}] values 长度 {} != horizon {}（anchor={}）".format(
                                  i, len(values), H, anchor)))
+        # cost_abs 减值符号门：cost_abs 族（资产减值/信用减值/其他资产减值）按附录A 存负值
+        # （损失为负，零允许）。引擎以 +impact_adjustment 把这些字段带符号加进 operate_profit，
+        # 正数会被当加项加回致利润虚增。.md 作者常误写正数幅度（"损失项写正数金额"），此门早拦。
+        if str(family) == "cost_abs" and isinstance(values, list):
+            pos = [v for v in values if isinstance(v, (int, float)) and v > 0]
+            if pos:
+                findings.append(("FAIL", "COST_ABS_SIGN",
+                                 "knobs[{}] anchor='{}' family=cost_abs 存正数 {}；"
+                                 "减值项按附录A 存负值（零允许），引擎按带符号损益调整加进 operate_profit，"
+                                 "正数会虚增利润。改负值。".format(i, anchor, pos)))
     return families
 
 
@@ -156,9 +175,9 @@ def _check_compiler_families(md_text, findings):
         # income.gpm knob / leaf margin -> income.gpm 这类带空格/箭头的非族 tag → 跳过
         if " " in val or "->" in val or "." in val:
             continue
-        if val not in ALLOWED_FAMILY:
+        if val not in ALLOWED_COMPILER_TAGS:
             findings.append(("FAIL", "BAD_FAMILY",
-                             "块头 compiler:'{}' 不在 ALLOWED_FAMILY（疑似自创族名/拼写错）".format(val)))
+                             "块头 compiler:'{}' 不在合法集（revenue_family ∪ knobs §7 family；疑似自创族名/拼写错）".format(val)))
 
 
 def verdict(findings):
@@ -187,6 +206,7 @@ def main():
     if not report_dir:
         base = os.path.dirname(os.path.abspath(md_path))
         report_dir = os.path.join(base, ".modelking") if os.path.isdir(os.path.join(base, ".modelking")) else base
+    os.makedirs(report_dir, exist_ok=True)
     jpath = os.path.join(report_dir, "ka_assumption_lint_report.json")
     with open(jpath, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)

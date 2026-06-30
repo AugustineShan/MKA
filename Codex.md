@@ -6,6 +6,7 @@
 > 调用 skill 前先读 `docs/技能简要分类.md` 分流；任何新增或修改 skill，必须同步更新该文档，并保留 `CLAUDE.md` / `Codex.md` 的入口提示。
 > 若规则边界或例外分流让你迷路，读 `docs/MKA规则导航图.md`。它只做索引，不替代具体契约。
 > `/brkd`、`/load`、`docs/Alphapai/Alphapai业务拆分抓取器.md`、`docs/Alphapai/Alphapai-load核心假设参考提示词.md`、`/ka` 同属核心假设生成链路；改其中一个的骨架、门禁、业务拆分历史要求、会议 memo 或 reference/knobs 边界时，必须检查另外几个是否需要同步。同步共同骨架，不复制职责。
+> `/audit` 是只读财务健康度雷达：只从 clean 历史表和本地 evidence 生成 flags/evidence pack，不改 raw/clean/yaml/forecast，也不是行情或交易建议。
 
 ## 0. 一句话
 
@@ -33,6 +34,7 @@ TuShare 原始数据
 - `yaml1*.yaml` 是人工判断的机器可读覆盖层。
 - `Agent/.modelking/forecast_params.yaml` 是编译后的逐年标准参数表，只给 `calc.py` 吃。
 - `Agent/forecast/` 是唯一正式 DCF 输出目录。
+- Tushare 完整取数字典在 `D:\MKA\TushareOfficialAPIMD\fulltushare`；接口详档查 `reference\接口文档`，字段速查查 `reference\FIELD_REFERENCE.md`。
 
 ## 1. Codex 新线程加载协议
 
@@ -225,6 +227,7 @@ Excel 模型 -> load 沙箱 markdown -> /load -> 核心假设参考load_*.md
 - `/comp` 是翻译器和信息保全闸，不做投资判断。
 - `/comp` 回执固定看六段：A 类覆盖、B 类保全、路径待核、语义待核、主动覆盖回读、Forecast 状态。audit 不干净时只留 reference yaml1，不覆盖 official forecast。
 - `/comp` 先按 Semantic IR 盘点：源文块识别 -> IR 分类 -> yaml1 落点 -> audit 六段。IR 是翻译账本，不是新判断源，也不要求落成 JSON。
+- 财务费用要拆开看：生息利息项、利息净额、`interest_expense_rate`、`cash_interest_rate` 由 defaults/引擎按现金和负债余额处理，不在 `/ka` 手拍、不在 `/comp` 写 knob；`other_fin_exp_abs` 是利润表外生·非利息项，默认沿用 `Agent/financial_expense.yaml` / defaults，特殊企业或汇兑、手续费、贴息趋势被明示时由 `/ka` 裁决，`/comp` 只落 `income.financial_expense.other_fin_exp_abs`。
 
 核心假设生成类技能同步纪律：
 
@@ -360,6 +363,7 @@ D:\MKA\skills\核心假设编辑器_skill_v*.md
 - 先押再问，关键旋钮拍板后再落盘。
 - `/ka` 不写 yaml1，不算 DCF。
 - `/ka` 只读人工筛选后的 markdown 材料入口；raw Excel 交 `/load`，raw 研报/纪要交 `/brkd`，markdown cache 不自动进入裁决。
+- `/ka` 数值门必须单独确认 `other_fin_exp_abs` 去处：沿用 `Agent/financial_expense.yaml` / defaults，或在材料/分析师明确非利息项趋势变化时覆盖；利息净额和利率派生项仍交引擎。
 
 模型建议：
 

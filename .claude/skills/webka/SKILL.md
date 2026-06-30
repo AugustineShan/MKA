@@ -1,6 +1,6 @@
 ---
 name: webka
-description: 一键打包网页端执行 /ka 所需的规则与材料。本地先跑 ka_prepare markdown 化同权重判断材料（公司判断 + 重要文件 + 最高权重材料），强制 /ka §2/§6b 门禁，再把核心纪律 A、核心假设源语言 B、knobs 块契约、核心假设编辑器 runbook 与同权重判断材料/BRKD/LOAD/KA目录顶层markdown/旧稿/defaults.yaml 合并成 `必读和素材.md`，core_metrics_overview + OfficialBreakdowns 合并成 `速查参考.md`，加一份 `readme first.md` 入口，输出到 WEBCLAUDE/webka(Claude帮你统摄核心假设）/。纯打包，稿子回收手动走本地 /ka。
+description: 一键打包网页端执行 /ka 所需的规则与材料。本地先跑 ka_prepare markdown 化同权重判断材料（公司判断 + 重要文件 + 最高权重材料），强制 /ka §2/§6b 门禁，再把核心纪律 A、核心假设源语言 B、knobs 块契约、核心假设编辑器 runbook 与同权重判断材料/BRKD/LOAD/KA目录顶层markdown/旧稿/defaults.yaml 合并成 `必读和素材.md`，core_metrics_overview + financial_expense.yaml + OfficialBreakdowns 合并成 `速查参考.md`，加一份 `readme first.md` 入口，输出到 WEBCLAUDE/webka(Claude帮你统摄核心假设）/。纯打包，稿子回收手动走本地 /ka。
 argument-hint: [公司名或代码，如 新乳业 / 002946] [--rebuild]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
@@ -48,12 +48,11 @@ companies\{公司}\WEBCLAUDE\webka(Claude帮你统摄核心假设）\
   - `Agent/defaults.yaml`（§1.1 审计对象）
   - BRKD `Agent业务讨论.md`、最新 LOAD 产物、KA 目录顶层 markdown（reference 候选 + 普通信息指引，有则并入）
   - 旧正式稿（仅 `--rebuild`，作对照）
-- `速查参考.md`：合并 `Agent/core_metrics_overview.md` + `Agent/OfficialBreakdowns/*.csv`。
+- `速查参考.md`：合并 `Agent/core_metrics_overview.md` + `Agent/financial_expense.yaml`（若存在）+ `Agent/OfficialBreakdowns/*.csv`。财务费用先拆口径：生息利息项和利息净额交 defaults/引擎，`other_fin_exp_abs` 是利润表外生·非利息项，默认沿用 defaults，特殊时才进入 `/ka` 数值门。
 
 明确不打包：
 
 - `core_metrics_overview.json/.csv`：与 `.md` 同源，`.md` 可读性最佳，只取 `.md`。
-- `financial_expense.yaml`：/ka 默认不裁决财费，且常处 LLM 未跑的低质态；如需附注构成，本地补跑 `financial_expense_analyzer` 后手动贴。
 - 年报正文 Markdown：太大，/ka §7 年报是按需查证不是主材料；如需附注 excerpt，用户手动贴。
 - `Agent/data.db`：web 无法查 SQLite；derived 事实已由 `core_metrics_overview` 与 `OfficialBreakdowns` 覆盖。
 - `docs/yaml1算法模板契约.md`：/comp 读，/ka 不加载。

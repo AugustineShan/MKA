@@ -20,6 +20,7 @@ from src.quarterly_tracker import (
     derive_subtotals,
     init_overrides_table,
     load_overrides,
+    _pct_change,
     prior_same_quarter,
     set_override,
 )
@@ -374,6 +375,11 @@ def test_derive_subtotals_reuses_income_statement_buckets():
     assert sub["n_income_attr_p"] == 250.0
 
 
+def test_pct_change_uses_absolute_denominator_for_negative_base():
+    assert _pct_change(108.0, -85.0) == 193.0 / 85.0
+    assert _pct_change(-100.0, -85.0) == -15.0 / 85.0
+
+
 def test_compute_quarterly_view_time_machine_default_year(tmp_path, monkeypatch):
     # Use the frozen fixture (data ends 2024, forecast starts 2025) so the view's
     # default year (2025) and Q1=inherit state stay stable. The real dir's forecast
@@ -412,19 +418,25 @@ def test_compute_quarterly_view_time_machine_default_year(tmp_path, monkeypatch)
     revenue_yoy = next(row for row in view["rows"] if row["field"] == "revenue_yoy")
     gross_margin = next(row for row in view["rows"] if row["field"] == "gross_margin")
     sell_exp_rate = next(row for row in view["rows"] if row["field"] == "sell_exp_rate")
-    n_income = next(row for row in view["rows"] if row["field"] == "n_income")
+    attr_net_income = next(row for row in view["rows"] if row["field"] == "n_income_attr_p")
     n_income_yoy = next(row for row in view["rows"] if row["field"] == "n_income_yoy")
     n_income_margin = next(row for row in view["rows"] if row["field"] == "n_income_margin")
     assert revenue_yoy["format"] == "percent"
     assert gross_margin["format"] == "percent"
     assert sell_exp_rate["format"] == "percent"
-    assert n_income["label"] == "净利润"
-    assert n_income["highlight"] is True
+    assert all(row["field"] != "n_income" for row in view["rows"])
+    assert all(row["label"] != "净利润" for row in view["rows"])
+    assert attr_net_income["label"] == "归母净利润"
+    assert attr_net_income["highlight"] is True
     assert n_income_yoy["format"] == "percent"
     assert n_income_yoy["highlight"] is True
     assert n_income_margin["format"] == "percent"
     assert n_income_margin["highlight"] is True
-    assert all(row["field"] != "n_income_attr_p" for row in view["rows"])
+
+    q1_2024 = "2024Q1"
+    q1_2023 = "2023Q1"
+    assert n_income_margin["values"][q1_2024] == attr_net_income["values"][q1_2024] / revenue["values"][q1_2024]
+    assert abs(n_income_yoy["values"][q1_2024] - (attr_net_income["values"][q1_2024] / attr_net_income["values"][q1_2023] - 1)) < 1e-12
 
     zero_row = next(row for row in view["rows"] if row["field"] == "int_income")
     assert zero_row["is_zero"] is True

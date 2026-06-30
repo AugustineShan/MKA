@@ -37,7 +37,7 @@
 | 开场 overview | 摆门禁来源、缺口、三方时间边界、建议骨架；**停，等认可时间轴+骨架** | §3 |
 | 接缝总账 | 入模/收纳/缺口/丢弃四桶；分红率单列去处；旧稿只对照不逐行 base | §4 |
 | 骨架门 | 收入拆分/科目/family/毛利耦合；family 必须落在源语言 §B4 集合内；**停，等认可** | §5 |
-| 数值门 | 收入→毛利→费用→below-OP/税/少数→分红率强制检测→可选 BS/CF 人工覆盖→中期/terminal，每段押→拍板→落盘 | §6 |
+| 数值门 | 收入→毛利→费用→其他财务费用(非利息外生项)→below-OP/税/少数→分红率强制检测→可选 BS/CF 人工覆盖→中期/terminal，每段押→拍板→落盘 | §6 |
 | 年报查证 | 拿不准时查对应附注（税率/below-OP/费用归类/少数股东/口径变更） | §7 |
 | 防静默 passthrough | 冲突按 A2 裁决、格式按 B7 写；LOAD/BRKD knobs 不得整块静默变 official | §8 |
 | 收口 + 落盘 | 接缝/骨架/范围/分红率/历史保全/时间轴/knobs 同源全核对 | §9 / §10 |
@@ -89,7 +89,7 @@
 |---|---|
 | `Agent/core_metrics_overview.{md,json,csv}` | 利润表事实（收入/毛利率/三费率/有效税率/少数股东比） |
 | `Agent/OfficialBreakdowns/business_revenue_breakdown*.csv\|jsonl` | 官方业务拆分口径；只证历史口径，不给预测。副拆分毛利率由 /comp 自动提取，KA 不手写 |
-| `Agent/financial_expense.yaml` | 财务费用附注，默认只收纳/分流 |
+| `Agent/financial_expense.yaml` | 财务费用附注档案。只用于区分生息利息项与其他财务费用外生·非利息项：利息净额/`interest_expense_rate`/`cash_interest_rate` 交 defaults/引擎；`other_fin_exp_abs` 默认沿用 defaults，特殊企业或材料明示趋势变化时进入 `/ka` 数值门 |
 | `Agent/data.db`（`clean_annual`/`clean_quarterly`） | 结构化事实兜底 |
 | `公告/年报/*.md` | 年报正文兜底，X 光片不是主材料，按需查附注 |
 | `docs/yaml1算法模板契约.md` | cleaner 折叠/unit_factor 等 yaml1 侧细节；**/comp 读，/ka 一般不加载** |

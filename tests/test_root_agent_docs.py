@@ -41,3 +41,6 @@ def test_root_agent_docs_point_to_skill_classification_and_sync_rule():
         assert "同步共同骨架" in text or "骨架要同步" in text
         assert "职责" in text
         assert "factpack" in text
+        assert "财务费用" in text
+        assert "`other_fin_exp_abs`" in text
+        assert "`income.financial_expense.other_fin_exp_abs`" in text

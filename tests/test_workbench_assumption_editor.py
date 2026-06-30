@@ -8,6 +8,7 @@ from src.workbench import (
     _assumptions_terminal,
     _editable_assumptions,
     _format_frontend_edit_prompt,
+    _yaml1_assumptions_view,
 )
 
 
@@ -23,6 +24,50 @@ def test_editable_assumptions_include_top_level_values():
     assert row["group"] == "standard_knob"
     assert row["cells"][0]["pointer"] == "/income.gpm/values/0"
     assert row["cells"][0]["year"] == "2025"
+
+
+def test_other_fin_exp_abs_groups_with_expense_rows():
+    data = {
+        "meta": {"horizon": [2025, 2026]},
+        "income.financial_expense.other_fin_exp_abs": {
+            "values": [3.0, 2.0],
+            "src": "#其他财务费用(外生·非利息)",
+        },
+        "income.cost_rates.sell_exp": {"values": [0.18, 0.17], "src": "#销售费用"},
+        "income.cost_rates.admin_exp": {"values": [0.04, 0.04], "src": "#管理费用"},
+        "income.cost_rates.rd_exp": {"values": [0.01, 0.01], "src": "#研发费用"},
+        "income.cost_rates.biz_tax_surchg": {"values": [0.006, 0.006], "src": "#税金及附加"},
+    }
+
+    view = _yaml1_assumptions_view(data, ["2025", "2026"])
+    section = next(item for item in view["sections"] if item["key"] == "cost_rates")
+    paths = [row["path"] for row in section["knobs"]]
+
+    assert paths == [
+        "income.cost_rates.sell_exp",
+        "income.cost_rates.admin_exp",
+        "income.cost_rates.rd_exp",
+        "income.cost_rates.biz_tax_surchg",
+        "income.financial_expense.other_fin_exp_abs",
+    ]
+
+
+def test_other_fin_exp_abs_is_editable_abs_amount():
+    data = {
+        "meta": {"horizon": [2025, 2026]},
+        "income.financial_expense.other_fin_exp_abs": {
+            "values": [3.0, 2.0],
+            "src": "#其他财务费用(外生·非利息)",
+        },
+    }
+
+    rows = _editable_assumptions(data)
+    row = next(item for item in rows if item["path"] == "income.financial_expense.other_fin_exp_abs")
+
+    assert row["label"] == "非息财务费用"
+    assert row["unit"] == "abs_mn"
+    assert row["format"] == "integer"
+    assert row["cells"][0]["pointer"] == "/income.financial_expense.other_fin_exp_abs/values/0"
 
 
 def test_editable_assumptions_include_revenue_driver_values():

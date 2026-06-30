@@ -12,6 +12,8 @@ def test_safe_div_and_yoy_guard_zero_and_missing_values():
     assert safe_div(10, 0) is None
     assert safe_div(None, 3) is None
     assert yoy(120, 100) == 0.2
+    assert math.isclose(yoy(108, -85), 193 / 85)
+    assert math.isclose(yoy(-100, -85), -15 / 85)
     assert yoy(120, 0) is None
 
 

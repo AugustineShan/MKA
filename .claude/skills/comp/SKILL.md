@@ -48,6 +48,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 - **`/comp` 只吃正式稿**：参考稿、草稿、`/load` 沙箱稿和 `model-extracted` 稿都不能静默成为正式 forecast 的源文。
 - **compiler audit 是 official forecast 门禁**：覆盖双射、B 类完整性、`unaligned`/路径待核、语义待核、主动覆盖回读都清干净，才叫 `audit_clean`；否则 yaml1 只能作为 reference/draft 产物保存，不跑 official forecast。
 - **信息保全闸**：A 类进入可计算覆盖，B 类进入 `history` / `stash` / `display`，歧义进入 `unaligned` 或待核清单；三者都清楚，才允许进入 official forecast。DCF 能跑不是唯一成功标准，信息没有丢才是。
+- **财务费用翻译闸**：财务费用不是铁板一块。生息利息项、利息净额、`interest_expense_rate`、`cash_interest_rate` 默认缺席，交 defaults/引擎按现金和负债余额倒算；但 official 源文若拍了其他财务费用外生·非利息项 `other_fin_exp_abs`，或在费用段明确写了“非息财务费用沿用 defaults”，都必须翻成 `income.financial_expense.other_fin_exp_abs`，不能提到顶层 `financial_expense.*`，也不能因“利息净额不写”而漏译。沿用 defaults 时从 `defaults.yaml income.financial_expense.other_fin_exp_abs` 回声满数组，让前端保留可编辑行；只有 legacy official 完全未提本项时，yaml1 才可缺席并回落到 `/init` 生成的 defaults。
 - **所有 skill 均不读取 PDF。** 如果 `核心假设.md` 的来源材料里有 PDF，compiler 只信任已经被翻译进 `.md` 的内容。
 - `defaults.yaml` 是目标命名空间，不是输入假设；compiler 负责把 `核心假设.md` 里的覆盖项落到 `defaults.yaml` 已有的真实路径上。
 - `docs/数据格式参考.md` 和 `docs/yaml1算法模板契约.md` 是只读契约，compiler 不能改写。
@@ -77,6 +78,14 @@ yaml1 是 comp 的主产物，但**不是落盘即 official 成功**。落盘后
 4. **语义待核**：`# 语义待核` 必须为空，或已经被分析师显式确认；未确认则不跑 official forecast。
 5. **主动覆盖回读**：主动覆盖项已用人话回读完成，且没有未拍板项。
 6. **Forecast 状态**：`not_run` / `skipped_missing_data` / `ran_ok` / `failed_after_audit_clean`，并说明 `Agent/forecast/` 是否被覆盖。
+
+**确定性双射闸门（BLOCKING，与 /frontend-edit 同一校验器）**：yaml1 落盘后、跑 DCF 前，**必须**跑同一个确定性三源校验，不能只靠上面的 LLM 散文 audit：
+
+```bash
+py -m src.yaml1_fidelity_check "<刚写的 yaml1>" "companies/{公司}/Agent/defaults.yaml" "<选中的 official 核心假设.md>"
+```
+
+`exit 1`（BLOCK：md↔knobs↔yaml1 双射 FAIL）→ audit 视为不干净，yaml1 只能标 `reference yaml1`，**不跑 official forecast**；详情读 `Agent/.modelking/yaml1_fidelity_report.json`，回 yaml1 修正后重编。`exit 0`（PASS）才允许进自动 DCF。`/comp` 与 `/frontend-edit` 共用这一个校验器，保证两条写入通道对 md 是 canonical、yaml1 是派生缓存的判定完全一致。
 
 若 compiler audit 不干净：可以保留 `yaml1_*.yaml` 作为参考产物，但必须在汇报里标明 `reference yaml1`，停止 `/comp` 的 official forecast，不得运行 `src.forecast` 去覆盖 `Agent/forecast/`。
 

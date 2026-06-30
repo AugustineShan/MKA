@@ -81,7 +81,7 @@
 
 > "不进 DCF" 只意味着"不走 `calc.py` 那条窄路",**绝不意味着"不进 yaml1"**。把 B 类判出 yaml1 = 丢信息。判 A 类"该不该写"看"老板动没动";判 B 类"该不该写"看".md 里有没有"——有就写,无条件。
 
-**defaults.yaml 是 fallback,不是上限。** `defaults.yaml` / YAML2 是机器平推底座,专门等人类判断覆盖。凡是 `核心假设.md` 里已经由分析师确认的显式期、衰减期、永续增速、收入拆分、毛利率、费用率、below-OP、其他财务费用,以及人工 BS/CF 覆盖闸中的周转/营运资本/capex/depr 等 A 类判断,都应翻成 yaml1 覆盖 defaults。只有 `.md` 没给、明确说"交系统默认/维持 defaults"、或该项压根没被老板动过时,才让它缺席并回落到 defaults。**不要拿 defaults 的 `forecast_years`、`terminal_growth` 或平推值反向否定 `.md` 里已拍板的覆盖。**
+**defaults.yaml 是 fallback,不是上限。** `defaults.yaml` / YAML2 是机器平推底座,专门等人类判断覆盖。凡是 `核心假设.md` 里已经由分析师确认的显式期、衰减期、永续增速、收入拆分、毛利率、费用率、below-OP、其他财务费用,以及人工 BS/CF 覆盖闸中的周转/营运资本/capex/depr 等 A 类判断,都应翻成 yaml1 覆盖 defaults。只有 `.md` 没给、明确说"交系统默认/维持 defaults"、或该项压根没被老板动过时,才让它缺席并回落到 defaults。**例外：`other_fin_exp_abs` 只要被 `/ka` 费用段点名检测过，即使裁决是沿用 defaults，也要显式翻成 yaml1，作为前端可编辑行。**不要拿 defaults 的 `forecast_years`、`terminal_growth` 或平推值反向否定 `.md` 里已拍板的覆盖。
 
 本 skill 里说 `defaults.yaml` / `yaml1` / `forecast` / `recon` 时,多半是逻辑名字;磁盘位置默认都在 `companies/{公司}_{代码}/Agent/`: `Agent/defaults.yaml`、`Agent/yaml1*.yaml`、`Agent/forecast/`、`Agent/recon/`。不要把它们理解成公司工作台根目录材料。
 
@@ -532,6 +532,8 @@ income.financial_expense.other_fin_exp_abs:
 
 **命名空间硬契约:必须嵌在 `income.financial_expense` 下。** cleaner 用 `income.get("financial_expense")` 取——写到顶层 `financial_expense.*` 或别处会被**静默丢弃**,该外生项落 0,没有任何报错。这正是"利息净额不写"被误读成"整个财务费用都不写"会丢掉的判断:**拆开记——利息净额不写,其他财务费用外生项必写、且必须嵌 `income.financial_expense` 下。**
 
+若 official 在费用段已点名“非息财务费用 / `other_fin_exp_abs`”，无论裁决是覆盖还是明确沿用 defaults，都必须写上面的 knob：覆盖时照 .md 逐年值；沿用 defaults 时从 `defaults.yaml income.financial_expense.other_fin_exp_abs` 取满数组回声，`src` 写明 `#非息财务费用(沿用defaults)` 或同义来源。这样前端费用组会稳定出现可编辑行。只有 legacy official 完全未提 `other_fin_exp_abs` 时，yaml1 才可缺席并回落到 `/init` defaults；这不是落 0。
+
 ---
 
 ## 9. 翻译后:校对 + 固定报告
@@ -599,14 +601,14 @@ income.financial_expense.other_fin_exp_abs:
 | 分线历史(收入/量/价/成本逐年) | (不是 A 类) | **该 leaf 的 `history`** | `series.{revenue,volume,price,cost}` | 照搬,占位年标 note |
 | 副拆分 / 降级观测 / 核对 / 情报 / 附注 | (不是 A 类) | **顶层 `stash`** 独立成块 | 多年 `series` + `note`/`caveat`/`unit` | 照搬 |
 | 财务费用 · **利息净额** | (刻意缺席) | — | — | 引擎按现金/负债余额倒算,**一字不写** |
-| 财务费用 · **其他财务费用(外生·非利息)** | `knob` | defaults.yaml `income.financial_expense.other_fin_exp_abs` | `values` 满数组(绝对值) | 照 .md 符号;**必须嵌 `income.financial_expense` 下,不可提顶层**(见 §8) |
+| 财务费用 · **其他财务费用(外生·非利息)** | `knob` | defaults.yaml `income.financial_expense.other_fin_exp_abs` | `values` 满数组(绝对值) | 照 .md 符号;若 official 明确沿用 defaults，也写 defaults 满数组回声以便前端编辑；**必须嵌 `income.financial_expense` 下,不可提顶层**(见 §8) |
 | 人工 BS 营运资本 · 收入占比 | `knob` | defaults.yaml `balance_sheet.revenue_pct.*` | `values` 满数组(比率) | 只翻已明示核心 thesis 的覆盖;缺席 = defaults |
 | 人工 BS 营运资本 · 成本天数 | `knob` | defaults.yaml `balance_sheet.cogs_days.*` | `values` 满数组(天数原值) | 例如存货/应付周转天数;不要同时手填金额 |
 | 人工 CF/BS 标量 · capex/depr | `knob` | defaults.yaml `balance_sheet.capex_pct` / `balance_sheet.depr_rate` | `values` 满数组(比率) | 轻资产/稳态覆盖;重资产排程优先 `/da`,不要在 yaml1 里造 cohort |
 | 营业利润/净利/各净利率 | (刻意缺席) | — | — | 派生,不写 |
 | 沿用平推的标准科目 | (刻意缺席) | — | — | 缺席 = 落 yaml2 |
 
-> **减值符号结论(把血泪结论固化,别再交给运气):** `cost_abs.*`(资产减值 `assets_impair_loss`、信用减值 `credit_impa_loss`)在本体系 **存负值,与 .md 同号**,引擎按同号做减项。这条是 calc.py 核实过的结论——曾有一次减值字段符号搞反,导致五家测试公司利润被静默虚增,修复后定为此。**照此填,不要再标"符号待核"、也不要自作主张存正值。**(注:`assets_impair_loss` 的 TuShare 原始符号惯例在 2019 年后有翻转,但那是清洗层入库前的事;到 yaml1 这一层,以 .md 写出的符号为准、存负值。)
+> **减值符号结论(把血泪结论固化,别再交给运气):** `cost_abs.*` 减值项（资产减值 `assets_impair_loss`、信用减值 `credit_impa_loss`、其他资产减值 `oth_impair_loss_assets`，集合定义在 `src/impact_fields.py` 的 `IMPACT_ADJUSTMENT_FIELDS`）在本体系 **存负值（损失为负，零允许）**。引擎 `calc.py` 把这三个字段当**带符号损益调整**，以 `+ impact_adjustment` 并入 `operate_profit`（不是正成本计入 `total_cogs`）——存负则扣减利润，存正会被当加项加回、静默虚增利润。**.md knobs 块也必须写负值，不得写正数幅度**（"损失项写正数金额"惯例只适用于 `below_line_abs.non_oper_exp`，不适用于减值项）：`ka_assumption_lint` 在 /ka 落盘时拦 `.md` 正数（按 `family==cost_abs`），`yaml1_fidelity_check` 在 /comp 时按 path 叶子名精确拦 yaml1 正数。这条是 calc.py 核实过的结论——曾有一次减值字段符号搞反,导致五家测试公司利润被静默虚增,修复后定为此。**照此填,不要再标"符号待核"、也不要自作主张存正值。**(注:`assets_impair_loss` 的 TuShare 原始符号惯例在 2019 年后有翻转,但那是清洗层入库前的事;到 yaml1 这一层,以 .md 写出的符号为准、存负值。)
 
 > 符号铁律(其余未固化项):**逐路径核对引擎怎么用这个值,再定符号。** .md 的显示符号(按"对利润的正负贡献")与引擎口径(按公式做加项/减项)可能相反。下游没有客观闸接住符号错,所以这是收尾人话回读重点扫的一类。
 
