@@ -1015,7 +1015,15 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict):
         return None
+    return _yaml1_revenue_view_from_data(data)
 
+
+def _yaml1_revenue_view_from_data(data: dict[str, Any]) -> dict[str, Any] | None:
+    """按 income.revenue 节点重算分线/总收入视图。纯数据驱动，不读文件。
+
+    供 assumption-preview 在内存中对 patched yaml1 重算分线收入用——独立于
+    forecast build，即便 forecast 报错分线收入仍可联动显示。
+    """
     years = _years_from_yaml1(data)
     revenue = data.get("income.revenue", {})
     segments = revenue.get("segments", {}) if isinstance(revenue, dict) else {}
@@ -3191,6 +3199,23 @@ def assumption_preview(company_id: str, payload: AssumptionPreviewPayload) -> di
     patches = [_model_dump(item) for item in payload.patches]
     try:
         patched_yaml1 = _apply_assumption_patches(yaml1_data, patches)
+    except (StaleAssumptionError, Yaml1CleanError, CalcError, ValueError) as exc:
+        return {
+            "dcf_summary": None,
+            "dcf_detail": [],
+            "statement_sheets": [],
+            "result_rows": [],
+            "warnings": [],
+            "errors": [{"message": str(exc)}],
+            "revenue_view": None,
+        }
+    # 分线收入重算独立于 forecast build：即便下面 clean/build 报错，前端分线收入仍能按草稿联动。
+    preview_revenue_view: dict[str, Any] | None = None
+    try:
+        preview_revenue_view = _yaml1_revenue_view_from_data(patched_yaml1)
+    except (Yaml1CleanError, ValueError, KeyError, TypeError):
+        preview_revenue_view = None
+    try:
         ensure_assumptions_fresh(
             yaml1_data=patched_yaml1,
             yaml1_label=f"{yaml1_path}#preview",
@@ -3221,8 +3246,11 @@ def assumption_preview(company_id: str, payload: AssumptionPreviewPayload) -> di
             "result_rows": [],
             "warnings": [],
             "errors": [{"message": str(exc)}],
+            "revenue_view": preview_revenue_view,
         }
-    return _preview_response(cleaned.report, result)
+    response = _preview_response(cleaned.report, result)
+    response["revenue_view"] = preview_revenue_view
+    return response
 
 
 @app.post("/api/companies/{company_id}/assumption-brief")
