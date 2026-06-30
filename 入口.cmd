@@ -135,9 +135,16 @@ if not exist "node_modules" (
 )
 
 :: ============================================================
-:: 7. Build frontend - only if app/dist missing
+:: 7. Build frontend - if dist missing or source is newer
 :: ============================================================
+set "NEED_BUILD="
 if not exist "app\dist\index.html" (
+  set "NEED_BUILD=1"
+) else (
+  %PY% -c "import pathlib, sys; src=pathlib.Path('app/src'); dist=pathlib.Path('app/dist/index.html'); newest=max((p.stat().st_mtime for p in src.rglob('*') if p.is_file()), default=0); sys.exit(0 if newest > dist.stat().st_mtime else 1)" >nul 2>nul
+  if not errorlevel 1 set "NEED_BUILD=1"
+)
+if defined NEED_BUILD (
   echo.
   echo [*] 构建前端...
   call npm run build

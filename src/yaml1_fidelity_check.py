@@ -29,11 +29,16 @@ except ImportError:
     sys.stderr.write("need pyyaml: pip install pyyaml\n")
     sys.exit(2)
 
+from src.impact_fields import IMPACT_ADJUSTMENT_FIELDS
+from src.revenue_fold import REVENUE_FAMILIES
+from src.unit_convert import to_decimal
+
 # 中文走 stdout 会乱码(见 CLAUDE.md):报告落盘,stdout 只打 ASCII 摘要
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
-ALLOWED_FAMILY = {"factor_product", "driver_rate", "growth", "abs", "vol_price", "vol_price_margin"}
+# 合法 revenue_family 单一真源在 src.revenue_fold.REVENUE_FAMILIES（引擎/校验/lint 共用）。
+ALLOWED_FAMILY = set(REVENUE_FAMILIES)
 ALLOWED_PROJ = {"yoy", "abs", "constant", "hold"}
 RATE_PATH_HINTS = ("cost_rates", "gpm", "effective_tax_rate", "minority_ratio")
 
@@ -351,8 +356,8 @@ def coverage_reverse(y1_srcs, sections, findings):
 # Gate C 从"正则抠人话"退化成"两个结构对象逐条 diff",零脆性、真双射。
 # 完全由块内容驱动,不含任何公司特定假设(兼容任意公司)。
 
-_SUB_ALIAS = {"revenue_yoy": ["收入", "revenue_yoy"],
-              "revenue_abs": ["收入", "revenue_abs"]}
+_SUB_ALIAS = {"revenue_yoy": ["收入", "收入yoy", "收入增速", "revenue_yoy"],
+              "revenue_abs": ["收入", "收入abs", "revenue_abs"]}
 
 
 def extract_knobs_block(md_text):
@@ -368,9 +373,25 @@ def extract_knobs_block(md_text):
 
 
 def _norm_unit(v, unit):
-    if isinstance(v, (int, float)) and unit == "pct":
-        return v / 100.0
-    return v
+    # pct→decimal conversion is single-sourced in src.unit_convert.
+    return to_decimal(v, unit)
+
+
+def _check_impact_sign(path, vals, findings):
+    """减值符号门：IMPACT 字段（assets_impair_loss/credit_impa_loss/oth_impair_loss_assets）
+    是带符号损益调整，引擎以 +impact_adjustment 并入 operate_profit；损失须存负，正数会
+    被当加项加回致利润虚增。零放行。path 叶子名 = TuShare 字段名，精确无中文映射。"""
+    if not path or not isinstance(vals, list):
+        return
+    leaf = path.rsplit(".", 1)[-1]
+    if leaf not in IMPACT_ADJUSTMENT_FIELDS:
+        return
+    pos = [v for v in vals if isinstance(v, (int, float)) and v > 0]
+    if pos:
+        findings.append(("C-DIFF", "FAIL", path,
+                         "减值项 {} 存正数 {}，违反附录A减值符号结论（损失存负，零允许）；"
+                         "引擎按 +impact_adjustment 加进 operate_profit，正数会虚增利润。"
+                         "改负值。".format(leaf, pos)))
 
 
 def gate_c_diff(std_knobs, leaves, block, findings):
@@ -425,12 +446,21 @@ def gate_c_diff(std_knobs, leaves, block, findings):
             findings.append(("C-DIFF", "PASS", tag, "值与生成器自报一致"))
 
     for path, vals, src in std_knobs:
-        hit = lookup(core_term(src) if src else "", None)
+        anchor_core = core_term(src) if src else ""
+        hit = lookup(anchor_core, None)
+        if not hit and path:
+            # sub 兜底：top-level knob 的 knobs 块条目可能带 sub（如
+            # balance_sheet.dividend_payout ↔ {anchor:#分红率, sub:dividend_payout}）。
+            # 用 path 叶子名（TuShare 字段名）作为 sub 再查一次。
+            hit = lookup(anchor_core, path.rsplit(".", 1)[-1])
         if not hit:
             findings.append(("C-DIFF", "FAIL", path,
                              "yaml1 旋钮在 knobs 块无对应(幻觉/src错):src='{}'".format(src)))
         else:
             check(path, vals, hit)
+        # 减值符号门：IMPACT 字段是带符号损益调整（+impact_adjustment 进 operate_profit），
+        # 损失须存负；正数会被引擎当加项加回，静默虚增利润。零放行。
+        _check_impact_sign(path, vals, findings)
 
     for spath, label, vals, src, fam, depth in leaves:
         hit = lookup(core_term(src) if src else "", label)
@@ -522,6 +552,7 @@ def main():
         base = os.path.dirname(os.path.abspath(yaml1_path))
         mk = os.path.join(base, ".modelking")
         report_dir = mk if os.path.isdir(mk) else base
+    os.makedirs(report_dir, exist_ok=True)
     jpath = os.path.join(report_dir, "yaml1_fidelity_report.json")
     with open(jpath, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)

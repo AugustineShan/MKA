@@ -21,9 +21,10 @@
 
 BRKD、LOAD、KA 默认收窄为“利润表 + 业务层盈利模型”这套源语言：收入、成本/毛利、费用率、below-OP、税率、少数股东等利润表相关判断可以进入正文和 knobs；BS/CF/DCF 驱动因素默认由 defaults.yaml、引擎或专门流程平推，不主动在这层建预测旋钮。
 
-默认不得把 `financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC` 等写成 BRKD/LOAD/KA 的预测对象或待拍板项：
+默认不得把生息财务费用/利息净额（`interest_expense_rate`、`cash_interest_rate`、由现金/债务/利率/BS 推导的 `financial expense`）、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC` 等写成 BRKD/LOAD/KA 的预测对象或待拍板项：
 
-- `financial expense` 若来自现金、债务、利率或 BS 推导，视为引擎/专门流程派生，不进入本层旋钮；只有材料明确给出“其他财务费用”这类利润表外生项时，才可用 `other_fin_exp_abs`。
+- 生息财务费用/利息净额若来自现金、债务、利率或 BS 推导，视为引擎/defaults/专门流程派生，不进入本层旋钮；不要手写 `interest_expense_rate`、`cash_interest_rate` 或由它们倒出来的净财务费用。
+- `other_fin_exp_abs`（其他财务费用外生·非利息项，如手续费、汇兑损益、贴息等）属于利润表外生项。默认沿用 `/init` 生成的 `Agent/financial_expense.yaml` / `defaults.yaml income.financial_expense.other_fin_exp_abs` 平推；若材料或分析师说明特殊企业口径、汇兑/手续费/贴息趋势不同，KA 可裁决并写 `other_fin_exp_abs`。
 - `EBIT`、营业利润、利润总额、净利润等派生利润不作旋钮；只能作为 sanity/观察，不能倒算残差。
 - `DA`、`CAPEX`、`CWC`、`shares`、`WACC` 等默认交引擎/defaults/专门流程处理，不在 `/brkd` 或 `/ka` 中主动裁决。
 - 材料中出现这些驱动因素但没有被分析师明示为核心 thesis 时，按核心纪律 A2 给明确去处：写入收纳区并标“非本层范围”，或写明丢弃原因；禁止静默删掉，也禁止包装成利润表预测。
@@ -41,7 +42,7 @@ BRKD、LOAD、KA 默认收窄为“利润表 + 业务层盈利模型”这套源
 所有正式或半成品核心假设源文按这个顺序组织：
 
 ```text
-时间轴/本轮判断锚点 -> 收入 -> 毛利/成本 -> 费用 -> below-OP 与税 -> 可选 BS/营运资本/现金流人工覆盖 -> 中期/terminal -> 收纳区 -> knobs
+时间轴/本轮判断锚点 -> 收入 -> 毛利/成本 -> 费用 -> 其他财务费用(非利息外生项) -> below-OP 与税 -> 可选 BS/营运资本/现金流人工覆盖 -> 中期/terminal -> 收纳区 -> knobs
 ```
 
 这不是纯纪律，而是源语言章节顺序。`/ka`、`/load`、`/annual-update`、`/adj incremental` 在需要逐段讨论时，也按这个顺序走。
@@ -157,7 +158,7 @@ BRKD、LOAD、KA 默认收窄为“利润表 + 业务层盈利模型”这套源
 - `leaf margin -> income.gpm`：分线毛利折叠。
 - `cost_rate`：税金及附加、销售、管理、研发费用率。
 - `abs below-OP`：减值、投资收益、其他收益、公允、资产处置、营业外收支等绝对值项。
-- `other_fin_exp_abs`：其他财务费用外生项，仅限材料明确作为利润表外生项给出；BS/现金/债务派生的 `financial expense` 不写。
+- `other_fin_exp_abs`：其他财务费用外生·非利息项；默认可沿用 `/init` 的 `Agent/financial_expense.yaml` / defaults 平推，特殊企业或材料明示结构变化时可写显式覆盖；生息财务费用/利息净额不写。
 - `bs_revenue_pct`：BS 科目 / 收入的人工覆盖，例如应收账款、合同资产、预付款、合同负债等，必须落到 `balance_sheet.revenue_pct.*` 现有路径。
 - `bs_cogs_days`：以营业成本天数表达的营运资本人工覆盖，例如存货周转天数、应付账款天数，必须落到 `balance_sheet.cogs_days.*` 现有路径。
 - `bs_scalar_pct`：轻资产/稳态下对 `balance_sheet.capex_pct`、`balance_sheet.depr_rate` 等 defaults 标量路径的人工覆盖；重资产排程优先 `/da`。

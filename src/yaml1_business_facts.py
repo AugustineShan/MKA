@@ -269,6 +269,28 @@ def _add_row(block: dict[str, Any], row: dict[str, Any], warnings: list[dict[str
     block["rows"].append(row)
 
 
+# 价格因子的展示词随 leaf 声明的 base.unit.price 变（件/吨/ARPU/客单价），
+# 不再焊死成大宗品口径"吨价"。镜像 volume 侧的单位感知；未声明时回退 registry 默认"单价"。
+_PRICE_UNIT_WORD: dict[str, str] = {
+    "cny_per_unit": "单价",
+    "yuan_per_unit": "单价",
+    "cny_per_ton": "吨价",
+    "yuan_per_ton": "吨价",
+    "arpu": "ARPU",
+    "aov": "客单价",
+}
+
+
+def _price_metric_label(metric_key: str, price_unit: str | None) -> str | None:
+    """price/price_yoy 按 leaf 声明的价格单位覆盖展示词；其余 metric 返回 None（用 registry 默认）。"""
+    if metric_key not in ("price", "price_yoy"):
+        return None
+    word = _PRICE_UNIT_WORD.get(_cell(price_unit) or "")
+    if not word:
+        return None
+    return f"{word}增长" if metric_key == "price_yoy" else word
+
+
 def _fact_row(
     *,
     entity_key: str,
@@ -279,6 +301,7 @@ def _fact_row(
     value_source: str,
     editable_path: str | None = None,
     note: str | None = None,
+    price_unit: str | None = None,
     warnings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     metric_key, metric_def = metric_def_for(metric, warnings, source_path)
@@ -286,7 +309,7 @@ def _fact_row(
         "entity_key": entity_key,
         "entity_label": entity_label,
         "metric": metric_key,
-        "metric_label": metric_def["label"],
+        "metric_label": _price_metric_label(metric_key, price_unit) or metric_def["label"],
         "values": {str(year): value for year, value in values.items()},
         "unit": metric_def.get("unit"),
         "format": metric_def.get("format") or "num2",
@@ -325,7 +348,38 @@ def _yoy(values: dict[str, float]) -> dict[str, float | None]:
         prev = str(int(year) - 1)
         previous = values.get(prev)
         current = values.get(year)
-        out[year] = (current / previous - 1.0) if previous not in (None, 0) else None
+        denominator = abs(previous) if previous is not None and previous < 0 else previous
+        out[year] = (current - previous) / denominator if current is not None and denominator not in (None, 0) else None
+    return out
+
+
+def _compound_absolute(
+    history: dict[str, Any],
+    growth: dict[str, Any],
+    existing: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    """从历史末值按增长率复利出预测绝对值（销量/单价）。existing 已有的年份保留并作为链上基准。"""
+    existing = existing or {}
+    out: dict[str, float] = {}
+    hist = {
+        int(y): float(v)
+        for y, v in history.items()
+        if _is_year_key(str(y)) and isinstance(v, (int, float))
+    }
+    if not hist:
+        return out
+    prev: float | None = hist[max(hist)]
+    for y in sorted(int(y) for y in growth if _is_year_key(str(y))):
+        ys = str(y)
+        if ys in existing or ys in out:
+            val = existing.get(ys, out.get(ys))
+            if isinstance(val, (int, float)):
+                prev = float(val)
+            continue
+        rate = growth.get(ys)
+        if isinstance(rate, (int, float)) and prev is not None:
+            prev = prev * (1.0 + float(rate))
+            out[ys] = prev
     return out
 
 
@@ -427,27 +481,48 @@ def _add_revenue_block(
                 warnings=warnings,
             ), warnings)
 
-        volume_driver = editable_by_path.get(f"income.revenue.{key}.volume")
-        volume_values = {}
-        if isinstance(segment.get("history_volumes"), dict):
-            volume_values.update(segment["history_volumes"])
-        if isinstance(segment.get("volumes"), dict):
-            volume_values.update(segment["volumes"])
-        volume_values.update(_editable_values(volume_driver))
-        if volume_values:
-            _add_row(block, _fact_row(
-                entity_key=key,
-                entity_label=label,
-                metric="volume",
-                values=volume_values,
-                source_path=f"{leaf_path}.history.series.volume",
-                value_source="derived",
-                editable_path=volume_driver.get("path") if volume_driver else None,
-                warnings=warnings,
-            ), warnings)
-
-        represented_metrics = {"revenue", "revenue_yoy", "cost", "gross_margin", "volume"}
         history_series = segment.get("history_series") if isinstance(segment.get("history_series"), dict) else {}
+        # 销量/单价：绝对值行（历史 + 预测复利）+ 增长率 _yoy 行（可编辑）。
+        # factor_product 的 driver 路径是 ...volume/...price（family=yoy 增长率），
+        # vol_price 的是 ...volume_yoy/...price_yoy；两者都路由到 _yoy metric，避免和绝对值历史合并。
+        for metric_key in ("volume", "price"):
+            driver = editable_by_path.get(f"income.revenue.{key}.{metric_key}") or editable_by_path.get(f"income.revenue.{key}.{metric_key}_yoy")
+            growth = _editable_values(driver) if (driver and driver.get("family") == "yoy") else {}
+            history = history_series.get(metric_key) if isinstance(history_series.get(metric_key), dict) else {}
+            if metric_key == "volume" and isinstance(segment.get("history_volumes"), dict):
+                history = {**segment["history_volumes"], **history}
+            abs_values: dict[str, Any] = {}
+            abs_values.update(history)
+            if metric_key == "volume" and isinstance(segment.get("volumes"), dict):
+                abs_values.update(segment["volumes"])
+            if growth:
+                abs_values.update(_compound_absolute(history, growth, abs_values))
+            if abs_values:
+                _add_row(block, _fact_row(
+                    entity_key=key,
+                    entity_label=label,
+                    metric=metric_key,
+                    values=abs_values,
+                    source_path=f"{leaf_path}.history.series.{metric_key}",
+                    value_source="derived",
+                    editable_path=None,
+                    price_unit=_cell(segment.get("price_unit")) or None,
+                    warnings=warnings,
+                ), warnings)
+            if growth:
+                _add_row(block, _fact_row(
+                    entity_key=key,
+                    entity_label=label,
+                    metric=f"{metric_key}_yoy",
+                    values=growth,
+                    source_path=(driver.get("path") if driver else None) or f"{leaf_path}.knobs.{metric_key}",
+                    value_source="forecast",
+                    editable_path=driver.get("path") if driver else None,
+                    price_unit=_cell(segment.get("price_unit")) or None,
+                    warnings=warnings,
+                ), warnings)
+
+        represented_metrics = {"revenue", "revenue_yoy", "cost", "gross_margin", "volume", "price", "volume_yoy", "price_yoy"}
         for raw_metric, values in history_series.items():
             metric_key, _metric_def = metric_def_for(raw_metric, warnings, f"{leaf_path}.history.series.{raw_metric}")
             if metric_key in represented_metrics:
@@ -479,6 +554,9 @@ def _add_revenue_block(
                 segment_label = str(segment.get("name") or segment_key)
                 break
         driver = _revenue_driver_key(path, segment_key)
+        # 增长率 driver（family=yoy）路由到 _yoy metric，避免和绝对值历史行（volume/price）合并混单位
+        if editable.get("family") == "yoy" and not driver.endswith("_yoy"):
+            driver = f"{driver}_yoy"
         _add_row(block, _fact_row(
             entity_key=segment_key,
             entity_label=segment_label,

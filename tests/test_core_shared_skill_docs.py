@@ -60,15 +60,20 @@ def test_core_source_language_defines_shared_comp_grammar():
     assert "reference 裁决回执" in text
     assert "范围边界：默认利润表 + 业务层盈利模型" in text
     assert "BRKD、LOAD、KA 默认收窄" in text
-    assert "`financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in text
+    assert "生息财务费用/利息净额" in text
+    assert "`interest_expense_rate`、`cash_interest_rate`" in text
+    assert "`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in text
     assert "不在 `/brkd` 或 `/ka` 中主动裁决" in text
+    assert "`other_fin_exp_abs`（其他财务费用外生·非利息项" in text
+    assert "`Agent/financial_expense.yaml` / `defaults.yaml income.financial_expense.other_fin_exp_abs` 平推" in text
     assert "衰减交接增速: x% / none" in text
     assert "人工注入例外" in text
     assert "BS/营运资本/现金流人工覆盖" in text
     assert "balance_sheet.revenue_pct.*" in text
     assert "balance_sheet.cogs_days.*" in text
     assert "重资产排程优先 `/da`" in text
-    assert "BS/现金/债务派生的 `financial expense` 不写" in text
+    assert "生息财务费用/利息净额不写" in text
+    assert "特殊企业或材料明示结构变化时可写显式覆盖" in text
     assert "可选 BS/营运资本/现金流人工覆盖 -> 中期/terminal" in text
     assert "上挂: 营业收入" in text
     assert "compiler: factor_product/growth/abs/formula" in text

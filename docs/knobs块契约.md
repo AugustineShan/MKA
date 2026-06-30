@@ -93,7 +93,7 @@ knobs:
 | 字段 | 必须性 | 说明 |
 |---|---:|---|
 | `anchor` | 必须 | 正文上挂科目锚点，通常等于小节标题核心词并带 `#`。必须用引号包住，因为 YAML 中 `#` 会开启注释。 |
-| `sub` | 一节多旋钮时必须 | 区分同一 `anchor` 下多个输入，例如 `销量`、`吨价`、`收入`。单旋钮小节不写。 |
+| `sub` | 一节多旋钮时必须 | 区分同一 `anchor` 下多个输入，例如 `销量`、`吨价`、`收入`。单旋钮小节可省略。`bs_scalar_pct` 等带 `sub`（如 `sub: dividend_payout`）的单旋钮条目也合法——`yaml1_fidelity_check` 的 top-level knob 查找支持用 yaml1 path 叶子名（如 `balance_sheet.dividend_payout` → `dividend_payout`）作为 `sub` 兜底匹配，写不写 `sub` 都能对上。 |
 | `family` | 必须 | 语义族名，供人和未来校验器识别；当前 Gate C 主要按 `anchor/sub/unit/values` 比对。 |
 | `unit` | 必须 | 只允许 `pct`、`ratio`、`abs_mn`。 |
 | `values` | 正式稿必须 | 数字数组，长度必须等于 `horizon`。draft 未给数时可空，但不能进入 official `/comp`。 |
@@ -138,24 +138,26 @@ values: "全程 15.4%"
 >
 > 三处 `family` 各管各的层，不要互相套用。
 
-| family | 常见 `sub` | unit | 对应输入 |
-|---|---|---|---|
-| `factor_yoy` | `销量`、`吨价`、`门店数`、`ARPU` 等 | `pct` | `factor_product` / `vol_price` leaf 的因子增速。 |
-| `growth` | `收入` | `pct` | revenue leaf `knobs.revenue_yoy`。 |
-| `abs` | `收入` 或具体科目 | `abs_mn` | revenue leaf `knobs.revenue_abs` 或明确绝对值输入。 |
-| `gpm` | 省略 | `pct` | 顶层整体毛利率手拍。 |
-| `leaf_margin` | `毛利率` | `pct` | 分线毛利率输入。当前 Gate C 尚未直接收集 leaf margin；official block 暂不写独立 `leaf_margin` 条目，除非先补校验器支持。 |
-| `cost_rate` | 省略 | `pct` | 销售、管理、研发、税金及附加等费用率。 |
-| `tax_rate` | 省略 | `pct` | 有效税率。 |
-| `minor_rate` | 省略 | `pct` | 少数股东损益率。 |
-| `op_adj_abs` | 省略 | `abs_mn` | 其他收益、投资收益、公允价值变动、资产处置等营业利润调节项。 |
-| `cost_abs` | 省略 | `abs_mn` | 资产减值损失、信用减值损失等成本侧绝对值项。 |
-| `below_line_abs` | 省略 | `abs_mn` | 营业外收入、营业外支出。 |
-| `other_fin_exp_abs` | 省略 | `abs_mn` | 其他财务费用外生项。 |
-| `bs_revenue_pct` | BS 科目字段名 | `pct` | 人工覆盖 `balance_sheet.revenue_pct.*`，如应收账款/收入、合同负债/收入。只在同权重判断材料或分析师明示为核心 thesis 时使用。 |
-| `bs_cogs_days` | BS 科目字段名 | `ratio` | 人工覆盖 `balance_sheet.cogs_days.*`，如存货周转天数、应付账款天数。`values` 写天数原值。 |
-| `bs_scalar_pct` | defaults 标量字段名 | `pct` | 人工覆盖 `balance_sheet.capex_pct`、`balance_sheet.depr_rate`、`balance_sheet.dividend_payout` 等轻资产/稳态标量路径；其中 `dividend_payout` 是 `/ka` 强制检测项，但只有需要覆盖 defaults 时才进入 `knobs`；重资产排程优先 `/da`。 |
-| `formula_input` | 变量名 | `pct` / `ratio` / `abs_mn` | 受限 formula 的人工输入变量。当前 Gate C 只会校验能落成 top-level `kind: knob` 或 revenue leaf 输入的值；其他 formula input 暂不写独立条目。 |
+| family | 常见 `sub` | unit | 符号 | 对应输入 |
+|---|---|---|---|---|
+| `factor_yoy` | `销量`、`吨价`、`门店数`、`ARPU` 等 | `pct` | 正 | `factor_product` / `vol_price` leaf 的因子增速。 |
+| `growth` | `收入` | `pct` | 原值（可负） | revenue leaf `knobs.revenue_yoy`。 |
+| `abs` | `收入` 或具体科目 | `abs_mn` | 正 | revenue leaf `knobs.revenue_abs` 或明确绝对值输入。 |
+| `gpm` | 省略 | `pct` | 正比率 | 顶层整体毛利率手拍。 |
+| `leaf_margin` | `毛利率` | `pct` | 正比率 | 分线毛利率输入。当前 Gate C 尚未直接收集 leaf margin；official block 暂不写独立 `leaf_margin` 条目，除非先补校验器支持。 |
+| `cost_rate` | 省略 | `pct` | 正比率 | 销售、管理、研发、税金及附加等费用率。 |
+| `tax_rate` | 省略 | `pct` | 正比率 | 有效税率。 |
+| `minor_rate` | 省略 | `pct` | 正比率 | 少数股东损益率。 |
+| `op_adj_abs` | 省略 | `abs_mn` | 带符号（亏损存负） | 其他收益、投资收益、公允价值变动、资产处置等营业利润调节项。 |
+| `cost_abs` | 省略 | `abs_mn` | **负（损失存负，零允许）** | 资产减值损失、信用减值损失、其他资产减值损失等成本侧绝对值项。引擎把这三个字段当**带符号损益调整**以 `+impact_adjustment` 加进 operate_profit（见 `src/impact_fields.py` 的 `IMPACT_ADJUSTMENT_FIELDS`），损失必须存负才能扣减；写正数会被当加项加回、静默虚增利润。`ka_assumption_lint`（.md 侧）与 `yaml1_fidelity_check`（yaml1 侧，按 path 叶子名精确判定）两道门拦正数。 |
+| `below_line_abs` | 省略 | `abs_mn` | `non_oper_income` 正（加项）；`non_oper_exp` 正（引擎做减项） | 营业外收入、营业外支出。 |
+| `other_fin_exp_abs` | 省略 | `abs_mn` | 照 .md 符号 | 其他财务费用外生·非利息项；默认可沿用 `/init` 的 `Agent/financial_expense.yaml` / defaults 平推，特殊时覆盖；只要 `/ka` 费用段已点名本项，即使沿用 defaults 也要写入 `knobs` 同源回声，供 `/comp` 显式落 yaml1 和前端编辑；生息财务费用/利息净额不写。 |
+| `bs_revenue_pct` | BS 科目字段名 | `pct` | 正比率 | 人工覆盖 `balance_sheet.revenue_pct.*`，如应收账款/收入、合同负债/收入。只在同权重判断材料或分析师明示为核心 thesis 时使用。 |
+| `bs_cogs_days` | BS 科目字段名 | `ratio` | 原值（天数） | 人工覆盖 `balance_sheet.cogs_days.*`，如存货周转天数、应付账款天数。`values` 写天数原值。 |
+| `bs_scalar_pct` | defaults 标量字段名 | `pct` | 正比率 | 人工覆盖 `balance_sheet.capex_pct`、`balance_sheet.depr_rate`、`balance_sheet.dividend_payout` 等轻资产/稳态标量路径；其中 `dividend_payout` 是 `/ka` 强制检测项，但只有需要覆盖 defaults 时才进入 `knobs`；重资产排程优先 `/da`。 |
+| `formula_input` | 变量名 | `pct` / `ratio` / `abs_mn` | 视变量 | 受限 formula 的人工输入变量。当前 Gate C 只会校验能落成 top-level `kind: knob` 或 revenue leaf 输入的值；其他 formula input 暂不写独立条目。 |
+
+**符号硬规则**：`cost_abs` 族（减值类）values 必须为负或零，不得写正数幅度——这是 `ka_assumption_lint` 与 `yaml1_fidelity_check` 的硬门。`.md` 作者不要用"损失项写正数金额"惯例写减值项；该惯例只适用于 `below_line_abs.non_oper_exp`（引擎做减项）。
 
 如果现有表装不下，优先在正文里举旗说明，不要临时自创模糊族名。确需新增 family 时，先更新本文和相关校验/编辑映射。
 
@@ -169,6 +171,7 @@ values: "全程 15.4%"
 - revenue leaf 的 `revenue_yoy` 或 `revenue_abs`。
 - 人工 BS/CF 覆盖闸中已拍板、且能落到 defaults.yaml 现有路径的 `balance_sheet.revenue_pct.*`、`balance_sheet.cogs_days.*`、`balance_sheet.capex_pct`、`balance_sheet.depr_rate` 等输入。
 - `/ka` 分红率强制检测后决定覆盖 defaults 的 `balance_sheet.dividend_payout`，使用 `family: bs_scalar_pct`、`sub: dividend_payout`、`unit: pct`；若只是明确沿用 defaults，只在正文说明，不写入 `knobs`。
+- `/ka` 费用段强制检测的 `other_fin_exp_abs` 与分红率不同：若明确沿用 defaults，也要写 `family: other_fin_exp_abs`、`unit: abs_mn`、`values` 为 defaults 满数组回声，确保 yaml1 有 `income.financial_expense.other_fin_exp_abs` 可供前端编辑。
 
 禁止进入：
 

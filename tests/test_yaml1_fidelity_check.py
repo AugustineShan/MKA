@@ -277,6 +277,60 @@ def test_gate_c_diff_block_entry_without_anchor_fails():
     assert any("缺 anchor" in f[3] for f in _fails(findings))
 
 
+# ─────────────── 减值符号门 + top-level knob sub 兜底 ───────────────
+
+def test_impact_sign_positive_fails():
+    # assets_impair_loss 存正数 → 引擎会当加项加回虚增利润 → FAIL
+    std_knobs = [("income.cost_abs.assets_impair_loss", [66.0, 66.0, 66.0], "#资产减值损失")]
+    block = _block([{"anchor": "#资产减值损失", "family": "cost_abs", "unit": "abs_mn",
+                     "values": [66, 66, 66]}])  # 块也正（block-diff 会 PASS，但符号门独立 FAIL）
+    findings = []
+    gate_c_diff(std_knobs, [], block, findings)
+    assert any("IMPACT" in str(f[2]) or "减值项" in f[3] for f in _fails(findings))
+
+
+def test_impact_sign_negative_passes():
+    # 损失存负 → 不触发符号门
+    std_knobs = [("income.cost_abs.assets_impair_loss", [-66.0, -66.0, -66.0], "#资产减值损失")]
+    block = _block([{"anchor": "#资产减值损失", "family": "cost_abs", "unit": "abs_mn",
+                     "values": [-66, -66, -66]}])
+    findings = []
+    gate_c_diff(std_knobs, [], block, findings)
+    assert all("减值项" not in f[3] for f in _fails(findings))
+
+
+def test_impact_sign_zero_passes():
+    # 零放行（百润 assets_impair=0、绿联 credit=0 合法）
+    std_knobs = [("income.cost_abs.credit_impa_loss", [0.0, 0.0, 0.0], "#信用减值损失")]
+    block = _block([{"anchor": "#信用减值损失", "family": "cost_abs", "unit": "abs_mn",
+                     "values": [0, 0, 0]}])
+    findings = []
+    gate_c_diff(std_knobs, [], block, findings)
+    assert all("减值项" not in f[3] for f in _fails(findings))
+
+
+def test_impact_sign_only_for_impact_fields():
+    # 非 IMPACT 的 cost_abs（如 comm_exp）存正不触发（走 total_cogs 正成本路径）
+    std_knobs = [("income.cost_abs.comm_exp", [10.0, 10.0, 10.0], "#手续费")]
+    block = _block([{"anchor": "#手续费", "family": "cost_abs", "unit": "abs_mn",
+                     "values": [10, 10, 10]}])
+    findings = []
+    gate_c_diff(std_knobs, [], block, findings)
+    assert all("减值项" not in f[3] for f in _fails(findings))
+
+
+def test_top_level_knob_sub_fallback_matches_dividend_payout():
+    # balance_sheet.dividend_payout（path 叶子=dividend_payout）匹配 knobs 块
+    # {anchor:#分红率, sub:dividend_payout} —— sub 兜底命中，不误报"幻觉"
+    std_knobs = [("balance_sheet.dividend_payout", [0.55, 0.55, 0.55], "#分红率")]
+    block = _block([{"anchor": "#分红率", "sub": "dividend_payout", "family": "bs_scalar_pct",
+                     "unit": "pct", "values": [55, 55, 55]}])  # pct → /100 = 0.55
+    findings = []
+    gate_c_diff(std_knobs, [], block, findings)
+    assert any(f[1] == "PASS" for f in findings)
+    assert all("yaml1 旋钮在 knobs 块无对应" not in f[3] for f in _fails(findings))
+
+
 # ─────────────── helpers ───────────────
 
 def test_parse_numbers_percent():

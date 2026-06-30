@@ -12,7 +12,7 @@ from src.workbench import (
     _yaml1_revenue_view,
     _yaml1_stash_view,
 )
-from src.yaml1_business_facts import build_business_fact_view
+from src.yaml1_business_facts import _yoy, build_business_fact_view
 
 
 def _write_yaml1(tmp_path: Path, body: str) -> Path:
@@ -43,6 +43,11 @@ def _rows(view: dict, path: str) -> list[dict]:
 
 def _row(view: dict, path: str, entity: str, metric: str) -> dict:
     return next(row for row in _rows(view, path) if row["entity_key"] == entity and row["metric"] == metric)
+
+
+def test_business_fact_yoy_handles_negative_base() -> None:
+    values = _yoy({"2023": -85.0, "2024": 108.0})
+    assert values["2024"] == pytest.approx(193 / 85)
 
 
 def test_revenue_leaf_direct_margin_is_canonical_business_fact(tmp_path: Path) -> None:

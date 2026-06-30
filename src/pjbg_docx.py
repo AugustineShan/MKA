@@ -10,6 +10,7 @@
 - R01 报告标题值格 ← 标题
 - R06 研究结论正文 ← 短期/中长期/投资建议（加粗随 .md：__line__→bold 段，行内 **x**→bold 子串）
 - R08 盈利预测区 ← 10 指标×年份窗 子表（复刻前端 overview「财务总结」口径）
+- 「是否重大推荐」下拉内容控件 ← 默认"否"（--major-recommend 可覆写；只改 sdtContent 显示文本，不破坏 dropDownList 外壳）
 
 鲁棒定位：按节标题文本找单元格（报告标题/研究结论/盈利预测(年度)），不硬编码行号——
 换模板只要节标题文本不变就能工作，变了则显式报错停止。
@@ -48,6 +49,8 @@ SECTION_HEADER_FORECAST = "盈利预测(年度)"
 LABEL_REPORT_TITLE = "报告标题"
 LABEL_RESEARCHER = "研究员"
 LABEL_STOCK_CODE = "股票代码"
+LABEL_MAJOR_RECOMMEND = "是否重大推荐"
+DEFAULT_MAJOR_RECOMMEND = "否"
 CAPTION = "单位：百万元；倍数除外"
 TABLE_FONT = "微软雅黑"
 TABLE_SIZE = 9.0
@@ -283,6 +286,39 @@ def _normalize_doc_font(doc, font: str = TABLE_FONT) -> None:
             rFonts.set(qn(attr), font)
 
 
+def _set_sdt_dropdown_value(doc, alias: str, value: str) -> bool:
+    """把 w:sdt dropDownList 内容控件（按 sdtPr/alias 定位）的显示值设为 value。
+
+    只改 sdtContent 内首个 w:t 的文本，保留 sdt 外壳、dropDownList/listItem 列表、
+    单元格/边框/字体结构——下拉控件本身不被破坏。value 必须命中某 listItem 的
+    displayText 或 value，否则跳过返回 False。模板无此 alias 的 sdt 也返回 False（不报错）。
+    """
+    for sdt in doc.element.body.iter(qn("w:sdt")):
+        sdtPr = sdt.find(qn("w:sdtPr"))
+        if sdtPr is None:
+            continue
+        alias_el = sdtPr.find(qn("w:alias"))
+        if alias_el is None or alias_el.get(qn("w:val")) != alias:
+            continue
+        ddl = sdtPr.find(qn("w:dropDownList"))
+        if ddl is None:
+            continue
+        display = None
+        for li in ddl.findall(qn("w:listItem")):
+            if li.get(qn("w:value")) == value or li.get(qn("w:displayText")) == value:
+                display = li.get(qn("w:displayText")) or value
+                break
+        if display is None:
+            return False
+        sdtContent = sdt.find(qn("w:sdtContent"))
+        if sdtContent is None:
+            return False
+        for t in sdtContent.iter(qn("w:t")):
+            t.text = display
+            return True
+    return False
+
+
 def _format_value(val, fmt: str) -> str:
     if val is None:
         return ""
@@ -434,6 +470,7 @@ def build_rating_report_docx(
     md_path: Path | str | None = None,
     out_path: Path | str | None = None,
     template_path: Path | str | None = None,
+    major_recommend: str = DEFAULT_MAJOR_RECOMMEND,
 ) -> Path:
     company_dir = Path(company_dir)
     template = Path(template_path or os.environ.get("PJBG_TEMPLATE_PATH") or DEFAULT_TEMPLATE)
@@ -488,6 +525,7 @@ def build_rating_report_docx(
         out_path = md.parent / f"{docx_stem}.docx"
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
+    _set_sdt_dropdown_value(doc, LABEL_MAJOR_RECOMMEND, major_recommend)
     _normalize_doc_font(doc)
     doc.save(str(out))
     return out
@@ -501,13 +539,16 @@ def main() -> None:
     ap.add_argument("--md", help="研究结论.md 路径（默认自动找最新）")
     ap.add_argument("--out", help="输出 docx 路径（默认与 .md 同目录同名）")
     ap.add_argument("--template", help="空白模板路径（默认 skill 目录 / PJBG_TEMPLATE_PATH）")
+    ap.add_argument("--major-recommend", default=DEFAULT_MAJOR_RECOMMEND,
+                    help=f"「是否重大推荐」下拉默认值（默认 {DEFAULT_MAJOR_RECOMMEND}，可选 是/否）")
     args = ap.parse_args()
 
     raw = args.company_dir or args.ticker
     if not raw:
         ap.error("需要 --ticker 或 --company-dir")
     company_dir = resolve_company_dir(raw)
-    out = build_rating_report_docx(company_dir, md_path=args.md, out_path=args.out, template_path=args.template)
+    out = build_rating_report_docx(company_dir, md_path=args.md, out_path=args.out,
+                                   template_path=args.template, major_recommend=args.major_recommend)
     print(f"OUT: {out}")
 
 

@@ -71,7 +71,7 @@ QUARTERLY_STATE_BADGE: dict[str, tuple[str, str]] = {
     "q4": ("Q4", "D6A100"),
 }
 STATEMENT_KEY_ROWS: dict[str, set[str]] = {
-    "is": {"revenue", "total_revenue", "operate_profit", "total_profit", "n_income", "n_income_attr_p"},
+    "is": {"revenue", "total_revenue", "operate_profit", "total_profit", "n_income_attr_p"},
     "bs": {"money_cap", "total_assets", "total_liab", "total_hldr_eqy_inc_min_int", "total_hldr_eqy_exc_min_int"},
     "cf": {"n_cashflow_act", "n_cashflow_inv_act", "n_cash_flows_fnc_act", "n_incr_cash_cash_equ", "c_cash_equ_end_period"},
 }
@@ -89,7 +89,7 @@ INCOME_DERIVED_ROWS: dict[str, list[tuple[str, str, str]]] = {
     "operate_profit": [("operate_margin", "营业利润率", "percent")],
     "total_profit": [("total_profit_margin", "利润总额率", "percent")],
     "income_tax": [("effective_tax_rate", "所得税率", "percent")],
-    "n_income": [("n_income_margin", "净利率", "percent"), ("n_income_yoy", "净利润同比", "signed_percent")],
+    "n_income_attr_p": [("n_income_attr_p_margin", "净利率", "percent"), ("n_income_attr_p_yoy", "净利润同比", "signed_percent")],
 }
 SEMIANNUAL_IS_SECTIONS: tuple[tuple[str, tuple[tuple[str, str, str, bool, bool], ...]], ...] = (
     (
@@ -149,16 +149,24 @@ SEMIANNUAL_AMOUNT_FIELDS = {
 REVENUE_SPLIT_SECTION_ORDER = ("整体收入", "产品", "地区", "行业", "销售模式")
 ASSUMPTION_SECTION_DEFS = (
     ("毛利率", ("income.gpm",)),
-    ("费用率", ("income.cost_rates.",)),
+    ("费用率", ("income.cost_rates.", "income.financial_expense.other_fin_exp_abs")),
     ("营业利润调节 / 营业外收支（绝对值）", ("income.cost_abs.", "income.operating_adjustments_abs.", "income.below_line_abs.")),
     ("税率 / 少数股东", ("income.effective_tax_rate", "income.minority_ratio")),
 )
+EXPENSE_SECTION_ORDER = {
+    "income.cost_rates.sell_exp": 0,
+    "income.cost_rates.admin_exp": 1,
+    "income.cost_rates.rd_exp": 2,
+    "income.cost_rates.biz_tax_surchg": 3,
+    "income.financial_expense.other_fin_exp_abs": 999,
+}
 ASSUMPTION_LABELS = {
     "gpm": "整体毛利率",
     "sell_exp": "销售费用率",
     "admin_exp": "管理费用率",
     "rd_exp": "研发费用率",
     "biz_tax_surchg": "税金及附加率",
+    "other_fin_exp_abs": "非息财务费用",
     "effective_tax_rate": "有效税率",
     "minority_ratio": "少数股东损益占比",
     "assets_impair_loss": "资产减值损失",
@@ -171,7 +179,7 @@ ASSUMPTION_LABELS = {
     "non_oper_exp": "营业外支出",
     "revenue_yoy": "收入增长",
     "volume": "销量增长",
-    "price": "吨价增长",
+    "price": "单价增长",
 }
 
 SUMMARY_COLUMNS = tuple(get_column_letter(col) for col in range(65, 79))  # BM:BZ
@@ -867,12 +875,23 @@ def _growth_series(base: Any, yoy_values: list[Any], years: list[str]) -> dict[s
     return out
 
 
+def _growth_rate(current: Any, previous: Any) -> float | None:
+    cur = _num(current)
+    prev = _num(previous)
+    if cur is None or prev is None:
+        return None
+    denominator = abs(prev) if prev < 0 else prev
+    if abs(denominator) < 1e-9:
+        return None
+    return (cur - prev) / denominator
+
+
 def _yoy_for_years(values: dict[str, Any], years: list[str]) -> dict[str, float | None]:
     out: dict[str, float | None] = {}
     previous: float | None = None
     for year in years:
         current = _num(values.get(year))
-        out[year] = None if current is None or previous is None or abs(previous) < 1e-9 else current / previous - 1
+        out[year] = _growth_rate(current, previous)
         previous = current if current is not None else previous
     return out
 
@@ -925,7 +944,7 @@ def _segment_projection(node: dict[str, Any], years: list[str]) -> tuple[dict[st
     previous = _num(base.get("revenue")) or _num(revenue_history.get(str(base.get("base_year"))))
     for year in years:
         current = _num(revenue_forecast.get(year))
-        yoy_forecast[year] = None if current is None or previous is None or abs(previous) < 1e-9 else current / previous - 1
+        yoy_forecast[year] = _growth_rate(current, previous)
         previous = current if current is not None else previous
     return revenue_forecast, yoy_forecast, volume_forecast, driver_rows
 
@@ -996,8 +1015,8 @@ def _fill_core_assumptions_sheet(
         {"label": "同比增长", "values": {year: _metric_value(metrics, year, "revenue_yoy") for year in years}, "format": "signed_percent", "muted": True},
         {"label": "归母净利润", "values": {year: _metric_value(metrics, year, "n_income_attr_p") for year in years}, "format": "number", "bold": True},
         {"label": "净利润", "values": {year: _metric_value(metrics, year, "n_income") for year in years}, "format": "number"},
-        {"label": "净利率", "values": {year: _metric_value(metrics, year, "n_income_margin") for year in years}, "format": "percent", "muted": True},
-        {"label": "净利润同比", "values": {year: _metric_value(metrics, year, "n_income_yoy") for year in years}, "format": "signed_percent", "muted": True},
+        {"label": "净利率", "values": {year: _metric_value(metrics, year, "n_income_attr_p_margin") for year in years}, "format": "percent", "muted": True},
+        {"label": "净利润同比", "values": {year: _metric_value(metrics, year, "n_income_attr_p_yoy") for year in years}, "format": "signed_percent", "muted": True},
     ]
     row = _write_assumption_group(ws, row, title="总收入与利润路径", years=years, rows=total_rows, base_period=base_period)
 
@@ -1043,6 +1062,7 @@ def _fill_core_assumptions_sheet(
             row_values.update({year: _num(value) for year, value in zip(yaml_years, values)})
             rows.append(
                 {
+                    "path": path,
                     "label": _assumption_label(path),
                     "values": row_values,
                     "format": "percent" if any(token in path for token in ("rate", "ratio", "gpm")) else "number",
@@ -1051,6 +1071,8 @@ def _fill_core_assumptions_sheet(
                 }
             )
             used_paths.add(path)
+        if section_title == "费用率":
+            rows.sort(key=lambda item: EXPENSE_SECTION_ORDER.get(str(item.get("path")), 100))
         if rows:
             row = _write_assumption_group(ws, row, title=section_title, years=years, rows=rows, base_period=base_period)
 
@@ -1303,11 +1325,11 @@ def _semiannual_value(
     if metric == "revenue_yoy":
         current = _semiannual_value(metrics, period, period_map, "revenue")
         previous = _semiannual_value(metrics, period_map.get(f"{year - 1}{kind}", {}), period_map, "revenue")
-        return None if current is None or previous is None or abs(previous) < 1e-9 else current / previous - 1
+        return _growth_rate(current, previous)
     if metric == "n_income_attr_p_yoy":
         current = _semiannual_value(metrics, period, period_map, "n_income_attr_p")
         previous = _semiannual_value(metrics, period_map.get(f"{year - 1}{kind}", {}), period_map, "n_income_attr_p")
-        return None if current is None or previous is None or abs(previous) < 1e-9 else current / previous - 1
+        return _growth_rate(current, previous)
     denominator = _semiannual_value(metrics, period, period_map, "revenue")
     ratio_numerators = {
         "gross_margin": "gross_profit",
@@ -2110,7 +2132,7 @@ def _quarter_metric_value(metrics: dict[str, Any], quarterly_records: dict[str, 
     if field == "minority_gain_rate":
         return _safe_div(_quarter_metric_value(metrics, quarterly_records, period, "minority_gain"), revenue)
     if field in {"n_income_margin", "n_income_attr_p_margin"}:
-        numerator = "n_income_attr_p" if field == "n_income_attr_p_margin" else "n_income"
+        numerator = "n_income_attr_p"
         return _safe_div(_quarter_metric_value(metrics, quarterly_records, period, numerator), revenue)
     if field == "cash":
         return _quarter_db_value(quarterly_records, period, "money_cap")
@@ -2168,7 +2190,7 @@ def _model_period_metric_value(metrics: dict[str, Any], quarterly_records: dict[
         numerator = {
             "revenue_yoy": "revenue",
             "oper_cost_yoy": "oper_cost",
-            "n_income_yoy": "n_income",
+            "n_income_yoy": "n_income_attr_p",
             "n_income_attr_p_yoy": "n_income_attr_p",
         }[field]
         current = _model_period_metric_value(metrics, quarterly_records, period, numerator)
@@ -2182,6 +2204,8 @@ def _model_period_metric_value(metrics: dict[str, Any], quarterly_records: dict[
             return _safe_div(_model_period_metric_value(metrics, quarterly_records, period, "income_tax"), _model_period_metric_value(metrics, quarterly_records, period, "total_profit"))
         numerator = field.removesuffix("_rate").removesuffix("_margin")
         if field == "n_income_attr_p_margin":
+            numerator = "n_income_attr_p"
+        if field == "n_income_margin":
             numerator = "n_income_attr_p"
         if field == "sales_profit_margin":
             numerator = "sales_profit"

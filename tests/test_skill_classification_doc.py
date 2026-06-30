@@ -73,8 +73,23 @@ def test_skill_classification_doc_names_shared_sources_and_boundaries():
     assert "其他 markdown 按信息指引读取" in text
     assert "入口窄，收纳宽" in text
     assert "有复盘价值但暂不入模的信息宁可进收纳区/stash" in text
+    assert "财务费用分流纪律" in text
+    assert "生息利息项/利息净额/`interest_expense_rate`/`cash_interest_rate` 交 defaults/引擎" in text
+    assert "`other_fin_exp_abs` 是利润表外生·非利息项" in text
+    assert "同表同权重检测反馈" in text
+    assert "`/comp` 都显式落 `income.financial_expense.other_fin_exp_abs`" in text
+    assert "只有旧稿完全未提时才回落 defaults 缺席" in text
+    assert "展示纪律" in text
+    assert "核心假设生成链路" in text
+    assert "一张历史/预测合并主表" in text
+    assert "待裁决点和收纳/风险放进表格列" in text
+    assert "完整历史原子、source range、`knobs` 和 reference 回执写文件" in text
     assert "docs/knobs块契约.md" in text
     assert "skills/yaml1compiler_v5.md" in text
+    assert "`financial_expense.yaml` / `OfficialBreakdowns`" in text
+    assert "其他财务费用门（费用数值门内）" in text
+    assert "非息财务费用" in text
+    assert "写到顶层 `financial_expense.*` 会被 cleaner 静默丢弃" in text
     assert "BS/CF/DCF" in text
     assert "重资产 DA/CAPEX" in text
     assert "时间轴" in text

@@ -600,10 +600,12 @@ def _safe_ratio(numerator: float | int | None, denominator: float | int | None) 
 
 
 def _pct_change(current: float | int | None, previous: float | int | None) -> float | None:
-    base = _to_float(previous)
-    if abs(base) <= EPSILON:
+    cur = _to_float(current)
+    prev = _to_float(previous)
+    denominator = abs(prev) if prev < 0 else prev
+    if abs(denominator) <= EPSILON:
         return None
-    return _to_float(current) / base - 1.0
+    return (cur - prev) / denominator
 
 
 def compute_quarterly_view(
@@ -802,7 +804,7 @@ def compute_quarterly_view(
     rows: list[dict[str, object]] = []
     included_categories = {"subtotal", "revenue_item", "cost_item", "operating_adjustment", "below_line", "tax", "attribution"}
     for field in stmt.field_order:
-        if field in {"total_opcost", "n_income_attr_p"}:
+        if field in {"total_opcost", "n_income"}:
             continue
         category = stmt.field_categories[field]
         if category not in included_categories:
@@ -824,14 +826,14 @@ def compute_quarterly_view(
         rows.append(
             {
                 "field": field,
-                "label": "净利润" if field == "n_income" else stmt.labels.get(field, field),
+                "label": "归母净利润" if field == "n_income_attr_p" else stmt.labels.get(field, field),
                 "category": category,
                 "role": "total" if category == "subtotal" else "leaf",
                 "format": "number",
                 "values": values,
                 "states": row_states,
                 "is_zero": is_zero_row(values, annual_out.get(field)),
-                "highlight": field == "n_income",
+                "highlight": field == "n_income_attr_p",
             }
         )
         if field == "revenue":
@@ -882,13 +884,13 @@ def compute_quarterly_view(
                     annual_value=annual_ratio("income_tax", "total_profit"),
                 )
             )
-        elif field == "n_income":
+        elif field == "n_income_attr_p":
             rows.append(
                 make_metric_row(
                     field="n_income_yoy",
                     label="yoy",
-                    values=yoy_metric("n_income"),
-                    annual_value=annual_yoy("n_income"),
+                    values=yoy_metric("n_income_attr_p"),
+                    annual_value=annual_yoy("n_income_attr_p"),
                     highlight=True,
                 )
             )
@@ -896,8 +898,8 @@ def compute_quarterly_view(
                 make_metric_row(
                     field="n_income_margin",
                     label="净利率",
-                    values=rate_metric("n_income"),
-                    annual_value=annual_ratio("n_income", "revenue"),
+                    values=rate_metric("n_income_attr_p"),
+                    annual_value=annual_ratio("n_income_attr_p", "revenue"),
                     highlight=True,
                 )
             )

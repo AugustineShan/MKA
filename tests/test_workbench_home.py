@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from src.workbench import _pipeline_stage
+from src.workbench import _pipeline_stage, _result_rows_from_statement_sheet
 
 
 def _make_company(tmp_path: Path, name: str = "测试公司_002946") -> Path:
@@ -17,6 +17,39 @@ def _make_company(tmp_path: Path, name: str = "测试公司_002946") -> Path:
 def test_stage_uninitialized_no_db(tmp_path: Path) -> None:
     company = _make_company(tmp_path)
     assert _pipeline_stage(company) == "未初始化"
+
+
+def test_result_rows_use_parent_net_income_for_margin_and_yoy() -> None:
+    rows = _result_rows_from_statement_sheet(
+        {
+            "years": ["2023", "2024"],
+            "rows": [
+                {"field": "revenue", "values": {"2023": 1000.0, "2024": 1200.0}},
+                {"field": "n_income", "values": {"2023": 100.0, "2024": 180.0}},
+                {"field": "n_income_attr_p", "values": {"2023": 80.0, "2024": 120.0}},
+            ],
+        }
+    )
+
+    by_field = {row["field"]: row for row in rows}
+    assert by_field["net_margin"]["values"]["2024"] == 0.1
+    assert by_field["n_income_yoy"]["values"]["2024"] == 0.5
+
+
+def test_result_rows_profit_yoy_handles_turnaround() -> None:
+    rows = _result_rows_from_statement_sheet(
+        {
+            "years": ["2023", "2024"],
+            "rows": [
+                {"field": "revenue", "values": {"2023": 1000.0, "2024": 1200.0}},
+                {"field": "n_income", "values": {"2023": -85.0, "2024": 108.0}},
+                {"field": "n_income_attr_p", "values": {"2023": -85.0, "2024": 108.0}},
+            ],
+        }
+    )
+
+    by_field = {row["field"]: row for row in rows}
+    assert by_field["n_income_yoy"]["values"]["2024"] == pytest.approx(193 / 85)
 
 
 def test_stage_init_done(tmp_path: Path) -> None:
@@ -36,6 +69,27 @@ def test_stage_preloaded_done(tmp_path: Path) -> None:
     ka_dir.mkdir(parents=True)
     (ka_dir / "核心假设参考alphapai_20260626.md").write_text("# 参考")
     assert _pipeline_stage(company) == "预加载完毕"
+
+
+def test_stage_core_assumption_done(tmp_path: Path) -> None:
+    company = _make_company(tmp_path)
+    (company / "Agent").mkdir()
+    (company / "Agent" / "data.db").write_bytes(b"")
+    (company / "Agent" / "defaults.yaml").write_text("meta: {}")
+    (company / "测试公司-20260630-核心假设.md").write_text("# 核心假设")
+    assert _pipeline_stage(company) == "核心假设完毕"
+
+
+def test_stage_core_assumption_takes_precedence_over_ka_reference(tmp_path: Path) -> None:
+    company = _make_company(tmp_path)
+    (company / "Agent").mkdir()
+    (company / "Agent" / "data.db").write_bytes(b"")
+    (company / "Agent" / "defaults.yaml").write_text("meta: {}")
+    (company / "测试公司-20260630-核心假设.md").write_text("# 核心假设")
+    ka_dir = company / "Skills素材包" / "KA（ALPHAPAI拆出来的东西放在这里）"
+    ka_dir.mkdir(parents=True)
+    (ka_dir / "核心假设参考alphapai_20260626.md").write_text("# 参考")
+    assert _pipeline_stage(company) == "核心假设完毕"
 
 
 def test_stage_modeled(tmp_path: Path) -> None:

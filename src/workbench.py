@@ -72,7 +72,13 @@ from src.quarterly_tracker import (
     load_overrides,
     set_override,
 )
-from src.yaml1_cleaner import Yaml1CleanError, clean_yaml1_data
+from src.revenue_fold import (
+    iter_leaves as _iter_revenue_leaves,
+    project_leaf,
+    projection_values as _shared_projection_values,
+)
+from src.yaml1_cleaner import Yaml1CleanError, clean_yaml1_data, load_clean_annual
+from src.yaml1_formula import FormulaError, evaluate_formula_graph
 from src.yaml1_business_facts import (
     build_business_fact_view,
     canonical_gross_margin_history as _business_canonical_gross_margin_history,
@@ -323,9 +329,10 @@ def _core_assumption(company_dir: Path) -> Path | None:
 
 
 def _pipeline_stage(company_dir: Path) -> str:
-    """建模管线推进状态：未初始化 / 初始化完毕 / 预加载完毕 / 建模完毕 / 建模完毕且有DA表。
+    """建模管线推进状态：未初始化 / 初始化完毕 / 预加载完毕 / 核心假设完毕 / 建模完毕 / 建模完毕且有DA表。
 
     预加载完毕 = init 已跑完且 KA 参考稿区（Skills素材包/KA...）已有文件，但尚未生成 yaml1/DCF。
+    核心假设完毕 = 公司根目录已存在正式核心假设稿，但尚未生成 yaml1/DCF。
     """
     agent = agent_dir(company_dir)
     if not (agent / "data.db").exists() or not company_defaults_path(company_dir).exists():
@@ -334,6 +341,8 @@ def _pipeline_stage(company_dir: Path) -> str:
         if da_schedule_path(company_dir).exists():
             return "建模完毕且有DA表"
         return "建模完毕"
+    if _core_assumption(company_dir) is not None:
+        return "核心假设完毕"
     if _count_files(ka_reference_dir(company_dir)) > 0:
         return "预加载完毕"
     return "初始化完毕"
@@ -496,6 +505,103 @@ def _manifest(company_dir: Path) -> dict[str, Any]:
     return _read_json(company_forecast_dir(company_dir) / "run_manifest.json")
 
 
+def _audit_view(company_dir: Path) -> dict[str, Any]:
+    audit_dir = agent_dir(company_dir) / "audit"
+    flags_path = audit_dir / "flags_latest.json"
+    evidence_path = audit_dir / "evidence_pack_latest.json"
+    if not flags_path.exists() and not evidence_path.exists():
+        return {"status": "missing", "flags": [], "pattern_tags": []}
+
+    try:
+        flags_payload = _read_json(flags_path) if flags_path.exists() else {}
+        evidence_payload = _read_json(evidence_path) if evidence_path.exists() else {}
+    except (json.JSONDecodeError, OSError) as exc:
+        return {"status": "error", "error": str(exc), "flags": [], "pattern_tags": []}
+
+    flags = flags_payload.get("flags")
+    if not isinstance(flags, list):
+        flags = evidence_payload.get("flags") if isinstance(evidence_payload.get("flags"), list) else []
+    pattern_tags = flags_payload.get("pattern_tags")
+    if not isinstance(pattern_tags, list):
+        pattern_tags = []
+
+    modified_at = max(
+        [path.stat().st_mtime for path in (flags_path, evidence_path) if path.exists()],
+        default=None,
+    )
+    return {
+        "status": "ready",
+        "flags_path": _relative(flags_path) if flags_path.exists() else None,
+        "evidence_path": _relative(evidence_path) if evidence_path.exists() else None,
+        "modified_at": modified_at,
+        "risk_score": flags_payload.get("risk_score"),
+        "risk_level": flags_payload.get("risk_level"),
+        "pattern_tags": [str(item) for item in pattern_tags],
+        "flags": flags,
+        "evidence": _audit_evidence_summary(evidence_payload, evidence_path if evidence_path.exists() else None),
+    }
+
+
+def _audit_evidence_summary(payload: dict[str, Any], path: Path | None) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    snippets = payload.get("annual_report_snippets")
+    snippet_summaries: list[dict[str, Any]] = []
+    if isinstance(snippets, list):
+        for item in snippets[:6]:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "")
+            snippet_summaries.append({
+                "section": item.get("section"),
+                "keyword": item.get("keyword"),
+                "path": item.get("path"),
+                "start_line": item.get("start_line"),
+                "end_line": item.get("end_line"),
+                "text_preview": _short_text(text, 280),
+            })
+    return {
+        "path": _relative(path) if path else None,
+        "verdict": payload.get("verdict") if isinstance(payload.get("verdict"), dict) else None,
+        "local_sources": payload.get("local_sources") if isinstance(payload.get("local_sources"), dict) else None,
+        "annual_report_snippets": snippet_summaries,
+        "layer2_playbook_reviews": payload.get("layer2_playbook_reviews")
+        if isinstance(payload.get("layer2_playbook_reviews"), list)
+        else [],
+        "tushare_auxiliary": _audit_tushare_summary(payload.get("tushare_auxiliary")),
+    }
+
+
+def _audit_tushare_summary(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    endpoints = payload.get("endpoints")
+    endpoint_summaries: dict[str, dict[str, Any]] = {}
+    if isinstance(endpoints, dict):
+        for name, item in endpoints.items():
+            if not isinstance(item, dict):
+                continue
+            endpoint_summaries[str(name)] = {
+                "status": item.get("status"),
+                "rows": item.get("rows"),
+                "columns": item.get("columns"),
+                "error": item.get("error"),
+            }
+    return {
+        "status": payload.get("status"),
+        "date_range": payload.get("date_range") if isinstance(payload.get("date_range"), dict) else None,
+        "endpoints": endpoint_summaries,
+        "error": payload.get("error"),
+    }
+
+
+def _short_text(text: str, limit: int) -> str:
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"
+
+
 def _relative(path: Path) -> str:
     try:
         return str(path.relative_to(BASE_DIR)).replace("\\", "/")
@@ -529,7 +635,7 @@ STASH_CODE_LABELS: dict[str, str] = {
     "effective_tax_rate": "有效税率",
     "minority_ratio": "少数股东损益占比",
     "fin_exp_total": "财务费用合计",
-    "other_fin_exp_abs": "其他财务费用(外生)",
+    "other_fin_exp_abs": "非息财务费用",
     "ton_cost": "吨成本",
     "interest_bearing_debt": "有息负债",
     "money_cap": "货币资金",
@@ -539,7 +645,7 @@ STASH_CODE_LABELS: dict[str, str] = {
     "revenue_yoy": "营收增速",
     "revenue_abs": "营收绝对值",
     "volume_yoy": "销量增速",
-    "price_yoy": "吨价增速",
+    "price_yoy": "单价增速",
 }
 
 _YEAR_PREFIXD_KEY = re.compile(r"^(\d{4})_(.+)$")
@@ -901,112 +1007,59 @@ def _display_source(payload: dict[str, Any], fallback: str) -> str:
     return source.lstrip("#") if source else fallback
 
 
-def _product(values: list[float]) -> float:
-    out = 1.0
-    for value in values:
-        out *= value
-    return out
-
-
-def _factor_projection_values(factor: dict[str, Any], years: list[str]) -> list[float]:
-    base = _as_float(factor.get("base"))
-    projection = factor.get("projection", {})
-    if not isinstance(projection, dict):
-        projection = {}
-    kind = str(projection.get("kind", "constant"))
-    if kind == "yoy":
-        current = base
-        values: list[float] = []
-        for index, _year in enumerate(years):
-            current *= 1.0 + _series_value(projection.get("values"), index)
-            values.append(current)
-        return values
-    if kind == "abs":
-        return [_series_value(projection.get("values"), index) for index, _year in enumerate(years)]
-    return [base for _year in years]
-
-
-def _iter_revenue_leaves(
-    segments: dict[str, Any],
-    prefix: str = "",
-) -> list[tuple[str, dict[str, Any]]]:
-    leaves: list[tuple[str, dict[str, Any]]] = []
-    for key, payload in segments.items():
-        if not isinstance(payload, dict):
-            continue
-        name = f"{prefix}.{key}" if prefix else str(key)
-        child_segments = payload.get("segments")
-        if payload.get("kind") == "decomposition" and isinstance(child_segments, dict):
-            leaves.extend(_iter_revenue_leaves(child_segments, name))
-        else:
-            leaves.append((name, payload))
-    return leaves
-
-
-def _evaluate_yaml1_revenue_leaf(
+def _project_leaf_view(
+    name: str,
     payload: dict[str, Any],
     years: list[str],
-) -> tuple[float, dict[str, float], dict[str, float], dict[str, float | None]]:
-    base = payload.get("base", {}) if isinstance(payload.get("base"), dict) else {}
-    knobs = payload.get("knobs", {}) if isinstance(payload.get("knobs"), dict) else {}
-    family = _cell(payload.get("revenue_family"))
-    unit_factor = _as_float(base.get("unit_factor_to_million_cny"), 1.0) or 1.0
+    horizon_ints: list[int],
+    formula_result: Any | None,
+) -> tuple[float, dict[str, float], dict[str, float], dict[str, float]]:
+    """Adapter: run the shared revenue engine for one leaf, shaped for the view.
+
+    Revenue math is single-sourced in src.revenue_fold.project_leaf. Here we only
+    re-key its int-year series to string years and derive the per-leaf yoy the
+    table needs. Same engine the forecast fold uses, so preview == forecast.
+    """
+    proj = project_leaf(
+        name,
+        payload,
+        f"income.revenue.segments.{name}",
+        "",
+        horizon_ints,
+        [],
+        formula_result,
+        default_unit_factor=1.0,
+    )
     revenues: dict[str, float] = {}
-    yoys: dict[str, float] = {}
     volumes: dict[str, float] = {}
-    base_revenue = _as_float(base.get("revenue")) / unit_factor
-
-    if family in {"factor_product", "driver_rate"}:
-        factors = payload.get("factors")
-        if isinstance(factors, list) and factors:
-            base_revenue = _product([_as_float(factor.get("base")) for factor in factors if isinstance(factor, dict)]) / unit_factor
-            series = [
-                _factor_projection_values(factor, years)
-                for factor in factors
-                if isinstance(factor, dict)
-            ]
-            previous = base_revenue
-            for index, year in enumerate(years):
-                current = _product([values[index] for values in series]) / unit_factor
-                revenues[year] = current
-                yoys[year] = (current / previous - 1.0) if previous else 0.0
-                previous = current
-            return base_revenue, revenues, yoys, volumes
-
-    if family in {"vol_price", "vol_price_margin"}:
-        volume = _as_float(base.get("volume"))
-        price = _as_float(base.get("price"))
-        base_revenue = volume * price / unit_factor
-        previous = base_revenue
-        for index, year in enumerate(years):
-            volume *= 1.0 + _series_value(knobs.get("volume_yoy"), index)
-            price *= 1.0 + _series_value(knobs.get("price_yoy"), index)
-            current = volume * price / unit_factor
-            volumes[year] = volume
-            revenues[year] = current
-            yoys[year] = (current / previous - 1.0) if previous else 0.0
-            previous = current
-        return base_revenue, revenues, yoys, volumes
-
-    if family == "abs":
-        previous = base_revenue
-        for index, year in enumerate(years):
-            current = _series_value(knobs.get("revenue_abs"), index) / unit_factor
-            revenues[year] = current
-            yoys[year] = (current / previous - 1.0) if previous else 0.0
-            previous = current
-        return base_revenue, revenues, yoys, volumes
-
-    previous = base_revenue
+    yoys: dict[str, float] = {}
+    previous = proj.base_revenue
     for index, year in enumerate(years):
-        current = previous * (1.0 + _series_value(knobs.get("revenue_yoy"), index))
+        current = proj.revenue_by_year.get(horizon_ints[index], 0.0)
         revenues[year] = current
-        yoys[year] = (current / previous - 1.0) if previous else 0.0
+        yoys[year] = _growth_rate(current, previous) or 0.0
         previous = current
-    return base_revenue, revenues, yoys, volumes
+        vol = proj.volume_by_year.get(horizon_ints[index])
+        if vol is not None:
+            volumes[year] = vol
+    return proj.base_revenue, revenues, yoys, volumes
 
 
-def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
+def _clean_annual_for(company_dir: Path) -> dict[int, dict[str, float]] | None:
+    """Load clean_annual revenue history for revenue-view yoy anchoring; None if absent."""
+    db = company_db_path(company_dir)
+    if not Path(db).exists():
+        return None
+    try:
+        return load_clean_annual(db)
+    except Yaml1CleanError:
+        return None
+
+
+def _yaml1_revenue_view(
+    path: Path | None,
+    clean_annual: dict[int, dict[str, float]] | None = None,
+) -> dict[str, Any] | None:
     if not path:
         return None
     try:
@@ -1015,12 +1068,35 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict):
         return None
+    try:
+        return _yaml1_revenue_view_from_data(data, clean_annual)
+    except Yaml1CleanError:
+        # Display path degrades to None on a malformed/unfoldable yaml1; the
+        # edit-preview path surfaces the error instead of hiding it.
+        return None
 
+
+def _yaml1_revenue_view_from_data(
+    data: dict[str, Any],
+    clean_annual: dict[int, dict[str, float]] | None = None,
+) -> dict[str, Any] | None:
+    """按 income.revenue 节点重算分线/总收入视图。
+
+    收入数学全部走 src.revenue_fold.project_leaf（与正式 forecast 折叠同一引擎），
+    本函数只负责组装展示视图（历史序列/毛利率/驱动行）并按 clean_annual 基年实际
+    总额锚定首年同比——与 forecast 完全一致。clean_annual 缺省时回落到各 leaf base
+    之和（无 DB 的调用方仍可用，只是首年同比锚点退化）。
+    """
     years = _years_from_yaml1(data)
     revenue = data.get("income.revenue", {})
     segments = revenue.get("segments", {}) if isinstance(revenue, dict) else {}
     if not years or not isinstance(segments, dict):
         return None
+    horizon_ints = [int(year) for year in years]
+    try:
+        formula_result = evaluate_formula_graph(data, horizon_ints)
+    except FormulaError:
+        formula_result = None
 
     segment_rows: list[dict[str, Any]] = []
     driver_rows: list[dict[str, Any]] = []
@@ -1040,7 +1116,9 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
         unit_factor = _as_float(base.get("unit_factor_to_million_cny"), 1.0) or 1.0
         segment_base_year = int(_as_float(base.get("base_year"), 0))
         base_year = base_year or segment_base_year
-        base_revenue, revenues, yoys, volumes = _evaluate_yaml1_revenue_leaf(payload, years)
+        base_revenue, revenues, yoys, volumes = _project_leaf_view(
+            str(segment_key), payload, years, horizon_ints, formula_result
+        )
         base_total += base_revenue
 
         for year, current_revenue in revenues.items():
@@ -1068,6 +1146,7 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
                 "base_volume": _as_float(base.get("volume")) if family in {"vol_price", "vol_price_margin"} else None,
                 "base_price": _as_float(base.get("price")) if family in {"vol_price", "vol_price_margin"} else None,
                 "volume_unit": _cell(base.get("unit", {}).get("volume")) if isinstance(base.get("unit"), dict) else None,
+                "price_unit": _cell(base.get("unit", {}).get("price")) if isinstance(base.get("unit"), dict) else None,
                 "base_revenue": base_revenue,
                 "unit_factor": unit_factor,
                 "revenues": revenues,
@@ -1103,23 +1182,36 @@ def _yaml1_revenue_view(path: Path | None) -> dict[str, Any] | None:
                         "driver": _cell(factor.get("label")) or _cell(factor.get("key")),
                         "values": {
                             year: value
-                            for year, value in zip(years, _factor_projection_values(factor, years), strict=False)
+                            for year, value in zip(
+                                years,
+                                _shared_projection_values(factor, horizon_ints, "income.revenue.factor"),
+                                strict=False,
+                            )
                         },
                         "projection": _cell(projection.get("kind")),
                     }
                 )
 
+    # Anchor first-year yoy to the actual clean_annual base-year revenue, exactly
+    # as src.yaml1_cleaner.fold_revenue does, so preview total/yoy == forecast.
+    # Without clean_annual, fall back to the sum of leaf base revenues.
+    anchor_total = base_total
+    if clean_annual and base_year in clean_annual:
+        db_total = _as_float(clean_annual[base_year].get("revenue"))
+        if abs(db_total) > 1e-9:
+            anchor_total = db_total
+
     total_yoy: dict[str, float] = {}
-    previous_total = base_total
+    previous_total = anchor_total
     for year in years:
         value = total_revenues[year]
-        total_yoy[year] = (value / previous_total - 1.0) if previous_total else 0.0
+        total_yoy[year] = _growth_rate(value, previous_total) or 0.0
         previous_total = value
 
     return {
         "base_year": base_year,
         "years": years,
-        "base_revenue": base_total,
+        "base_revenue": anchor_total,
         "revenues": total_revenues,
         "yoy": total_yoy,
         "segments": segment_rows,
@@ -1709,7 +1801,7 @@ def _yaml1_display_contract(data: dict[str, Any], revenue_view: dict[str, Any] |
 
 ASSUMPTION_SECTION_DEFS = (
     ("gpm", "毛利率", ("income.gpm",)),
-    ("cost_rates", "费用率", ("income.cost_rates.",)),
+    ("cost_rates", "费用率", ("income.cost_rates.", "income.financial_expense.other_fin_exp_abs")),
     (
         "below_op",
         "营业利润调节 / 营业外收支（绝对值）",
@@ -1717,6 +1809,14 @@ ASSUMPTION_SECTION_DEFS = (
     ),
     ("tax_minority", "税率 / 少数股东", ("income.effective_tax_rate", "income.minority_ratio")),
 )
+
+EXPENSE_SECTION_ORDER = {
+    "income.cost_rates.sell_exp": 0,
+    "income.cost_rates.admin_exp": 1,
+    "income.cost_rates.rd_exp": 2,
+    "income.cost_rates.biz_tax_surchg": 3,
+    "income.financial_expense.other_fin_exp_abs": 999,
+}
 OVERRIDE_MARKERS = ("主动覆盖", "查证", "弃模型", "normalized", "主动收缩", "手拍")
 
 
@@ -1784,6 +1884,7 @@ def _yaml1_assumptions_view(data: dict[str, Any], years: list[str]) -> dict:
                 break
         if not placed:
             other.append(knob)
+    by_section["cost_rates"].sort(key=lambda item: EXPENSE_SECTION_ORDER.get(str(item.get("path")), 100))
     sections = [
         {"key": key, "title": title, "knobs": by_section[key]}
         for key, title, _ in ASSUMPTION_SECTION_DEFS
@@ -2004,6 +2105,8 @@ def _editable_terminal_knobs(data: dict[str, Any]) -> list[dict[str, Any]]:
     fade = terminal.get("fade") if isinstance(terminal.get("fade"), dict) else {}
     if isinstance(fade, dict) and "to_year" in fade:
         scalar_defs.append(("fade.to_year", "衰减至", ["terminal", "fade", "to_year"], "number"))
+    if isinstance(fade, dict) and "target_growth" in fade:
+        scalar_defs.append(("fade.target_growth", "衰退目标增速", ["terminal", "fade", "target_growth"], "pct"))
     for path, label, pointer_segments, unit in scalar_defs:
         target: Any = data
         for segment in pointer_segments:
@@ -2192,12 +2295,21 @@ def _ratio_or_none(num: float | None, den: float | None) -> float | None:
     return num / den
 
 
+def _growth_rate(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous is None:
+        return None
+    denominator = abs(previous) if previous < 0 else previous
+    if abs(denominator) < 1e-9:
+        return None
+    return (current - previous) / denominator
+
+
 def _yoy_values(values: dict[str, float | None], years: list[str]) -> dict[str, float | None]:
     out: dict[str, float | None] = {}
     for index, year in enumerate(years):
         current = values.get(year)
         previous = values.get(years[index - 1]) if index > 0 else None
-        out[year] = _ratio_or_none(current - previous, previous) if current is not None and previous is not None else None
+        out[year] = _growth_rate(current, previous)
     return out
 
 
@@ -2233,14 +2345,14 @@ def _result_rows_from_statement_sheet(sheet: dict[str, Any] | None) -> list[dict
     revenue = values("revenue")
     net_income = values("n_income")
     attr_net_income = values("n_income_attr_p")
-    net_margin = {year: _ratio_or_none(net_income.get(year), revenue.get(year)) for year in years}
+    net_margin = {year: _ratio_or_none(attr_net_income.get(year), revenue.get(year)) for year in years}
     return [
         _make_result_row("revenue", "营业收入", revenue),
         _make_result_row("revenue_yoy", "同比增长", _yoy_values(revenue, years)),
         _make_result_row("n_income_attr_p", "归母净利润", attr_net_income),
         _make_result_row("n_income", "净利润", net_income),
         _make_result_row("net_margin", "净利率", net_margin),
-        _make_result_row("n_income_yoy", "净利润同比", _yoy_values(net_income, years)),
+        _make_result_row("n_income_yoy", "净利润同比", _yoy_values(attr_net_income, years)),
     ]
 
 
@@ -2755,7 +2867,7 @@ def read_company(company_id: str) -> dict[str, Any]:
     forecast_dir = company_forecast_dir(company_dir)
     yaml1_data = _read_yaml(yaml1_path) if yaml1_path else {}
     yaml1_years = _years_from_yaml1(yaml1_data) if yaml1_data else []
-    yaml1_revenue_view = _yaml1_revenue_view(yaml1_path)
+    yaml1_revenue_view = _yaml1_revenue_view(yaml1_path, _clean_annual_for(company_dir))
     yaml1_stash_view = _yaml1_stash_view(yaml1_data) if yaml1_data else []
     yaml1_display_contract = _yaml1_display_contract(yaml1_data, yaml1_revenue_view, yaml1_stash_view) if yaml1_data else None
     editable_assumptions = _editable_assumptions(yaml1_data) if yaml1_data else []
@@ -2796,6 +2908,7 @@ def read_company(company_id: str) -> dict[str, Any]:
         "annual_revenue_breakdown": _annual_revenue_breakdown(company_dir),
         "materials": _material_files(company_dir),
         "da_view": _da_view(company_dir, base_period=_base_period_for_company(company_dir)),
+        "audit_view": _audit_view(company_dir),
     }
 
 
@@ -2992,7 +3105,10 @@ def _reverse_dcf_profit_yoy(base_nopat: float, yearly: list[dict[str, Any]]) -> 
         current = _optional_float(row.get("nopat"))
         if current is None or abs(previous) < 1e-9:
             break
-        values.append(current / previous - 1.0)
+        growth = _growth_rate(current, previous)
+        if growth is None:
+            break
+        values.append(growth)
         previous = current
     return values
 
@@ -3191,6 +3307,23 @@ def assumption_preview(company_id: str, payload: AssumptionPreviewPayload) -> di
     patches = [_model_dump(item) for item in payload.patches]
     try:
         patched_yaml1 = _apply_assumption_patches(yaml1_data, patches)
+    except (StaleAssumptionError, Yaml1CleanError, CalcError, ValueError) as exc:
+        return {
+            "dcf_summary": None,
+            "dcf_detail": [],
+            "statement_sheets": [],
+            "result_rows": [],
+            "warnings": [],
+            "errors": [{"message": str(exc)}],
+            "revenue_view": None,
+        }
+    # 分线收入重算独立于 forecast build：即便下面 clean/build 报错，前端分线收入仍能按草稿联动。
+    preview_revenue_view: dict[str, Any] | None = None
+    try:
+        preview_revenue_view = _yaml1_revenue_view_from_data(patched_yaml1, _clean_annual_for(company_dir))
+    except (Yaml1CleanError, ValueError, KeyError, TypeError):
+        preview_revenue_view = None
+    try:
         ensure_assumptions_fresh(
             yaml1_data=patched_yaml1,
             yaml1_label=f"{yaml1_path}#preview",
@@ -3221,8 +3354,11 @@ def assumption_preview(company_id: str, payload: AssumptionPreviewPayload) -> di
             "result_rows": [],
             "warnings": [],
             "errors": [{"message": str(exc)}],
+            "revenue_view": preview_revenue_view,
         }
-    return _preview_response(cleaned.report, result)
+    response = _preview_response(cleaned.report, result)
+    response["revenue_view"] = preview_revenue_view
+    return response
 
 
 @app.post("/api/companies/{company_id}/assumption-brief")
@@ -3489,7 +3625,7 @@ def yaml1_presentation_stream(company_id: str, refresh: bool = True) -> Streamin
             yield _sse("final", {"presentation": cached})
             return
 
-        revenue_view = _yaml1_revenue_view(yaml1_path)
+        revenue_view = _yaml1_revenue_view(yaml1_path, _clean_annual_for(company_dir))
         sheets = _yaml1_sheets(yaml1_path)
         yield _sse("status", {"step": "parse", "message": "已抽取业务线、驱动和底稿结构"})
         context = _yaml1_presentation_context(company_dir, yaml1_path, revenue_view, sheets)

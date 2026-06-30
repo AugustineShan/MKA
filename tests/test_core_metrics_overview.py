@@ -5,7 +5,7 @@ import math
 import sqlite3
 from pathlib import Path
 
-from src.core_metrics_overview import build_core_metrics_overview, write_core_metrics_overview
+from src.core_metrics_overview import _yoy, build_core_metrics_overview, write_core_metrics_overview
 
 
 FIELDS = [
@@ -109,11 +109,52 @@ def _make_db(tmp_path: Path) -> Path:
                 ),
             ],
         )
+        conn.execute(f"CREATE TABLE clean_quarterly ({', '.join(cols)})")
+        quarterly_rows = []
+        for year in [2022, 2023, 2024, 2025]:
+            for quarter in [1, 2, 3, 4]:
+                period = f"{year}Q{quarter}"
+                revenue = (year - 2020) * 100.0 + quarter * 10.0
+                quarterly_rows.append(
+                    (
+                        period,
+                        revenue,
+                        revenue,
+                        revenue * 0.60,
+                        1.0,
+                        revenue * 0.08,
+                        revenue * 0.05,
+                        revenue * 0.02,
+                        revenue * 0.01,
+                        revenue * 0.75,
+                        -1.0,
+                        -0.5,
+                        1.0,
+                        1.0,
+                        0.0,
+                        0.0,
+                        revenue * 0.20,
+                        1.0,
+                        0.5,
+                        revenue * 0.205,
+                        revenue * 0.05,
+                        revenue * 0.15,
+                    )
+                )
+        conn.executemany(
+            f"INSERT INTO clean_quarterly ({insert_cols}) VALUES ({placeholders})",
+            quarterly_rows,
+        )
     return db_path
 
 
 def _metric(payload: dict, key: str) -> dict:
     return next(row for row in payload["rows"] if row["key"] == key)
+
+
+def test_yoy_handles_turnaround() -> None:
+    assert math.isclose(_yoy(108.0, -85.0), 193.0 / 85.0)
+    assert math.isclose(_yoy(-100.0, -85.0), -15.0 / 85.0)
 
 
 def test_build_core_metrics_overview_computes_profit_chain(tmp_path: Path):
@@ -130,6 +171,24 @@ def test_build_core_metrics_overview_computes_profit_chain(tmp_path: Path):
     assert math.isclose(_metric(payload, "effective_tax_rate")["values"]["2024"], 0.25)
     assert math.isclose(_metric(payload, "n_income_yoy")["values"]["2024"], 0.5)
     assert _metric(payload, "credit_impa_loss")["values"]["2024"] == -3.0
+    assert payload["source"]["tables"] == ["clean_annual", "clean_quarterly"]
+    assert payload["quarterly"]["periods"] == [
+        "2023Q3",
+        "2023Q4",
+        "2024Q1",
+        "2024Q2",
+        "2024Q3",
+        "2024Q4",
+        "2025Q1",
+        "2025Q2",
+        "2025Q3",
+        "2025Q4",
+    ]
+    quarterly_revenue_yoy = next(row for row in payload["quarterly"]["rows"] if row["key"] == "revenue_yoy")
+    assert math.isclose(
+        quarterly_revenue_yoy["values"]["2024Q1"],
+        ((2024 - 2020) * 100.0 + 10.0) / ((2023 - 2020) * 100.0 + 10.0) - 1.0,
+    )
 
 
 def test_write_core_metrics_overview_is_byte_stable_and_llm_readable(tmp_path: Path):
@@ -144,6 +203,9 @@ def test_write_core_metrics_overview_is_byte_stable_and_llm_readable(tmp_path: P
     md = paths["markdown"].read_text(encoding="utf-8")
     assert "年度核心指标速览" in md
     assert "收入同比" in md
+    assert "最近10个季度核心证据" in md
+    assert "季度同比按同季度上一年计算" in md
+    assert "2025Q4" in md
     assert "35.0%" in md
     assert "不含预测、估值或分析判断" in md
 

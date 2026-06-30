@@ -16,6 +16,7 @@ from openpyxl import load_workbook
 from conftest import copy_fixture_company
 from src import app_config, yaml1_cleaner
 from src.assumption_staleness import StaleAssumptionError
+from src.company_excel_export import STATEMENT_KEY_ROWS, _derived_statement_rows, _yoy_for_years
 from src.company_paths import forecast_dir, modelking_dir
 from src.forecast import run_company_forecast
 
@@ -23,6 +24,31 @@ from src.forecast import run_company_forecast
 def _copy_new_hope_dairy(tmp_path: Path) -> Path:
     # Frozen snapshot (see tests/conftest.py) — deterministic forecast inputs.
     return copy_fixture_company(tmp_path)
+
+
+def test_full_income_statement_profit_metrics_use_parent_net_income() -> None:
+    metrics = {
+        "annual": {
+            "2024": {
+                "n_income_margin": 0.15,
+                "n_income_yoy": 0.8,
+                "n_income_attr_p_margin": 0.10,
+                "n_income_attr_p_yoy": 0.5,
+            }
+        }
+    }
+
+    assert _derived_statement_rows("n_income", metrics, ["2024"]) == []
+    rows = _derived_statement_rows("n_income_attr_p", metrics, ["2024"])
+    assert [row["label"] for row in rows] == ["净利率", "净利润同比"]
+    assert [row["values"]["2024"] for row in rows] == [0.10, 0.5]
+    assert "n_income" not in STATEMENT_KEY_ROWS["is"]
+    assert "n_income_attr_p" in STATEMENT_KEY_ROWS["is"]
+
+
+def test_excel_yoy_helper_handles_turnaround() -> None:
+    values = _yoy_for_years({"2023": -85.0, "2024": 108.0}, ["2023", "2024"])
+    assert values["2024"] == pytest.approx(193 / 85)
 
 
 def test_run_company_forecast_hides_intermediates_and_rebuilds_forecast(tmp_path, monkeypatch):
@@ -251,10 +277,11 @@ def test_quarterly_is_sheet_in_company_excel(tmp_path, monkeypatch):
     assert ws.cell(3, max_col).value == "年度"
     # 冻结 B6（A 列 + 表头 5 行）
     assert ws.freeze_panes == "B6"
-    # 数据行含营业收入 / 净利润（n_income 在 rows 里被 relabel 为"净利润"）
+    # 数据行含营业收入 / 归母净利润；季度视图不再展示合并净利润为"净利润"。
     labels = [ws.cell(r, 1).value for r in range(6, ws.max_row + 1)]
     assert any("营业收入" in (lbl or "") for lbl in labels)
-    assert any("净利润" in (lbl or "") for lbl in labels)
+    assert "归母净利润" in labels
+    assert "净利润" not in labels
     # 选定年 4 列在第 5 行有状态徽章（实/继/人/Q4 之一）
     badges = [ws.cell(5, c).value for c in range(max_col - 4, max_col)]
     assert any(b in {"实", "继", "人", "Q4"} for b in badges)

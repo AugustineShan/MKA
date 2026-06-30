@@ -3,6 +3,7 @@
 STOP：先判斜杠路由，再选择任何外部技能。`/ka 百润股份`、`/ka 002568`、`/comp 002946`、`/init 新乳业` 这类命令一律先解释为 MKA 任务路由；即使公司名或股票代码像证券问题，也不是行情查询、不是交易建议、不是通用 A 股分析、不是 shell。只有用户明确说“查行情/股价/涨停/分时/盘面/资金”时，才可以调用股票行情分析能力。
 
 两阶段流水线：① TuShare Pro 拉三表 → 标准化 → 入库 SQLite；② 从 SQLite 读原始 → 透视宽表 → 严格配平校验 → 写 clean 表。建模管线在取数之上：/brkd → /ka → /comp → DCF。
+/audit 是只读财务健康度雷达：从各公司 `Agent/data.db` 的 clean 历史表和本地年报 evidence 生成 flags/evidence pack，不改 raw/clean/yaml/forecast，不给买卖建议。
 
 规则边界或例外分流不清楚时，先读 `docs/MKA规则导航图.md`。它是契约索引，不替代具体 skill 或契约。
 
@@ -46,6 +47,7 @@ STOP：先判斜杠路由，再选择任何外部技能。`/ka 百润股份`、`
 - **改前端** → `docs/前端设计规范.md` 为权威，改前端前必读；实际色值以 `app/src/styles.css` 的 CSS 变量为准（`--blue:#003d7a`、`--red:#b42318`）。
 - **改架构 / 记变更** → 当前状态写 `docs/ARCHITECTURE.md`，发生了什么写 `docs/CHANGELOG.md`（见开发流程）。
 - **已知 TuShare 缺陷线索** → `knowledge/known_tushare_defects.json`（reconciler 的 LLM 检索提示，不是补丁库）。
+- **🔴 改「核心假设.md 格式」「yaml1 字段/路径」「workbench 旋钮渲染/预览」「前端编辑回写」任何一环** → **必须先读 `docs/核心假设-yaml1-前端通信.md`**（往返链路总图：md→/comp→yaml1→前端渲染→试算→/frontend-edit→落盘；三处同源、单位约定、revenue_fold 唯一引擎、白名单边界）。该文档末尾有分层导航表，指向具体契约文档。
 
 ## 技术栈
 
@@ -102,6 +104,8 @@ MKA/
 └── .refs/tushare-docs/          # 33.md(income) 36.md(balancesheet) 44.md(cashflow) 等官方文档缓存
 ```
 
+Tushare 完整取数字典在 `D:\MKA\TushareOfficialAPIMD\fulltushare`；接口详档查 `reference\接口文档`，字段速查查 `reference\FIELD_REFERENCE.md`。
+
 ## 数据流水线
 
 ```
@@ -136,6 +140,7 @@ Agent/forecast/（唯一正式 DCF；中间参数写 Agent/.modelking/）
 - 同链路技能：`/brkd`、`/load`、`docs/Alphapai/Alphapai业务拆分抓取器.md`、`docs/Alphapai/Alphapai-load核心假设参考提示词.md`、`/ka`。
 - 必须保持相似骨架：时间边界/材料边界、业务拆分历史、收入→毛利→费用→below-OP→terminal 的段序、会议 memo、reference/draft/official 状态、`knobs` 同源边界。
 - 必须保持分工隔离：`/brkd` 挖研报/纪要和 `/init` 事实，产出 draft；`/load` 只保真装载旧 Excel 的 load-vintage，不用后验材料补数；Alphapai业务拆分抓取器只抓用户指定主拆分、桥表和高价值辅助拆分历史 factpack，不写预测；Alphapai-load 用网页端数据库产 reference 并承接 factpack；`/ka` 只裁决候选并生成 official，不读原始 Excel/研报。骨架要同步，职责不能互相污染。
+- 财务费用必须拆口径同步：生息利息项、利息净额、`interest_expense_rate`、`cash_interest_rate` 交 defaults/引擎，不在 `/ka` 手拍、不在 `/comp` 写 knob；`other_fin_exp_abs` 是利润表外生·非利息项，默认沿用 `Agent/financial_expense.yaml` / defaults，特殊企业或汇兑、手续费、贴息趋势被明示时由 `/ka` 裁决，`/comp` 只落 `income.financial_expense.other_fin_exp_abs`。
 
 ## DCF 运行规则
 

@@ -34,6 +34,16 @@ def test_ka_launcher_loads_shared_sources_and_editor_before_materials():
     assert "未入模但有复盘价值的信息进入收纳区/stash" in text
     assert "docs/核心假设源语言语法规范.md" in text
     assert "reference 裁决回执" in text
+    assert "KA 特别标注" in text
+    assert "业务拆分理解及其历史" in text
+    assert "生成主拆分时优先使用分析师手写 thesis" in text
+    assert "官方拆分默认是校验、桥表、父级 headline、收纳或兜底" in text
+    assert "副拆分之和不要求严格等于营业收入" in text
+    assert "不得静默丢弃数字" in text
+    assert "财务费用特别标注" in text
+    assert "不要把“利息净额不写”误读成“财务费用都不处理”" in text
+    assert "`other_fin_exp_abs` 是利润表外生·非利息项" in text
+    assert "沿用 `Agent/financial_expense.yaml` / defaults" in text
     assert "主导方向" in text
     assert "py -m src.ka_prepare" in text
     assert "最高权重材料-放Agent最应对齐的材料" in text
@@ -78,6 +88,7 @@ def test_ka_launcher_hands_off_adjudication_to_editor_runbook():
     assert "时间轴四数 + 自动 fade profile" in text
     assert "接缝总账" in text
     assert "骨架门（family 必须落在源语言 §B4 可执行集合内，不得自创）" in text
+    assert "业务拆分历史覆盖与 OfficialBreakdowns 去处" in text
     assert "数值门" in text
     assert "防静默 passthrough" in text
     assert "收口核对与落盘" in text
@@ -121,7 +132,12 @@ def test_core_assumption_editor_is_slim_comp_source_editor():
     assert "`model_assumption_schema.json`" not in text
     assert "`/comp`" in text
     assert "利润表 + 业务层盈利模型裁决器" in text
-    assert "`financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in text
+    assert "生息财务费用/利息净额" in text
+    assert "`interest_expense_rate`、`cash_interest_rate`" in text
+    assert "`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in text
+    assert "`other_fin_exp_abs`" in text
+    assert "其他财务费用外生·非利息项" in text
+    assert "不属于这个禁区" in text
     assert "分红率硬例外" in text
     assert "`balance_sheet.dividend_payout`" in text
     assert "必须强制检测" in text
@@ -129,10 +145,19 @@ def test_core_assumption_editor_is_slim_comp_source_editor():
     assert "人工注入例外" in text
     assert "BS/营运资本/现金流人工覆盖" in text
     assert "交互风格继承核心纪律 A4 的会议 memo 风格" in text
+    assert "展示优先用表格" in text
+    assert "把历史值和预测值放在同一张主表里" in text
+    assert "一次交互尽量只给一张表" in text
+    assert "表外只留 1-3 句结论和确认问题" in text
+    assert "不要一段里拆成多张碎表" in text
     assert "不默认贴完整正式稿" in text
     assert "最高权重材料 + BRKD/LOAD" in text
     assert "`重要文件/` 与公司判断同等权重" in text
     assert "和分析师裁决预测，同时保全已被人工筛选进入本轮的关键历史" in text
+    assert "KA 最重要的是业务拆分理解及其历史序列" in text
+    assert "所有进入本轮材料入口的业务数字必须有去处" in text
+    assert "副拆分可以仅供参考" in text
+    assert "副拆分之和不要求严格等于营业收入" in text
     assert "未进入人工筛选入口的材料不主动扩读" in text
     assert "KA 目录顶层全部 `*.md`" in text
     assert "KA 目录任一顶层 markdown" in text
@@ -165,6 +190,10 @@ def test_core_assumption_editor_carries_local_ka_decision_guards():
     assert "不默认、不平推、不等分析师自己说" in text
     assert "我先把材料摆齐后的判断说一下" in text
     assert "数值门聊天输出默认压缩成" in text
+    assert "一张历史/预测合并表" in text
+    assert "项目/口径、历史实际、预测值、来源、裁决、风险或待拍板点" in text
+    assert "历史值和预测值不要分开展示" in text
+    assert "能放进同一张表的来源/冲突/待拍板点就放进表格列" in text
     assert "### /init 快速查询索引" in text
     assert "`Agent/core_metrics_overview.{md,json,csv}`" in text
     assert "最近 10 个季度核心证据" in text
@@ -175,6 +204,9 @@ def test_core_assumption_editor_carries_local_ka_decision_guards():
     assert "销售费用率、管理费用率、研发费用率" in text
     assert "`Agent/OfficialBreakdowns/business_revenue_breakdown.csv|jsonl`" in text
     assert "它只证明历史披露口径，不自动给预测" in text
+    assert "`Agent/financial_expense.yaml`" in text
+    assert "用于区分生息利息项与其他财务费用外生·非利息项" in text
+    assert "`other_fin_exp_abs` 默认沿用 defaults 平推" in text
     assert "不强制通读" in text
     assert "可用的 `/init` 快速查询索引" in text
     assert "## 4. 接缝总账" in text
@@ -182,9 +214,29 @@ def test_core_assumption_editor_carries_local_ka_decision_guards():
     assert "出现时优先写入收纳区，确无复盘价值才写丢弃原因" in text
     assert "## 5. 骨架门" in text
     assert "毛利是分线派生还是整体手拍" in text
+    assert "### 主拆分选择门（分析师优先）" in text
+    assert "生成收入主拆分时，先判断哪套拆分最能承载分析师 thesis 和预测旋钮" in text
+    assert "OfficialBreakdowns 官方披露拆分；仅在缺少更高层级业务拆分" in text
+    assert "正式收入 leaf 优先采用分析师拆分" in text
+    assert "不能反向替换分析师拆分" in text
+    assert "### 业务拆分历史覆盖门（触发式）" in text
+    assert "OfficialBreakdowns 若存在且与本轮收入骨架相关" in text
+    assert "官方父级 subtotal 历史必须保留为 headline 或收纳" in text
+    assert "不能因为拆品牌、拆渠道、拆地区而吞掉上层官方历史" in text
+    assert "副拆分不承担配平义务" in text
+    assert "主拆分选择点全" in text
+    assert "OfficialBreakdowns 没有自动压过更深入的分析师拆分" in text
+    assert "业务拆分历史覆盖点全" in text
+    assert "父级 subtotal headline 没被吞掉" in text
+    assert "副拆分数字保留且未被强行配平" in text
     assert "## 6. 数值门" in text
-    assert "收入 -> 毛利/成本 -> 费用 -> below-OP、税、少数股东 -> 分红率强制检测 -> 可选 BS/营运资本/现金流人工覆盖 -> 中期/terminal" in text
-    assert "不得主动新增 `financial expense`、`EBIT`、`DA`、`CAPEX`、`CWC`、`shares`、`WACC`" in text
+    assert "收入 -> 毛利/成本 -> 费用(含非息财务费用 other_fin_exp_abs) -> below-OP、税、少数股东 -> 分红率强制检测 -> 可选 BS/营运资本/现金流人工覆盖 -> 中期/terminal" in text
+    assert "不得主动新增生息财务费用/利息净额" in text
+    assert "其他财务费用外生·非利息项 `other_fin_exp_abs` 要作为费用段固定检测项单独处理" in text
+    assert "费用段反馈表必须至少点到销售费用率、管理费用率、研发费用率、税金及附加率、非息财务费用" in text
+    assert "沿用 defaults，也要在裁决列明确写“沿用 financial_expense/defaults”" in text
+    assert "确保 `/comp` 显式落 `income.financial_expense.other_fin_exp_abs`、前端可编辑" in text
+    assert "默认确认沿用 `Agent/financial_expense.yaml` / defaults 平推" in text
     assert "分红率必须单列去处" in text
     assert "不等于默认开启人工 BS/CF 覆盖闸" in text
     assert "## 1.1 defaults 审计标识" in text

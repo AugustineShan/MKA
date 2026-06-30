@@ -69,6 +69,34 @@ def test_yaml1compiler_declares_official_audit_gate():
         assert heading in text
 
 
+def test_yaml1compiler_splits_interest_fin_exp_from_other_fin_exp_abs():
+    text = _read("skills/yaml1compiler_v5.md")
+
+    assert "财务费用不是铁板一块" in text
+    assert "利息净额" in text
+    assert "引擎按现金/负债余额倒算" in text
+    assert "其他财务费用(外生、非利息项" in text
+    assert "income.financial_expense.other_fin_exp_abs" in text
+    assert "无论裁决是覆盖还是明确沿用 defaults，都必须写上面的 knob" in text
+    assert "沿用 defaults 时从 `defaults.yaml income.financial_expense.other_fin_exp_abs` 取满数组回声" in text
+    assert "只有 legacy official 完全未提 `other_fin_exp_abs` 时，yaml1 才可缺席" in text
+    assert "不是落 0" in text
+
+
+def test_comp_launcher_splits_interest_fin_exp_from_other_fin_exp_abs():
+    text = _read(".claude/skills/comp/SKILL.md")
+
+    assert "财务费用翻译闸" in text
+    assert "生息利息项、利息净额" in text
+    assert "`interest_expense_rate`、`cash_interest_rate` 默认缺席" in text
+    assert "official 源文若拍了其他财务费用外生·非利息项 `other_fin_exp_abs`" in text
+    assert "费用段明确写了“非息财务费用沿用 defaults”" in text
+    assert "必须翻成 `income.financial_expense.other_fin_exp_abs`" in text
+    assert "不能提到顶层 `financial_expense.*`" in text
+    assert "沿用 defaults 时从 `defaults.yaml income.financial_expense.other_fin_exp_abs` 回声满数组" in text
+    assert "回落到 `/init` 生成的 defaults" in text
+
+
 def test_architecture_comp_contract_matches_launcher_order():
     text = _read("docs/ARCHITECTURE.md")
 

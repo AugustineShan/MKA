@@ -234,12 +234,21 @@ def call_llm(messages: list[dict[str, str]]) -> dict[str, Any]:
     # must not silently drop an entire confirmation chunk. Retry with backoff;
     # only return the error after the final attempt.
     attempts = max(1, int(os.environ.get("LLM_MAX_RETRIES", "3")))
+    base_max_tokens = int(body.get("max_tokens") or os.environ.get("LLM_MAX_TOKENS", "16384"))
+    # 截断重试时 max_tokens 翻倍（封顶）：否则用同一 max_tokens 重试 3 次必然再截，
+    # 烧完配额后失败。封顶避免超出模型输出上限。
+    max_tokens_cap = int(os.environ.get("LLM_MAX_TOKENS_CAP", "65536"))
+    cur_max_tokens = base_max_tokens
     last_error: dict[str, Any] = {}
     for attempt in range(attempts):
+        body["max_tokens"] = cur_max_tokens
         result = _call_llm_once(provider, url, api_key, body, model)
         if not result.get("error"):
             return result
         last_error = result
+        truncated = "truncated" in str(result.get("error", "")) or result.get("_truncated")
+        if truncated and attempt < attempts - 1:
+            cur_max_tokens = min(cur_max_tokens * 2, max_tokens_cap)
         if attempt < attempts - 1:
             if result.get("_status") == 429:
                 # GLM's rate limit is a per-minute request cap, so the default
@@ -295,6 +304,7 @@ def _call_llm_once(
         return {
             "error": f"{provider} response truncated (finish_reason=length); raise LLM_MAX_TOKENS",
             "_provider": provider,
+            "_truncated": True,
         }
     if not content or not content.strip():
         return {"error": f"{provider} returned empty content", "_provider": provider}

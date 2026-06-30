@@ -42,7 +42,10 @@ def test_webka_skill_doc_structure():
     assert "核心假设源语言_skill_v*.md" in text
     assert "knobs块契约.md" in text
     assert "核心假设编辑器_skill_v*.md" in text
-    # 明确不打包
+    # 速查参考与明确不打包
+    assert "financial_expense.yaml`（若存在）" in text
+    assert "生息利息项和利息净额交 defaults/引擎" in text
+    assert "`other_fin_exp_abs` 是利润表外生·非利息项" in text
     assert "financial_expense.yaml" in text
     assert "data.db" in text
     assert "yaml1算法模板契约" in text
@@ -157,6 +160,28 @@ def test_build_must_read_packages_plain_ka_markdown_as_info_guide(tmp_path: Path
 
     assert "KA 目录信息指引·业务提示.md" in must_read
     assert "这是一份信息指引" in must_read
+
+
+def test_build_lookup_packages_financial_expense_yaml_as_reference(tmp_path: Path):
+    from src import webka
+
+    agent_dir = tmp_path / "Agent"
+    agent_dir.mkdir()
+    (agent_dir / "financial_expense.yaml").write_text(
+        "periods:\n"
+        "  '2024':\n"
+        "    derived:\n"
+        "      other_fin_exp_abs: -1.47\n",
+        encoding="utf-8",
+    )
+    report: list[tuple[str, str]] = []
+
+    lookup = webka._build_lookup(tmp_path, report)
+
+    assert "financial_expense.yaml（财务费用附注档案：区分利息项与 other_fin_exp_abs）" in lookup
+    assert "other_fin_exp_abs: -1.47" in lookup
+    assert "生息利息项和利息净额交 defaults/引擎" in lookup
+    assert ("financial_expense.yaml（财务费用附注档案：区分利息项与 other_fin_exp_abs）", "OK financial_expense.yaml") in report
 
 
 def test_gate_blocks_when_no_skeleton(tmp_path: Path):

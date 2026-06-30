@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  auditAssistantMethod,
+  auditAssistantPrinciples,
+  auditAssistantReportSections,
+  auditAssistantWorkflow,
   codexGuideFlow,
   codexGuidePrompts,
   codexGuideRules,
@@ -56,7 +60,7 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const [activeTab, setActiveTab] = useState<"config" | "guide" | "workspace" | "codex" | "principles">("config");
+  const [activeTab, setActiveTab] = useState<"config" | "guide" | "workspace" | "codex" | "audit" | "principles">("config");
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
 
   const loadSettings = async () => {
@@ -237,6 +241,15 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
             给 Codex 的使用指南
           </button>
           <button
+            aria-selected={activeTab === "audit"}
+            className={activeTab === "audit" ? "active" : ""}
+            onClick={() => setActiveTab("audit")}
+            role="tab"
+            type="button"
+          >
+            财务审计助理
+          </button>
+          <button
             aria-selected={activeTab === "principles"}
             className={activeTab === "principles" ? "active" : ""}
             onClick={() => setActiveTab("principles")}
@@ -260,6 +273,18 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
 
             {settings ? (
               <section className="tutorial-section config-section">
+                <div className="config-actions">
+                  <button className="primary-button" disabled={saving} onClick={() => saveSettings(false)} type="button">
+                    {saving ? "保存中" : "保存配置"}
+                  </button>
+                  {!settings.validation.exists ? (
+                    <button className="secondary-button" disabled={saving} onClick={() => saveSettings(true)} type="button">
+                      创建并保存
+                    </button>
+                  ) : null}
+                  {saved ? <span className="config-saved">已保存，公司列表已刷新。</span> : null}
+                </div>
+
                 {outputFields.length ? (
                   <div className="config-output-card">
                     <div className="config-output-copy">
@@ -274,8 +299,9 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
                           <input
                             autoComplete="off"
                             onChange={(event) => {
+                              const value = event.currentTarget.value;
                               setSaved(false);
-                              setDrafts((current) => ({ ...current, [field.key]: event.currentTarget.value }));
+                              setDrafts((current) => ({ ...current, [field.key]: value }));
                             }}
                             placeholder={field.placeholder}
                             type="text"
@@ -300,8 +326,9 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
                     <input
                       id="companies-dir"
                       onChange={(event) => {
+                        const value = event.currentTarget.value;
                         setSaved(false);
-                        setCompaniesDir(event.currentTarget.value);
+                        setCompaniesDir(value);
                       }}
                       value={companiesDir}
                     />
@@ -336,8 +363,9 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
                           <input
                             autoComplete="off"
                             onChange={(event) => {
+                              const value = event.currentTarget.value;
                               setSaved(false);
-                              setDrafts((current) => ({ ...current, [field.key]: event.currentTarget.value }));
+                              setDrafts((current) => ({ ...current, [field.key]: value }));
                             }}
                             placeholder={field.secret ? "留空不修改" : field.placeholder}
                             type={field.secret ? "password" : "text"}
@@ -355,18 +383,6 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
                     {ratingReport.forecast_start_year}-{ratingReport.forecast_end_year} 年预测区间；预测区间会自动加 E。
                   </div>
                 ) : null}
-
-                <div className="config-actions">
-                  <button className="primary-button" disabled={saving} onClick={() => saveSettings(false)} type="button">
-                    {saving ? "保存中" : "保存配置"}
-                  </button>
-                  {!settings.validation.exists ? (
-                    <button className="secondary-button" disabled={saving} onClick={() => saveSettings(true)} type="button">
-                      创建并保存
-                    </button>
-                  ) : null}
-                  {saved ? <span className="config-saved">已保存，公司列表已刷新。</span> : null}
-                </div>
               </section>
             ) : null}
           </>
@@ -656,6 +672,83 @@ export function Tutorial({ onClose, onSaved }: TutorialProps) {
                   </p>
                 </div>
                 <code>D:\MKA\Codex.md</code>
+              </div>
+            </section>
+          </div>
+        ) : activeTab === "audit" ? (
+          <div className="tutorial-guide audit-tutorial">
+            <section className="tutorial-section audit-tutorial-hero">
+              <div>
+                <span>财务审计助理</span>
+                <h2>像审计经理开第一次复核会：先排雷，再取证，最后汇报。</h2>
+                <p>
+                  /audit 不替你下造假结论，也不改模型假设。它把公开财报、clean 数据和年报证据包整理成一份可复核的审计工作底稿。
+                </p>
+              </div>
+              <div className="audit-command-card">
+                <span>常用命令</span>
+                <code>py -m src.audit_engine --coverage all --top 20 --with-evidence</code>
+              </div>
+            </section>
+
+            <section className="tutorial-section">
+              <div className="tutorial-section-intro">
+                <h2>上半部分：用户怎么用</h2>
+                <p>日常使用只按这条路径走。先看覆盖排序，再进入单公司审计页，最后决定是否升级取证。</p>
+              </div>
+              <div className="audit-workflow-grid">
+                {auditAssistantWorkflow.map((item) => (
+                  <article className="audit-workflow-card" key={item.title}>
+                    <h3>{item.title}</h3>
+                    <p>{item.body}</p>
+                    <span>{item.output}</span>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="tutorial-section">
+              <div className="tutorial-section-intro">
+                <h2>单公司页面怎么读</h2>
+                <p>公司页应该像审计负责人给老板汇报，而不是把 JSON 字段摊出来。默认先读结论和行动建议，机器细节放在折叠区。</p>
+              </div>
+              <div className="audit-report-grid">
+                {auditAssistantReportSections.map((item) => (
+                  <article className="audit-report-card" key={item.title}>
+                    <h3>{item.title}</h3>
+                    <p>{item.body}</p>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="tutorial-section">
+              <div className="tutorial-section-intro">
+                <h2>下半部分：技能原理</h2>
+                <p>这套技能分四层：先统一数据，再确定性筛查，再定向取证，最后形成人能读的复核意见。</p>
+              </div>
+              <div className="audit-layer-stack">
+                {auditAssistantMethod.map((item) => (
+                  <article className="audit-layer-card" key={item.title}>
+                    <h3>{item.title}</h3>
+                    <p>{item.body}</p>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="tutorial-section">
+              <div className="tutorial-section-intro">
+                <h2>三条纪律</h2>
+                <p>审计助理的价值在于可复现、可解释、可追责。异常要解释，结论要留证据。</p>
+              </div>
+              <div className="principle-stack">
+                {auditAssistantPrinciples.map((item) => (
+                  <article className="principle-stack-card" key={item.title}>
+                    <h3>{item.title}</h3>
+                    <p>{item.body}</p>
+                  </article>
+                ))}
               </div>
             </section>
           </div>

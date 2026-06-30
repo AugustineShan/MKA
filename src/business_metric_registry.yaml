@@ -57,6 +57,20 @@ price:
   format: num2
   canonical_priority: direct
 
+volume_yoy:
+  label: 销量增长
+  aliases: [volume_yoy, volume_growth, 销量增长, 销量增速]
+  unit: ratio
+  format: signedDecimal
+  canonical_priority: derived
+
+price_yoy:
+  label: 单价增长
+  aliases: [price_yoy, price_growth, 吨价增长, 吨价增速, 单价增长]
+  unit: ratio
+  format: signedDecimal
+  canonical_priority: derived
+
 mix:
   label: 占比
   aliases: [mix, share, pct, 占比]

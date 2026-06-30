@@ -37,6 +37,7 @@ from src.yaml2_schema import (
     plain_value,
     read_yaml2,
 )
+from src.impact_fields import IMPACT_ADJUSTMENT_FIELDS
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -46,11 +47,8 @@ CONVERGENCE_TOLERANCE = 1e-7
 
 # Impairment-like fields are signed P&L adjustments, not positive costs.
 # They are read from cost_abs but merged into operate_profit algebraically.
-IMPACT_ADJUSTMENT_FIELDS = {
-    "assets_impair_loss",
-    "credit_impa_loss",
-    "oth_impair_loss_assets",
-}
+# Definition lives in src.impact_fields (shared with the sign gates in
+# yaml1_fidelity_check.py and ka_assumption_lint.py to prevent drift).
 
 
 class CalcError(RuntimeError):

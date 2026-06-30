@@ -78,6 +78,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 COMPANIES_DIR = BASE_DIR / "companies"
 LOGGER = logging.getLogger("init")
 
+# 同进程阶段（financial_expense_analyzer.analyze_all_periods 等）不走 CLI __main__，
+# 不会自行 load_env；这里统一加载一次，确保 in-process 的 call_llm 能拿到 LLM_PROVIDER/GLM_API_KEY。
+# subprocess 阶段（reconciler/report_downloader）在各自 __main__ 里会再 setdefault，幂等无副作用。
+from src.annual_report_utils import load_env as _load_env
+
+_load_env(BASE_DIR / ".env")
+
 # vendored cninfo guess_plate（裸代码补后缀用）
 _VENDORED_SRC = BASE_DIR / "vendor" / "use_cninfo" / "src"
 if str(_VENDORED_SRC) not in sys.path:
@@ -610,20 +617,21 @@ def _offer_annual_plug(
 
 
 def stage_core_metrics_overview(ticker: str, db_path: Path, *, mode: str) -> str:
-    """生成 clean_annual 年度核心指标速览。
+    """生成 clean_annual 年度 + 最近 clean_quarterly 核心指标速览。
 
-    这是 /init 后续 Agent 的历史事实底稿，只读 clean_annual，失败不阻塞 init 主链路。
+    这是 /init 后续 Agent 的历史事实底稿，只读 clean_annual/clean_quarterly，
+    失败不阻塞 init 主链路。
     """
     if mode == "quarterly":
-        return "⏭️ --mode quarterly 未更新年度速览"
+        return "⏭️ --mode quarterly 未更新核心指标速览"
 
-    LOGGER.info("[4/5] 年度核心指标速览 %s ...", ticker)
+    LOGGER.info("[4/5] 核心指标速览 %s ...", ticker)
     try:
         paths = write_core_metrics_overview(db_path)
         names = ", ".join(path.name for path in paths.values())
         return f"✅ 已生成 {names}"
     except Exception as exc:  # noqa: BLE001
-        LOGGER.warning("年度核心指标速览生成失败（不影响 init 退出码）: %s", exc)
+        LOGGER.warning("核心指标速览生成失败（不影响 init 退出码）: %s", exc)
         return f"⚠️ 生成失败: {exc}"
 
 
@@ -645,15 +653,29 @@ def stage_financial_expense(
         import yaml  # type: ignore
         archive = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
         periods = archive.get("periods", {}) if isinstance(archive, dict) else {}
+        rec_items = [(p, r) for p, r in periods.items() if isinstance(r, dict)]
         approved = sum(
-            1 for rec in periods.values()
-            if isinstance(rec, dict) and rec.get("status") == "approved" and rec.get("confidence") == "high"
+            1 for _, r in rec_items
+            if r.get("status") == "approved" and r.get("confidence") == "high"
         )
-        total = len(periods)
-        return f"✅ 已生成 {yaml_path.name}（{approved}/{total} 年 approved）", archive
+        total = len(rec_items)
+        # 财务费用证据失败不得静默：只要有未 approved 期，就必须 ⚠️ + 列出失败期与原因，
+        # 不能用 ✅ 把 0/N 或部分失败糊弄过去。defaults_gen 会另打 review_flag 双保险。
+        if approved == total and total > 0:
+            return f"✅ 已生成 {yaml_path.name}（{approved}/{total} 年 approved）", archive
+        failed = []
+        for p, r in rec_items:
+            if not (r.get("status") == "approved" and r.get("confidence") == "high"):
+                reason = r.get("error") or r.get("status") or "未知"
+                failed.append(f"{p}({reason})")
+        failed_str = "、".join(failed[:8]) + (f"等{len(failed)}期" if len(failed) > 8 else "")
+        return (
+            f"⚠️ 已生成 {yaml_path.name}（{approved}/{total} 年 approved；未通过：{failed_str}）"
+            "—— 财务费用证据不完整，已记 review_flags，/ka 需裁决"
+        ), archive
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("财务费用细则分析失败（不影响后续流程）: %s", exc)
-        return f"⚠️ 分析失败: {exc}", None
+        return f"⚠️ 分析失败: {exc}—— 财务费用证据缺失，已记 review_flags", None
 
 
 def _format_defaults_status(output: Path, data: dict[str, Any]) -> str:
